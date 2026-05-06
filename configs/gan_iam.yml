@@ -41,7 +41,7 @@ training:
   lambda_gram: 2.0
   pretrained_w: './pretrained/wid_iam_new.pth'
   pretrained_r: './pretrained/ocr_iam_new.pth'
-  pretrained_ckpt: '/kaggle/working/dcmpls/single_mamba_e_copy/runs/gan_iam-05-02-14-39/ckpts/last.pth'
+  pretrained_ckpt: '/kaggle/working/HGGAN/random_crop_recog/runs/last.pth'
   recog_crop:
     enabled: true
     mode: 'char_aligned'
@@ -52,7 +52,7 @@ training:
 valid:
   dset_name: 'iam_word_org'
   dset_split: 'test'
-  validate_ocr: false
+  validate_ocr: true
   use_rand_corpus: false
   n_rand_repeat: 10
   batch_size: 32
