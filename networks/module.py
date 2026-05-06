@@ -3,6 +3,7 @@ import torch
 from torch import nn
 import functools
 from networks.block import Conv2dBlock, ActFirstResBlock, DeepBLSTM, DeepGRU, DeepLSTM, Identity
+from networks.mamba import MambaAttention
 from networks.utils import _len2mask, init_weights
 
 
@@ -79,14 +80,50 @@ class StyleEncoder(nn.Module):
 
         self.mu = nn.Linear(in_dim, style_dim)
         self.logvar = nn.Linear(in_dim, style_dim)
+        
+        # ADD: Sequence model to capture global word geometry (slant, spacing, ratio)
+        self.sequence_model = MambaAttention(in_dim)
+        
+        # ADD: Projections for multi-scale feature fusion (Pyramid Pooling)
+        # feat2: 64, feat3: 128, feat4: 256 (assuming max_dim=256)
+        self.projs = nn.ModuleList([
+            nn.Linear(64, in_dim),
+            nn.Linear(128, in_dim),
+            nn.Linear(256, in_dim)
+        ])
+        
         if init != 'none':
             init_weights(self, init)
 
     def forward(self, img, img_len, cnn_backbone=None, ret_feats=False, vae_mode=False):
-        feat, all_feats = cnn_backbone(img, ret_feats)
+        # Always request intermediate features to capture local details
+        feat, all_feats = cnn_backbone(img, ret_feats=True)
+        img_len_orig = img_len.clone()
         img_len = torch.div(img_len, cnn_backbone.reduce_len_scale, rounding_mode='trunc')
-        img_len_mask = _len2mask(img_len, feat.size(-1)).unsqueeze(1).float().detach()
-        style = (feat * img_len_mask).sum(dim=-1) / (img_len.unsqueeze(1).float() + 1e-8)
+        
+        # 1. Global context from main feature using Mamba
+        feat_m = self.sequence_model(feat) # feat is (B, C, W), feat_m is (B, C, W)
+        img_len_mask = _len2mask(img_len, feat_m.size(-1)).unsqueeze(1).float().detach()
+        style_global = (feat_m * img_len_mask).sum(dim=-1) / (img_len.unsqueeze(1).float() + 1e-8)
+        
+        # 2. Local context from intermediate features (Lightweight Pyramid Pooling)
+        style_local = 0.
+        for i, f in enumerate(all_feats):
+            scale_factor = img.size(-1) // f.size(-1)
+            f_len = torch.div(img_len_orig, scale_factor, rounding_mode='trunc')
+            # f is (B, C, H, W). Mask needs to be (B, 1, 1, W) for broadcasting
+            f_mask = _len2mask(f_len, f.size(-1)).unsqueeze(1).unsqueeze(2).float().detach()
+            f_sum = (f * f_mask).sum(dim=(2, 3)) 
+            f_area = f.size(2) * f_len.unsqueeze(1).float() + 1e-8
+            
+            # Project to match in_dim (256)
+            s = f_sum / f_area
+            s = self.projs[i](s)
+            style_local = style_local + s
+            
+        # Combine Mamba's Global Geometry with Projected Local Textures
+        style = style_global + (style_local / len(all_feats))
+        
         style = self.linear_style(style)
         mu = self.mu(style)
 

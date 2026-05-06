@@ -41,7 +41,7 @@ training:
   lambda_gram: 2.0
   pretrained_w: './pretrained/wid_iam_new.pth'
   pretrained_r: './pretrained/ocr_iam_new.pth'
-  pretrained_ckpt: '/kaggle/working/dcmpls/single_mamba_e/runs/gan_iam-05-03-04-04/ckpts/last.pth'
+  pretrained_ckpt: ''
 
 
 valid:

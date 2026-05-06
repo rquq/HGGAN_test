@@ -1,12 +1,12 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from .mamba import Mamba2DBlock, RMSNorm
+from .mamba import MambaBlock, RMSNorm
 
 class StyleContentMamba(nn.Module):
     """
-    Optimized 2D-Interaction Mamba Fusion for Single-Stream Generator.
-    Uses JIT-accelerated scans and a 2D interaction grid between Style and Content.
+    Optimized 1D Prefix-Context Mamba Fusion for Single-Stream Generator.
+    Treats the style vector as a prompt/prefix token for the content sequence.
     """
     def __init__(self, d_model, style_dim, d_state=16, d_conv=4, expand=2):
         super().__init__()
@@ -20,8 +20,8 @@ class StyleContentMamba(nn.Module):
         )
         self.content_proj = nn.Linear(d_model, d_model)
         
-        # 2. Optimized 2D Interaction Engine (Single-Stage)
-        self.mamba_2d = Mamba2DBlock(d_model, d_state=d_state, d_conv=d_conv, expand=expand)
+        # 2. Optimized 1D Sequence Engine
+        self.mamba = MambaBlock(d_model, d_state=d_state, d_conv=d_conv, expand=expand, bidirectional=True)
         
         # 3. Normalization and Stability
         self.norm = RMSNorm(d_model)
@@ -41,20 +41,18 @@ class StyleContentMamba(nn.Module):
         """
         B, L, D = content_seq.shape
         
-        # --- STAGE 1: Create 2D Interaction Grid ---
-        # Even with one style vector, we treat it as a sequence of length 1.
-        # Grid shape: (B, 1, L, D)
-        s_feat = self.style_proj(style_vec).unsqueeze(1).unsqueeze(2) # (B, 1, 1, D)
-        c_feat = self.content_proj(content_seq).unsqueeze(1) # (B, 1, L, D)
+        # --- STAGE 1: Sequence Preparation ---
+        s_feat = self.style_proj(style_vec).unsqueeze(1) # (B, 1, D)
+        c_feat = self.content_proj(content_seq) # (B, L, D)
         
-        grid = s_feat + c_feat # (B, 1, L, D)
+        # Dual-Prompting: Style acts as prefix (forward scan) AND suffix (backward scan)
+        combined = torch.cat([s_feat, c_feat, s_feat], dim=1) # (B, 1+L+1, D)
         
-        # --- STAGE 2: 2D Cross-Scan Fusion ---
-        grid_flat = grid.view(B, 1 * L, D)
-        fused_grid = self.mamba_2d(grid_flat, 1, L)
+        # --- STAGE 2: 1D Dual-Context Fusion ---
+        fused = self.mamba(combined)
         
         # --- STAGE 3: Extract Refined Content ---
-        content_refined = fused_grid.view(B, 1, L, D).mean(dim=1)
+        content_refined = fused[:, 1:-1, :] # Discard the prefix and suffix
         content_final = self.norm(content_refined + content_seq)
         
         # --- STAGE 4: Style Modulation ---

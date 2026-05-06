@@ -5,14 +5,19 @@ import math
 from .utils import _len2mask
 
 # --- JIT Optimized Scan Functions ---
+# --- Optimized JIT Scan Functions ---
 @torch.jit.script
 def selective_scan_fwd(x_conv, deltaA, deltaB_u, C_proj):
     B, L, D_inner, D_state = deltaA.shape
     h = torch.zeros((B, D_inner, D_state), device=x_conv.device, dtype=x_conv.dtype)
     y = torch.empty((B, L, D_inner), device=x_conv.device, dtype=x_conv.dtype)
+    
+    # Pre-calculate projected C for the whole sequence to minimize operations in loop
+    # B, L, D_inner, D_state * B, L, 1, D_state -> B, L, D_inner, D_state
     for i in range(L):
         h = deltaA[:, i] * h + deltaB_u[:, i]
-        y[:, i] = (h * C_proj[:, i].unsqueeze(1)).sum(dim=-1)
+        # Vectorized dot product over the state dimension
+        y[:, i] = torch.sum(h * C_proj[:, i].unsqueeze(1), dim=-1)
     return y
 
 @torch.jit.script
@@ -20,9 +25,10 @@ def selective_scan_bwd(x_conv, deltaA, deltaB_u, C_proj):
     B, L, D_inner, D_state = deltaA.shape
     h = torch.zeros((B, D_inner, D_state), device=x_conv.device, dtype=x_conv.dtype)
     y = torch.empty((B, L, D_inner), device=x_conv.device, dtype=x_conv.dtype)
+    
     for i in range(L - 1, -1, -1):
         h = deltaA[:, i] * h + deltaB_u[:, i]
-        y[:, i] = (h * C_proj[:, i].unsqueeze(1)).sum(dim=-1)
+        y[:, i] = torch.sum(h * C_proj[:, i].unsqueeze(1), dim=-1)
     return y
 
 class RMSNorm(nn.Module):
@@ -105,6 +111,12 @@ class Mamba2DBlock(nn.Module):
         super().__init__()
         self.mamba = MambaBlock(d_model, d_state=d_state, d_conv=d_conv, expand=expand, bidirectional=False, use_sn=use_sn)
         self.mamba_v = MambaBlock(d_model, d_state=d_state, d_conv=d_conv, expand=expand, bidirectional=False, use_sn=use_sn)
+        
+        # Gated fusion to learn how to weigh horizontal vs vertical features per pixel
+        self.gate = nn.Sequential(
+            nn.Linear(d_model, d_model * 2),
+            nn.Sigmoid()
+        )
         self.proj = nn.Linear(self.mamba.d_inner, d_model)
 
     def forward(self, x, H, W):
@@ -125,7 +137,13 @@ class Mamba2DBlock(nn.Module):
         y_v_bwd = self.mamba_v._scan_step(x_conv_v, self.mamba_v.dt_proj, self.mamba_v.x_proj, self.mamba_v.A_log, self.mamba_v.D, reverse=True)
         y_v = (y_v_fwd + y_v_bwd).view(B, W, H, -1).transpose(1, 2).reshape(B, L, -1) * 0.5
 
-        out = self.mamba.norm((y_h + y_v) * 0.5) * F.silu(z)
+        # Gated interaction between Horizontal and Vertical scans
+        # This allows the model to prioritize the word flow (H) or stroke geometry (V) dynamically
+        gates = self.gate(x)
+        gate_h, gate_v = gates.chunk(2, dim=-1)
+        y_fused = (y_h * gate_h + y_v * gate_v)
+
+        out = self.mamba.norm(y_fused) * F.silu(z)
         return self.proj(out)
 
 class MambaAttention(nn.Module):
@@ -137,10 +155,16 @@ class MambaAttention(nn.Module):
         self.gamma = nn.Parameter(torch.zeros(1))
         
     def forward(self, x, x_len=None, **kwargs):
+        dims = x.dim()
+        if dims == 3:
+            x = x.unsqueeze(-1)
         B, C, W, H = x.size()
         # Flatten for 2D Mamba interaction
         x_flat = x.permute(0, 2, 3, 1).reshape(B, W * H, C)
         out_flat = self.mamba(x_flat, W, H)
         # Reshape back to original dimensions
         out = out_flat.view(B, W, H, C).permute(0, 3, 1, 2)
-        return self.gamma * out + x
+        out = self.gamma * out + x
+        if dims == 3:
+            out = out.squeeze(-1)
+        return out

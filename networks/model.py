@@ -642,6 +642,8 @@ class GlobalLocalAdversarialModel(AdversarialModel):
         self.ctc_loss = CTCLoss(zero_infinity=True, reduction='mean')
         self.classify_loss = CrossEntropyLoss()
         self.contextual_loss = CXLoss()
+        from networks.loss import GramStyleLoss
+        self.gram_loss = GramStyleLoss()
 
     def train(self):
         self.info()
@@ -716,7 +718,7 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                                                     'real_disc_loss_patch', 'recn_loss',
                                                     'fake_ctc_loss', 'info_loss',
                                                     'fake_wid_loss', 'ctx_loss',
-                                                    'kl_loss', 'gp_ctc', 'gp_info',
+                                                    'kl_loss', 'gram_loss', 'gp_ctc', 'gp_info',
                                                     'gp_wid', 'gp_recn'])
         device = self.device
 
@@ -896,6 +898,7 @@ class GlobalLocalAdversarialModel(AdversarialModel):
 
                     ###  Contextual Loss and Gram Loss for non-aligned data  ###
                     ctx_loss = torch.FloatTensor([0.]).to(self.device)
+                    gram_loss = torch.FloatTensor([0.]).to(self.device)
                     for real_img_feat, fake_img_feat \
                             in zip(real_img_feats, fake_imgs_feats):
                         fake_feat = fake_img_feat.chunk(2, dim=0)
@@ -903,6 +906,10 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                         ctx_loss += self.contextual_loss(real_img_feat, fake_feat[0])
                         # ctx_loss for recn_imgs
                         ctx_loss += self.contextual_loss(real_img_feat, fake_feat[1])
+
+                        # gram_loss
+                        gram_loss += self.gram_loss(fake_feat[0], real_img_feat)
+                        gram_loss += self.gram_loss(fake_feat[1], real_img_feat)
 
                     ### KL-Divergency loss ###
                     kl_loss = KLloss(mu, logvar) if self.vae_mode else torch.FloatTensor([0.]).to(self.device)
@@ -932,6 +939,7 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                              gp_wid * fake_wid_loss + \
                              gp_recn * recn_loss + \
                              self.opt.training.lambda_ctx * ctx_loss + \
+                             self.opt.training.lambda_gram * gram_loss + \
                              self.opt.training.lambda_kl * kl_loss
                     g_loss.backward()
                     self.averager_meters.update('adv_loss', adv_loss.item())
@@ -941,6 +949,7 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                     self.averager_meters.update('fake_wid_loss', fake_wid_loss.item())
                     self.averager_meters.update('recn_loss', recn_loss.item())
                     self.averager_meters.update('ctx_loss', ctx_loss.item())
+                    self.averager_meters.update('gram_loss', gram_loss.item())
                     self.averager_meters.update('kl_loss', kl_loss.item())
                     self.optimizers.G.step()
 
@@ -949,14 +958,14 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                     self.averager_meters.reset_all()
                     info = "[%3d|%3d]-[%4d|%4d] G:%.4f G-p:%.4f D-fake:%.4f D-real:%.4f " \
                            "D-fake-p:%.4f D-real-p:%.4f CTC-fake:%.4f Wid-fake:%.4f " \
-                           "Recn-z:%.4f Recn-c:%.4f Ctx:%.4f Kl:%.4f" \
+                           "Recn-z:%.4f Recn-c:%.4f Ctx:%.4f Gram:%.4f Kl:%.4f" \
                            % (epoch, self.opt.training.epochs,
                               iter_count % len(self.train_loader), len(self.train_loader),
                               meter_vals['adv_loss'], meter_vals['adv_loss_patch'],
                               meter_vals['fake_disc_loss'], meter_vals['real_disc_loss'],
                               meter_vals['fake_disc_loss_patch'], meter_vals['real_disc_loss_patch'],
                               meter_vals['fake_ctc_loss'], meter_vals['fake_wid_loss'], meter_vals['info_loss'],
-                              meter_vals['recn_loss'], meter_vals['ctx_loss'], meter_vals['kl_loss'])
+                              meter_vals['recn_loss'], meter_vals['ctx_loss'], meter_vals['gram_loss'], meter_vals['kl_loss'])
                     self.print(info) if self.local_rank < 1 else None
 
                     if _is_master:
