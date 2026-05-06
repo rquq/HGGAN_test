@@ -1,3 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.env
+.venv
+
+# ML / Training
 runs/
 wandb/
+lightning_logs/
+*.log
+checkpoint/
+checkpoints/
+.cache/
+
+# Data and Samples
 data/iam/
+data/image_samples/
+backup/
+
+# Distribution / builds
+dist/
+build/
+*.egg-info/
+
+# Jupyter
+.ipynb_checkpoints
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDEs
+.vscode/
+.idea/
