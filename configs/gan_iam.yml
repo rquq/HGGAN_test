@@ -41,7 +41,7 @@ training:
   lambda_gram: 2.0
   pretrained_w: './pretrained/wid_iam_new.pth'
   pretrained_r: './pretrained/ocr_iam_new.pth'
-  pretrained_ckpt: ''
+  pretrained_ckpt: '/kaggle/working/HGGAN/dev/runs/gan_iam-05-05-14-29/ckpts/last.pth'
 
 
 valid:
