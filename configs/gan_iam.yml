@@ -41,7 +41,7 @@ training:
   lambda_gram: 2.0
   pretrained_w: './pretrained/wid_iam_new.pth'
   pretrained_r: './pretrained/ocr_iam_new.pth'
-  pretrained_ckpt: '/kaggle/working/HGGAN/random_crop_recog/runs/last.pth'
+  pretrained_ckpt: '/kaggle/working/HGGAN/random_crop_recog/runs/gan_iam-05-05-14-07/ckpts/last.pth'
   recog_crop:
     enabled: true
     mode: 'char_aligned'
