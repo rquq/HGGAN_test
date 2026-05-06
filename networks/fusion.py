@@ -33,29 +33,31 @@ class StyleContentMamba(nn.Module):
             nn.Linear(d_model, d_model * 2)
         )
 
-    def forward(self, content_seq, style_vec):
+    def forward(self, content_seq, style_seq):
         """
         Args:
             content_seq: (B, L, D) sequence of content embeddings
-            style_vec: (B, style_dim) single style vector
+            style_seq: (B, 32, style_dim) sequence of style tokens
         """
         B, L, D = content_seq.shape
+        S_len = style_seq.shape[1]
         
         # --- STAGE 1: Sequence Preparation ---
-        s_feat = self.style_proj(style_vec).unsqueeze(1) # (B, 1, D)
+        s_feat = self.style_proj(style_seq) # (B, S_len, D)
         c_feat = self.content_proj(content_seq) # (B, L, D)
         
         # Dual-Prompting: Style acts as prefix (forward scan) AND suffix (backward scan)
-        combined = torch.cat([s_feat, c_feat, s_feat], dim=1) # (B, 1+L+1, D)
+        combined = torch.cat([s_feat, c_feat, s_feat], dim=1) # (B, S_len+L+S_len, D)
         
         # --- STAGE 2: 1D Dual-Context Fusion ---
         fused = self.mamba(combined)
         
         # --- STAGE 3: Extract Refined Content ---
-        content_refined = fused[:, 1:-1, :] # Discard the prefix and suffix
+        content_refined = fused[:, S_len:-S_len, :] # Discard the prefix and suffix
         content_final = self.norm(content_refined + content_seq)
         
         # --- STAGE 4: Style Modulation ---
+        style_vec = style_seq.sum(dim=1) / style_seq.size(1) # (B, style_dim)
         mod_params = self.style_mod(style_vec).unsqueeze(1) # (B, 1, D*2)
         scale, shift = mod_params.chunk(2, dim=-1)
         
@@ -66,5 +68,5 @@ class MixMamba(nn.Module):
         super().__init__()
         self.fusion = StyleContentMamba(d_model, style_dim)
         
-    def forward(self, content_seq, style_vec):
-        return self.fusion(content_seq, style_vec)
+    def forward(self, content_seq, style_seq):
+        return self.fusion(content_seq, style_seq)

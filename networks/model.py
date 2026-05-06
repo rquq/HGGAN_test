@@ -268,7 +268,7 @@ class AdversarialModel(BaseModel):
                     if style_guided:
                         enc_z = self.models.E(style_imgs.to(device), style_img_lens.to(device), self.models.B)
                     else:
-                        enc_z = torch.randn(style_lb_lens.size(0), self.models.G.style_dim).to(device)
+                        enc_z = torch.randn(style_lb_lens.size(0), 32, self.models.G.style_dim).to(device)
 
                     fake_batch['style_imgs'] = self.models.G(enc_z, content_lbs, content_lb_lens)
                     fake_batch['style_img_lens'] = fake_batch['lb_lens'] * self.opt.char_width
@@ -444,7 +444,7 @@ class AdversarialModel(BaseModel):
 
                 # style0 = torch.zeros((1, self.opt.GenModel.style_dim)) + 1e-1
                 # style1 = torch.ones_like(style0) - 1e-1
-                style0 = torch.randn((1, self.opt.EncModel.style_dim))
+                style0 = torch.randn((1, 32, self.opt.EncModel.style_dim))
                 style1 = torch.randn(style0.size())
 
                 styles = [torch.lerp(style0, style1, i / (interp_num - 1)) for i in range(interp_num)]

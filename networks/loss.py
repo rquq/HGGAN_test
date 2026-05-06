@@ -57,7 +57,11 @@ def gram_matrix(feat):
 
 
 def KLloss(mu, logvar):
-    return torch.mean(-0.5 * torch.sum(1 + logvar - mu ** 2 - logvar.exp(), dim=1), dim=0)
+    # Handle both 2D [B, D] and 3D [B, L, D] cases
+    loss = -0.5 * (1 + logvar - mu ** 2 - logvar.exp())
+    # Sum over all dimensions except batch, then mean over batch
+    loss = loss.view(loss.size(0), -1).sum(dim=1)
+    return torch.mean(loss)
 
 
 ##############################################################################

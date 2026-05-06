@@ -81,7 +81,7 @@ test:
 
 # network configuration
 GenModel:
-  G_ch: 64
+  G_ch: 32
   style_dim: 32
   bottom_width: 4
   bottom_height: 4

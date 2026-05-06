@@ -62,8 +62,8 @@ class Distribution(torch.Tensor):
         return new_obj
 
 # Convenience function to prepare a z vector
-def prepare_z_dist(G_batch_size, dim_z, device='cuda', seed=0):
-    z_ = Distribution(torch.randn(G_batch_size, dim_z, requires_grad=False))
+def prepare_z_dist(G_batch_size, dim_z, device='cuda', seed=0, num_tokens=32):
+    z_ = Distribution(torch.randn(G_batch_size, num_tokens, dim_z, requires_grad=False))
     z_.init_distribution('normal', mean=0, var=1.0, seed=seed)
     z_ = z_.to(device)
     return z_

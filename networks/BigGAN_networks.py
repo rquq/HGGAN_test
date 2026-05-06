@@ -159,9 +159,10 @@ class Generator(nn.Module):
     # interpolation later. If we passed in the one-hot and then ran it through
     # G.shared in this forward function, it would be harder to handle.
     def forward(self, z, y, y_lens):
-        # If hierarchical, concatenate zs and ys
-        #if self.hier:
-        ys = self.style_linear(z).split(32, dim=1)
+        # z is now a sequence of shape (B, 32, style_dim)
+        # 1. Disentangle Structure vs Texture: Mean pool the style sequence for AdaIN blocks
+        z_global = z.sum(dim=1) / z.size(1)
+        ys = self.style_linear(z_global).split(32, dim=1)
 
         # This is the change we made to the Big-GAN generator architecture.
         # The input goes into classes go into the first layer only.
