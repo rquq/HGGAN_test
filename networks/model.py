@@ -89,10 +89,7 @@ class BaseModel(object):
             modules = [modules]
 
         print('load checkpoint from ', ckpt)
-        if map_location is None:
-            ckpt = torch.load(ckpt)
-        else:
-            ckpt = torch.load(ckpt, map_location=map_location)
+        ckpt = torch.load(ckpt, map_location='cpu')
 
         if ckpt is None:
             return
@@ -110,8 +107,12 @@ class BaseModel(object):
             except Exception as e:
                 print('Load %s failed'%('OPT.' + key))
 
-        ckpt['Epoch'] = 0 if 'Epoch' not in ckpt else ckpt['Epoch']
-        return ckpt['Epoch']
+        epoch = 0 if 'Epoch' not in ckpt else ckpt['Epoch']
+        del ckpt
+        import gc
+        gc.collect()
+        torch.cuda.empty_cache()
+        return epoch
 
     def set_mode(self, mode='eval'):
         for model in self.models.values():
@@ -211,7 +212,7 @@ class AdversarialModel(BaseModel):
             fake_imgs = F.pad(fake_imgs, [0, max_img_len - fake_imgs.size(-1), 0, 0], value=-1.)
             recn_imgs = F.pad(recn_imgs, [0, max_img_len - recn_imgs.size(-1), 0, 0], value=-1.) \
                         if recn_imgs is not None else None
-            style_imgs = F.pad(style_imgs, [0, max_img_len - recn_imgs.size(-1), 0, 0], value=-1.)
+            style_imgs = F.pad(style_imgs, [0, max_img_len - style_imgs.size(-1), 0, 0], value=-1.)
 
             real_words = self.label_converter.decode(real_lbs, real_lb_lens)
             real_labels = words_to_images(real_words, *img_shape)
@@ -691,13 +692,13 @@ class GlobalLocalAdversarialModel(AdversarialModel):
             torch.cuda.empty_cache()
         else:
             if os.path.exists(self.opt.training.pretrained_w):
-                w_dict = torch.load(self.opt.training.pretrained_w, map_location=self.device)
+                w_dict = torch.load(self.opt.training.pretrained_w, map_location='cpu')
                 self.models.W.load_state_dict(w_dict['WriterIdentifier'], strict=False)
                 self.models.B.load_state_dict(w_dict['StyleBackbone'], strict=False)
                 print('load pretrained writer_identifier: ', self.opt.training.pretrained_w)
                 # self.validate_wid()
             if os.path.exists(self.opt.training.pretrained_r):
-                r_dict = torch.load(self.opt.training.pretrained_r, map_location=self.device)['Recognizer']
+                r_dict = torch.load(self.opt.training.pretrained_r, map_location='cpu')['Recognizer']
                 self.models.R.load_state_dict(r_dict, strict=False)
                 print('load pretrained recognizer: ', self.opt.training.pretrained_r)
                 # self.validate_ocr()
