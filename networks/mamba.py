@@ -2,34 +2,47 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import math
-from .utils import _len2mask
 
-# --- JIT Optimized Scan Functions ---
-# --- Optimized JIT Scan Functions ---
-@torch.jit.script
-def selective_scan_fwd(x_conv, deltaA, deltaB_u, C_proj):
-    B, L, D_inner, D_state = deltaA.shape
-    h = torch.zeros((B, D_inner, D_state), device=x_conv.device, dtype=x_conv.dtype)
-    y = torch.empty((B, L, D_inner), device=x_conv.device, dtype=x_conv.dtype)
+# --- Numerically Stable Associative Scan for T4 Optimization ---
+def associative_scan_mamba(dA, dB):
+    """
+    Stable associative scan for h_i = a_i * h_{i-1} + b_i
+    dA: (B, L, D, N) - a_i values (in 0-1)
+    dB: (B, L, D, N) - b_i values
+    Returns: h (B, L, D, N)
+    """
+    B, L, D, N = dA.shape
     
-    # Pre-calculate projected C for the whole sequence to minimize operations in loop
-    # B, L, D_inner, D_state * B, L, 1, D_state -> B, L, D_inner, D_state
-    for i in range(L):
-        h = deltaA[:, i] * h + deltaB_u[:, i]
-        # Vectorized dot product over the state dimension
-        y[:, i] = torch.sum(h * C_proj[:, i].unsqueeze(1), dim=-1)
-    return y
-
-@torch.jit.script
-def selective_scan_bwd(x_conv, deltaA, deltaB_u, C_proj):
-    B, L, D_inner, D_state = deltaA.shape
-    h = torch.zeros((B, D_inner, D_state), device=x_conv.device, dtype=x_conv.dtype)
-    y = torch.empty((B, L, D_inner), device=x_conv.device, dtype=x_conv.dtype)
+    # We use a simple but effective recursive doubling (all-prefix-sums)
+    # for associative operator (a2, b2) o (a1, b1) = (a2*a1, a2*b1 + b2)
     
-    for i in range(L - 1, -1, -1):
-        h = deltaA[:, i] * h + deltaB_u[:, i]
-        y[:, i] = torch.sum(h * C_proj[:, i].unsqueeze(1), dim=-1)
-    return y
+    curr_a = dA
+    curr_b = dB
+    
+    # Recursive doubling (Log L steps)
+    res_a = dA
+    res_b = dB
+    
+    step = 1
+    while step < L:
+        # Shifted versions
+        a_left = res_a[:, :-step]
+        b_left = res_b[:, :-step]
+        
+        a_right = res_a[:, step:]
+        b_right = res_b[:, step:]
+        
+        # Combine: (a_r, b_r) o (a_l, b_l) = (a_r * a_l, a_r * b_l + b_r)
+        new_a = a_right * a_left
+        new_b = a_right * b_left + b_right
+        
+        # Non-inplace update to preserve gradient tracking
+        res_a = torch.cat([res_a[:, :step], new_a], dim=1)
+        res_b = torch.cat([res_b[:, :step], new_b], dim=1)
+        
+        step *= 2
+        
+    return res_b
 
 class RMSNorm(nn.Module):
     def __init__(self, d_model: int, eps: float = 1e-5):
@@ -57,18 +70,23 @@ class MambaBlock(nn.Module):
 
         self.in_proj = make_linear(d_model, self.d_inner * 2, bias=False)
         self.conv1d = nn.Conv1d(in_channels=self.d_inner, out_channels=self.d_inner, bias=True, kernel_size=d_conv, groups=self.d_inner, padding=d_conv - 1)
-        self.x_proj = make_linear(self.d_inner, self.d_state * 2 + 1, bias=False)
+        
+        self.x_proj = make_linear(self.d_inner, 1 + self.d_state * 2, bias=False)
         self.dt_proj = make_linear(1, self.d_inner, bias=True)
+        
         A = torch.arange(1, self.d_state + 1).repeat(self.d_inner, 1).float()
         self.A_log = nn.Parameter(torch.log(A))
         self.D = nn.Parameter(torch.ones(self.d_inner))
+        
         self.out_proj = make_linear(self.d_inner, d_model, bias=False)
         self.norm = RMSNorm(self.d_inner)
+        
         if self.bidirectional:
-            self.x_proj_b = make_linear(self.d_inner, self.d_state * 2 + 1, bias=False)
+            self.x_proj_b = make_linear(self.d_inner, 1 + self.d_state * 2, bias=False)
             self.dt_proj_b = make_linear(1, self.d_inner, bias=True)
             self.A_log_b = nn.Parameter(torch.log(A))
             self.D_b = nn.Parameter(torch.ones(self.d_inner))
+            
         self._custom_init()
 
     def _custom_init(self):
@@ -80,39 +98,53 @@ class MambaBlock(nn.Module):
             with torch.no_grad(): dt_proj.bias.copy_(inv_dt)
             dt_proj.weight.data.fill_(0.1)
 
-    def _prepare_scan(self, x_conv, dt_proj, x_proj, A_log):
+    def _core_scan(self, x_conv, dt_proj, x_proj, A_log, D, reverse=False):
+        if reverse:
+            x_conv = torch.flip(x_conv, [1])
+            
         proj = x_proj(x_conv)
-        delta, B_proj, C_proj = torch.split(proj, [1, self.d_state, self.d_state], dim=-1)
-        delta = F.softplus(dt_proj(delta))
-        A = -torch.exp(A_log.float())
-        deltaA = torch.exp(delta.unsqueeze(-1) * A)
-        deltaB_u = delta.unsqueeze(-1) * B_proj.unsqueeze(2) * x_conv.unsqueeze(-1)
-        return deltaA, deltaB_u, C_proj
-
-    def _scan_step(self, x_conv, dt_proj, x_proj, A_log, D, reverse=False):
-        dA, dB, C = self._prepare_scan(x_conv, dt_proj, x_proj, A_log)
-        y = selective_scan_bwd(x_conv, dA, dB, C) if reverse else selective_scan_fwd(x_conv, dA, dB, C)
-        return y + x_conv * D
+        delta, B, C = torch.split(proj, [1, self.d_state, self.d_state], dim=-1)
+        
+        delta = F.softplus(dt_proj(delta)) 
+        A = -torch.exp(A_log.float()) 
+        
+        dA = torch.exp(delta.unsqueeze(-1) * A) 
+        dB = delta.unsqueeze(-1) * B.unsqueeze(2) * x_conv.unsqueeze(-1) 
+        
+        h = associative_scan_mamba(dA, dB)
+        y = torch.sum(h * C.unsqueeze(2), dim=-1)
+        
+        y = y + x_conv * D
+        
+        if reverse:
+            y = torch.flip(y, [1])
+        return y
 
     def forward(self, x):
         L = x.shape[1]
         xz = self.in_proj(x)
         x_in, z = xz.chunk(2, dim=-1)
+        
         x_conv = self.conv1d(x_in.transpose(1, 2))[:, :, :L].transpose(1, 2)
         x_conv = F.silu(x_conv)
-        y = self._scan_step(x_conv, self.dt_proj, self.x_proj, self.A_log, self.D)
+        
+        y = self._core_scan(x_conv, self.dt_proj, self.x_proj, self.A_log, self.D)
+        
         if self.bidirectional:
-            y_b = self._scan_step(x_conv, self.dt_proj_b, self.x_proj_b, self.A_log_b, self.D_b, reverse=True)
+            y_b = self._core_scan(x_conv, self.dt_proj_b, self.x_proj_b, self.A_log_b, self.D_b, reverse=True)
             y = (y + y_b) * 0.5
+            
         return self.out_proj(self.norm(y) * F.silu(z))
 
 class Mamba2DBlock(nn.Module):
+    """
+    Optimized 2D Mamba block for T4 using Cross-Scan logic.
+    """
     def __init__(self, d_model, d_state=16, d_conv=4, expand=2, use_sn=False):
         super().__init__()
+        self.d_model = d_model
         self.mamba = MambaBlock(d_model, d_state=d_state, d_conv=d_conv, expand=expand, bidirectional=False, use_sn=use_sn)
-        self.mamba_v = MambaBlock(d_model, d_state=d_state, d_conv=d_conv, expand=expand, bidirectional=False, use_sn=use_sn)
         
-        # Gated fusion to learn how to weigh horizontal vs vertical features per pixel
         self.gate = nn.Sequential(
             nn.Linear(d_model, d_model * 2),
             nn.Sigmoid()
@@ -123,34 +155,37 @@ class Mamba2DBlock(nn.Module):
         B, L, C = x.shape
         xz = self.mamba.in_proj(x)
         x_in, z = xz.chunk(2, dim=-1)
-        x_conv_base = self.mamba.conv1d(x_in.transpose(1, 2))[:, :, :L].transpose(1, 2)
-        x_conv_base = F.silu(x_conv_base)
-
-        # Horizontal
-        y_h_fwd = self.mamba._scan_step(x_conv_base, self.mamba.dt_proj, self.mamba.x_proj, self.mamba.A_log, self.mamba.D, reverse=False)
-        y_h_bwd = self.mamba._scan_step(x_conv_base, self.mamba.dt_proj, self.mamba.x_proj, self.mamba.A_log, self.mamba.D, reverse=True)
-        y_h = (y_h_fwd + y_h_bwd) * 0.5
-
-        # Vertical
-        x_conv_v = x_conv_base.view(B, H, W, -1).transpose(1, 2).reshape(B, L, -1)
-        y_v_fwd = self.mamba_v._scan_step(x_conv_v, self.mamba_v.dt_proj, self.mamba_v.x_proj, self.mamba_v.A_log, self.mamba_v.D, reverse=False)
-        y_v_bwd = self.mamba_v._scan_step(x_conv_v, self.mamba_v.dt_proj, self.mamba_v.x_proj, self.mamba_v.A_log, self.mamba_v.D, reverse=True)
-        y_v = (y_v_fwd + y_v_bwd).view(B, W, H, -1).transpose(1, 2).reshape(B, L, -1) * 0.5
-
-        # Gated interaction between Horizontal and Vertical scans
-        # This allows the model to prioritize the word flow (H) or stroke geometry (V) dynamically
+        
+        x_conv = self.mamba.conv1d(x_in.transpose(1, 2))[:, :, :L].transpose(1, 2)
+        x_conv = F.silu(x_conv) 
+        
+        # Cross-Scan Strategy: H-fwd, V-fwd, H-bwd, V-bwd
+        # 1. Horizontal
+        yh_f = self.mamba._core_scan(x_conv, self.mamba.dt_proj, self.mamba.x_proj, self.mamba.A_log, self.mamba.D, reverse=False)
+        yh_b = self.mamba._core_scan(x_conv, self.mamba.dt_proj, self.mamba.x_proj, self.mamba.A_log, self.mamba.D, reverse=True)
+        y_h = (yh_f + yh_b) * 0.5
+        
+        # 2. Vertical (Transposed Scan)
+        x_v = x_conv.view(B, H, W, -1).transpose(1, 2).reshape(B, L, -1)
+        yv_f = self.mamba._core_scan(x_v, self.mamba.dt_proj, self.mamba.x_proj, self.mamba.A_log, self.mamba.D, reverse=False)
+        yv_b = self.mamba._core_scan(x_v, self.mamba.dt_proj, self.mamba.x_proj, self.mamba.A_log, self.mamba.D, reverse=True)
+        # Merge back to original spatial order
+        y_v = yv_f.view(B, W, H, -1).transpose(1, 2).reshape(B, L, -1)
+        y_v_b = yv_b.view(B, W, H, -1).transpose(1, 2).reshape(B, L, -1)
+        y_v = (y_v + y_v_b) * 0.5
+        
+        # Gated fusion
         gates = self.gate(x)
-        gate_h, gate_v = gates.chunk(2, dim=-1)
-        y_fused = (y_h * gate_h + y_v * gate_v)
-
+        gh, gv = gates.chunk(2, dim=-1)
+        y_fused = y_h * gh + y_v * gv
+        
         out = self.mamba.norm(y_fused) * F.silu(z)
         return self.proj(out)
 
 class MambaAttention(nn.Module):
     def __init__(self, in_dim, which_conv=None):
-        super(MambaAttention, self).__init__()
+        super().__init__()
         use_sn = (which_conv is not None and 'SN' in which_conv.__name__)
-        # UPGRADE: Using the 2D Vision Mamba block for spatial modeling
         self.mamba = Mamba2DBlock(in_dim, d_state=16, expand=1, use_sn=use_sn)
         self.gamma = nn.Parameter(torch.zeros(1))
         
@@ -159,10 +194,8 @@ class MambaAttention(nn.Module):
         if dims == 3:
             x = x.unsqueeze(-1)
         B, C, W, H = x.size()
-        # Flatten for 2D Mamba interaction
         x_flat = x.permute(0, 2, 3, 1).reshape(B, W * H, C)
         out_flat = self.mamba(x_flat, W, H)
-        # Reshape back to original dimensions
         out = out_flat.view(B, W, H, C).permute(0, 3, 1, 2)
         out = self.gamma * out + x
         if dims == 3:
