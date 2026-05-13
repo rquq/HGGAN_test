@@ -307,10 +307,23 @@ class AdversarialModel(BaseModel):
                                              style_guided, n_rand_repeat)
             return generator
 
+        # Precompute or use cached real statistics for the validation set
+        if not hasattr(self, 'valid_real_stats') or self.valid_real_stats is None:
+            from metric.fid_kid_is import calculate_activation_statistics, InceptionV3
+            print("Precalculating validation set statistics...")
+            block_idx = InceptionV3.BLOCK_INDEX_BY_DIM[2048]
+            if not hasattr(self, 'inception_model') or self.inception_model is None:
+                self.inception_model = InceptionV3([block_idx]).to(self.device).eval()
+            self.valid_real_stats = calculate_activation_statistics(eval_dloader, len(eval_dloader), 
+                                                                   self.inception_model, self.opt.valid.dims, 
+                                                                   self.device, crop=not test_stage)
+
         if test_stage:
-            res = calculate_fid_kid_is(self.opt.valid, eval_dloader, get_generator(), n_rand_repeat, self.device)
+            res = calculate_fid_kid_is(self.opt.valid, eval_dloader, get_generator(), n_rand_repeat, 
+                                     self.device, real_stats=self.valid_real_stats, inceptionV3_model=self.inception_model)
         else:
-            res = calculate_fid_kid_is(self.opt.valid, eval_dloader, get_generator(), n_rand_repeat, self.device, crop=True)
+            res = calculate_fid_kid_is(self.opt.valid, eval_dloader, get_generator(), n_rand_repeat, 
+                                     self.device, crop=True, real_stats=self.valid_real_stats, inceptionV3_model=self.inception_model)
 
         if test_stage:
             if not self.opt.valid.use_rand_corpus:
@@ -755,12 +768,26 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                     cat_fake_img_lens = cat_fake_lb_lens * self.opt.char_width
 
                 ### Compute discriminative loss for real & fake samples ###
-                fake_disc = self.models.D(cat_fake_imgs.detach(), cat_fake_img_lens, cat_fake_lb_lens)
-                fake_disc_loss = torch.mean(F.relu(1.0 + fake_disc))
+                # Refactored to avoid torch.cat and save memory
+                fake_img_lens = fake_lb_lens * self.opt.char_width
+                style_img_lens = fake_lb_lens * self.opt.char_width
+                recn_img_lens = real_lb_lens * self.opt.char_width
+                
+                # Forward each generated type separately to avoid duplication
+                d_fake = self.models.D(fake_imgs.detach(), fake_img_lens, fake_lb_lens)
+                d_style = self.models.D(style_imgs.detach(), style_img_lens, fake_lb_lens)
+                d_recn = self.models.D(recn_imgs.detach(), recn_img_lens, real_lb_lens)
+                fake_disc_loss = (torch.mean(F.relu(1.0 + d_fake)) + 
+                                  torch.mean(F.relu(1.0 + d_style)) + 
+                                  torch.mean(F.relu(1.0 + d_recn))) / 3
 
-                fake_img_patches = extract_all_patches(cat_fake_imgs, cat_fake_img_lens)
-                fake_disc_patches = self.models.P(fake_img_patches.detach())
-                fake_disc_loss_patch = torch.mean(F.relu(1.0 + fake_disc_patches))
+                # Patch Discriminator forwards
+                p_fake = self.models.P(extract_all_patches(fake_imgs, fake_img_lens).detach())
+                p_style = self.models.P(extract_all_patches(style_imgs, style_img_lens).detach())
+                p_recn = self.models.P(extract_all_patches(recn_imgs, recn_img_lens).detach())
+                fake_disc_loss_patch = (torch.mean(F.relu(1.0 + p_fake)) + 
+                                        torch.mean(F.relu(1.0 + p_style)) + 
+                                        torch.mean(F.relu(1.0 + p_recn))) / 3
 
                 # real_imgs.requires_grad_()
                 real_disc = self.models.D(real_imgs, real_img_lens, real_lb_lens)
@@ -822,16 +849,20 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                     ####################################################
                     ### deal with fake samples ###
                     ### Compute Adversarial loss ###
-                    cat_fake_imgs = torch.cat([fake_imgs, style_imgs, recn_imgs], dim=0)
-                    cat_fake_lb_lens = torch.cat([fake_lb_lens, fake_lb_lens, real_lb_lens], dim=0)
-                    cat_fake_disc = self.models.D(cat_fake_imgs,
-                                                  cat_fake_lb_lens * self.opt.char_width,
-                                                  cat_fake_lb_lens)
-                    adv_loss = -torch.mean(cat_fake_disc)
+                    # Refactored to avoid torch.cat and save memory
+                    fake_img_lens = fake_lb_lens * self.opt.char_width
+                    style_img_lens = fake_lb_lens * self.opt.char_width
+                    recn_img_lens = real_lb_lens * self.opt.char_width
 
-                    fake_img_patches = extract_all_patches(cat_fake_imgs, cat_fake_lb_lens * self.opt.char_width)
-                    fake_disc_patches = self.models.P(fake_img_patches)
-                    adv_loss_patch = -torch.mean(fake_disc_patches)
+                    d_fake = self.models.D(fake_imgs, fake_img_lens, fake_lb_lens)
+                    d_style = self.models.D(style_imgs, style_img_lens, fake_lb_lens)
+                    d_recn = self.models.D(recn_imgs, recn_img_lens, real_lb_lens)
+                    adv_loss = -(torch.mean(d_fake) + torch.mean(d_style) + torch.mean(d_recn)) / 3
+
+                    p_fake = self.models.P(extract_all_patches(fake_imgs, fake_img_lens))
+                    p_style = self.models.P(extract_all_patches(style_imgs, style_img_lens))
+                    p_recn = self.models.P(extract_all_patches(recn_imgs, recn_img_lens))
+                    adv_loss_patch = -(torch.mean(p_fake) + torch.mean(p_style) + torch.mean(p_recn)) / 3
 
                     ### CTC Auxiliary loss ###
                     # self.models.R.frozen_bn()
@@ -881,14 +912,13 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                         # ctx_loss for recn_imgs
                         ctx_loss += self.contextual_loss(real_img_feat, fake_feat[1])
 
-                    ### KL-Divergency loss ###
                     kl_loss = KLloss(mu, logvar) if self.vae_mode else torch.FloatTensor([0.]).to(self.device)
 
-                    grad_fake_adv = torch.autograd.grad(adv_loss, cat_fake_imgs, create_graph=True, retain_graph=True)[0]
-                    grad_fake_OCR = torch.autograd.grad(fake_ctc_loss_rand, fake_ctc_rand, create_graph=True, retain_graph=True)[0]
-                    grad_fake_info = torch.autograd.grad(info_loss, fake_imgs, create_graph=True, retain_graph=True)[0]
-                    grad_fake_wid = torch.autograd.grad(fake_wid_loss, recn_wid_logits, create_graph=True, retain_graph=True)[0]
-                    grad_fake_recn = torch.autograd.grad(recn_loss, enc_z, create_graph=True, retain_graph=True)[0]
+                    grad_fake_adv = torch.autograd.grad(adv_loss, fake_imgs, create_graph=False, retain_graph=True)[0]
+                    grad_fake_OCR = torch.autograd.grad(fake_ctc_loss_rand, fake_ctc_rand, create_graph=False, retain_graph=True)[0]
+                    grad_fake_info = torch.autograd.grad(info_loss, fake_imgs, create_graph=False, retain_graph=True)[0]
+                    grad_fake_wid = torch.autograd.grad(fake_wid_loss, recn_wid_logits, create_graph=False, retain_graph=True)[0]
+                    grad_fake_recn = torch.autograd.grad(recn_loss, enc_z, create_graph=False, retain_graph=True)[0]
 
                     std_grad_adv = torch.std(grad_fake_adv)
                     gp_ctc = torch.div(std_grad_adv, torch.std(grad_fake_OCR) + 1e-8).detach() + 1
@@ -964,6 +994,12 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                                 self.writer.add_image('attention/%d' % i_, heatmap.transpose((2, 0, 1)))
 
                         import wandb as _wandb
+                        if iter_count % (self.opt.training.print_iter_val * 5) == 0:
+                            # Log generated images every few logging steps
+                            from lib.utils import denormalize
+                            res_img = denormalize(fake_imgs[0]).permute(1, 2, 0).cpu().numpy()
+                            wandb_log['samples/generated'] = _wandb.Image(res_img, caption=f'iter {iter_count+1}')
+                        
                         _wandb.log(wandb_log, step=iter_count + 1)
 
                 if (iter_count + 1) % self.opt.training.sample_iter_val == 0:
