@@ -302,21 +302,28 @@ def calculate_inception_score(logits, splits=1):
     return np.mean(split_scores)
 
 
-def calculate_fid_kid_is(cfg, data_loader, generator, n_rand_repeat, device, crop=False):
+def calculate_fid_kid_is(cfg, data_loader, generator, n_rand_repeat, device, crop=False, real_stats=None, n_batches=None, inceptionV3_model=None):
     '''
     ATTENTION: the backgroud value of input images must be -1, and the foreground values should be less than 1.
+    real_stats: tuple of (act1, m1, s1, logits1)
     '''
-    block_idx = InceptionV3.BLOCK_INDEX_BY_DIM[2048]
+    if inceptionV3_model is None:
+        block_idx = InceptionV3.BLOCK_INDEX_BY_DIM[2048]
+        inceptionV3_model = InceptionV3([block_idx])
+        inceptionV3_model.to(device)
+        inceptionV3_model.eval()
 
-    inceptionV3_model = InceptionV3([block_idx])
-    inceptionV3_model.to(device)
-    inceptionV3_model.eval()
-
-    n_batches = len(data_loader)
+    if n_batches is None:
+        n_batches = len(data_loader)
+    
     with torch.no_grad():
+
         act2, m2, s2, logits2 = calculate_activation_statistics(generator, n_batches * n_rand_repeat, inceptionV3_model,
                                                                 cfg.dims, device, crop)
-        act1, m1, s1, logits1 = calculate_activation_statistics(data_loader, n_batches, inceptionV3_model, cfg.dims, device, crop)
+        if real_stats is None:
+            act1, m1, s1, logits1 = calculate_activation_statistics(data_loader, n_batches, inceptionV3_model, cfg.dims, device, crop)
+        else:
+            act1, m1, s1, logits1 = real_stats
 
     fid_value = calculate_frechet_distance(m1, s1, m2, s2)
 

@@ -12,8 +12,8 @@ training:
   lr_policy: 'linear'
   start_decay_epoch: 25
   n_epochs_decay: 46
-  batch_size: 6
-  eval_batch_size: 6
+  batch_size: 4
+  eval_batch_size: 4
   sample_nrow: 3
   # optimization:
   lr: 2.0e-4
@@ -22,8 +22,10 @@ training:
   # sampling and saving
   sample_iter_val: 200
   print_iter_val: 20
-  start_save_epoch_val: 20
-  save_epoch_val: 2
+  start_save_epoch_val: 0
+  eval_epoch_val: 1
+  save_epoch_val: 1
+  # val_iter: 6500
   sample_dir: 'imgs'
   ckpt_dir: 'ckpts'
   lexicon: './data/english_words.txt'

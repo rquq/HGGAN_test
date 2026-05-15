@@ -330,21 +330,26 @@ class AdversarialModel(BaseModel):
                 psnr_mssim = calculate_mssim_psnr(eval_dloader, get_generator())
                 res['psnr'] = psnr_mssim['psnr']
                 res['mssim'] = psnr_mssim['mssim']
-            res['cer'], res['wer'] = self.validate_ocr(get_generator(), n_iters=len(eval_dloader) * n_rand_repeat)
             if style_guided:
                 wier = self.validate_wid(get_generator(), real_dloader=eval_dloader, split=self.opt.valid.dset_split)
                 res['wier'] = wier
 
+        if getattr(self.opt.valid, 'validate_ocr', True):
+            res['cer'], res['wer'] = self.validate_ocr(get_generator(), n_iters=len(eval_dloader) * n_rand_repeat)
+
+        torch.cuda.empty_cache()
         return res
 
     def validate_ocr(self, dloader, n_iters):
         self.set_mode('eval')
-        recognizer = Recognizer(**self.opt.OcrModel).to(self.device)
-        r_dict = torch.load(self.opt.training.pretrained_r)['Recognizer']
-        recognizer.load_state_dict(r_dict, self.device)
-        recognizer.eval()
-        print('load pretrained recognizer: ', self.opt.training.pretrained_r)
-        ctc_len_scale = self.models.R.len_scale
+        # Use the already loaded recognizer from self.models instead of creating a new one
+        # to avoid redundant memory allocation and potential OOM.
+        if self.local_rank > -1:
+            recognizer = self.models.R.module
+        else:
+            recognizer = self.models.R
+        
+        ctc_len_scale = recognizer.len_scale
         char_trans = 0
         total_chars = 0
         word_trans = 0
@@ -380,11 +385,11 @@ class AdversarialModel(BaseModel):
     def validate_wid(self, generator, real_dloader, split='test'):
         if split == 'test':
             assert os.path.exists(self.opt.valid.pretrained_test_w)
-            w_dict = torch.load(self.opt.valid.pretrained_test_w, self.device)
+            w_dict = torch.load(self.opt.valid.pretrained_test_w, map_location=self.device)
             test_writer = WriterIdentifier(**self.opt.valid.test_wid_model).to(self.device)
-            test_writer.load_state_dict(w_dict['WriterIdentifier'])
+            test_writer.load_state_dict(w_dict['WriterIdentifier'], strict=False)
             test_writer_backbone = StyleBackbone(**self.opt.StyBackbone).to(self.device)
-            test_writer_backbone.load_state_dict(w_dict['StyleBackbone'])
+            test_writer_backbone.load_state_dict(w_dict['StyleBackbone'], strict=False)
             writer_identifier = test_writer
             writer_backbone = test_writer_backbone
             print('load pretrained test_writer_identifier: ', self.opt.valid.pretrained_test_w)
@@ -392,9 +397,9 @@ class AdversarialModel(BaseModel):
             writer_identifier = WriterIdentifier(**self.opt.WidModel).to(self.device)
             writer_backbone = StyleBackbone(**self.opt.StyBackbone).to(self.device)
             print('load pretrained writer_identifier: ', self.opt.training.pretrained_w)
-            w_dict = torch.load(self.opt.training.pretrained_w, self.device)
-            writer_identifier.load_state_dict(w_dict['WriterIdentifier'])
-            writer_backbone.load_state_dict(w_dict['StyleBackbone'])
+            w_dict = torch.load(self.opt.training.pretrained_w, map_location=self.device)
+            writer_identifier.load_state_dict(w_dict['WriterIdentifier'], strict=False)
+            writer_backbone.load_state_dict(w_dict['StyleBackbone'], strict=False)
 
         writer_identifier.eval(), writer_backbone.eval()
         with torch.no_grad():
@@ -442,7 +447,7 @@ class AdversarialModel(BaseModel):
 
                 # style0 = torch.zeros((1, self.opt.GenModel.style_dim)) + 1e-1
                 # style1 = torch.ones_like(style0) - 1e-1
-                style0 = torch.randn((1, self.opt.EncModel.style_dim))
+                style0 = torch.randn((1, 32, self.opt.EncModel.style_dim))
                 style1 = torch.randn(style0.size())
 
                 styles = [torch.lerp(style0, style1, i / (interp_num - 1)) for i in range(interp_num)]
@@ -648,7 +653,7 @@ class GlobalLocalAdversarialModel(AdversarialModel):
         _is_master = self.local_rank < 1
         if _is_master:
             import wandb as _wandb
-            _wandb.login(key='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')
+            _wandb.login(key='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')
             _wandb.init(
                 project='HiGANplus',
                 name=os.path.basename(self.log_root) if self.log_root else 'run',
@@ -681,8 +686,8 @@ class GlobalLocalAdversarialModel(AdversarialModel):
 
         epoch_done = 1
         if os.path.exists(self.opt.training.pretrained_ckpt):
-            epoch_done = self.load(self.opt.training.pretrained_ckpt, self.device)
-            self.validate(style_guided=True)
+            epoch_done = self.load(self.opt.training.pretrained_ckpt, self.device) + 1
+            # self.validate(style_guided=True)
         else:
             if os.path.exists(self.opt.training.pretrained_w):
                 w_dict = torch.load(self.opt.training.pretrained_w, self.device)
@@ -722,7 +727,11 @@ class GlobalLocalAdversarialModel(AdversarialModel):
             ctc_len_scale = self.models.R.len_scale
 
         best_fid = np.inf
-        iter_count = 0
+        iter_count = (epoch_done - 1) * len(self.train_loader)
+        
+        for scheduler in self.lr_schedulers.values():
+            scheduler.step(epoch_done - 1)
+
         for epoch in range(epoch_done, self.opt.training.epochs):
             for i, batch in enumerate(self.train_loader):
                 #############################
@@ -967,11 +976,6 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                     self.print(info) if self.local_rank < 1 else None
 
                     if _is_master:
-                        # TensorBoard
-                        if self.writer:
-                            for key, val in meter_vals.items():
-                                self.writer.add_scalar('loss/%s' % key, val, iter_count + 1)
-
                         # WandB losses
                         wandb_log = {('loss/' + k): v for k, v in meter_vals.items()}
                         wandb_log['train/iter'] = iter_count + 1
@@ -981,29 +985,18 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                         except Exception:
                             lr = self.lr_schedulers.G.get_lr()[0]
                         wandb_log['loss/lr'] = lr
-                        if self.writer:
-                            self.writer.add_scalar('loss/lr', lr, iter_count + 1)
 
                         G_unwrapped = getattr(self.models.G, 'module', self.models.G)
                         info_attns = G_unwrapped._info_attention()
                         for i_, attn_info in enumerate(info_attns):
                             wandb_log['loss/gamma%d' % i_] = attn_info['gamma']
-                            if self.writer:
-                                self.writer.add_scalar('loss/gamma%d' % i_, attn_info['gamma'], iter_count + 1)
-                                heatmap = plot_heatmap(attn_info['out'])
-                                self.writer.add_image('attention/%d' % i_, heatmap.transpose((2, 0, 1)))
 
                         import wandb as _wandb
-                        if iter_count % (self.opt.training.print_iter_val * 5) == 0:
-                            # Log generated images every few logging steps
-                            from lib.utils import denormalize
-                            res_img = denormalize(fake_imgs[0]).permute(1, 2, 0).cpu().numpy()
-                            wandb_log['samples/generated'] = _wandb.Image(res_img, caption=f'iter {iter_count+1}')
-                        
-                        _wandb.log(wandb_log, step=iter_count + 1)
+                        if _wandb.run:
+                            _wandb.log(wandb_log, step=iter_count + 1)
 
                 if (iter_count + 1) % self.opt.training.sample_iter_val == 0:
-                    if not (self.logger and self.writer):
+                    if not self.logger:
                         self.create_logger() if self.local_rank < 1 else None
 
                     sample_root = os.path.join(self.log_root, self.opt.training.sample_dir)
@@ -1011,35 +1004,48 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                         os.makedirs(sample_root) if self.local_rank < 1 else None
                     self.sample_images(iter_count + 1) if self.local_rank < 1 else None
 
+                eval_epoch_val = self.opt.training.get('eval_epoch_val', 0.5)
+                save_epoch_val = self.opt.training.get('save_epoch_val', 1.0)
+                
+                eval_interval_iters = max(1, int(eval_epoch_val * len(self.train_loader)))
+                save_interval_iters = max(1, int(save_epoch_val * len(self.train_loader)))
+                
+                is_eval_step = (iter_count + 1) % eval_interval_iters == 0
+                is_save_step = (iter_count + 1) % save_interval_iters == 0
+                
+                should_eval = is_eval_step and (not is_save_step or save_interval_iters == eval_interval_iters)
+                
+                if should_eval:
+                    self.print('Calculate FID_KID (iter {})'.format(iter_count + 1)) if self.local_rank < 1 else None
+                    scores = self.validate()
+                    if _is_master:
+                        import wandb as _wandb
+                        if _wandb.run:
+                            _wandb.log({'valid/' + k: v for k, v in scores.items()}, step=iter_count + 1)
+                    
+                    if 'fid' in scores and scores['fid'] < best_fid:
+                        best_fid = scores['fid']
+                        is_best = True
+                        best_scores = scores
+                
+                if is_save_step:
+                    ckpt_root = os.path.join(self.log_root, self.opt.training.ckpt_dir)
+                    if not os.path.exists(ckpt_root):
+                        os.makedirs(ckpt_root) if self.local_rank < 1 else None
+                    
+                    self.save('last', epoch)
+                    if is_best:
+                        self.save('best', epoch, **best_scores) if self.local_rank < 1 else None
+                        is_best = False
+
                 iter_count += 1
 
             if epoch:
-                ckpt_root = os.path.join(self.log_root, self.opt.training.ckpt_dir)
-                if not os.path.exists(ckpt_root):
-                    os.makedirs(ckpt_root)
-
-                self.save('last', epoch)
-                if epoch >= self.opt.training.start_save_epoch_val and \
-                        epoch % self.opt.training.save_epoch_val == 0:
-                    self.print('Calculate FID_KID') if self.local_rank < 1 else None
-                    scores = self.validate()
-
-                    if 'fid' in scores and scores['fid'] < best_fid:
-                        best_fid = scores['fid']
-                        self.save('best', epoch, **scores) if self.local_rank < 1 else None
-
-                    if _is_master:
-                        if self.writer:
-                            for key, val in scores.items():
-                                self.writer.add_scalar('valid/%s' % key, val, epoch)
-                        import wandb as _wandb
-                        _wandb.log({'valid/' + k: v for k, v in scores.items()}, step=iter_count + 1)
-
                 if self.local_rank > -1:
                     dist.barrier()
 
             for scheduler in self.lr_schedulers.values():
-                scheduler.step(epoch)
+                scheduler.step()
 
         if _is_master:
             import wandb as _wandb
@@ -1097,14 +1103,18 @@ class RecognizeModel(BaseModel):
 
         epoch_done = 1
         if self.opt.training.resume:
-            epoch_done = self.load(self.opt.training.resume)
+            epoch_done = self.load(self.opt.training.resume) + 1
             self.print(self.validate())
 
         device = self.device
         ctc_loss_meter = AverageMeter()
         ctc_len_scale = self.models.R.len_scale
         best_cer = np.inf
-        iter_count = 0
+        iter_count = (epoch_done - 1) * len(self.train_loader)
+
+        for scheduler in self.lr_schedulers.values():
+            scheduler.step(epoch_done - 1)
+
         for epoch in range(epoch_done, self.opt.training.epochs):
             for i, batch in enumerate(self.train_loader):
                 #############################
@@ -1276,13 +1286,17 @@ class WriterIdentifyModel(BaseModel):
 
         epoch_done = 1
         if self.opt.training.resume:
-            epoch_done = self.load(self.opt.training.resume)
+            epoch_done = self.load(self.opt.training.resume) + 1
             self.print(self.validate())
 
         device = self.device
         wid_loss_meter = AverageMeter()
         best_wrr = 0
-        iter_count = 0
+        iter_count = (epoch_done - 1) * len(self.train_loader)
+
+        for scheduler in self.lr_schedulers.values():
+            scheduler.step(epoch_done - 1)
+
         for epoch in range(epoch_done, self.opt.training.epochs):
             for i, batch in enumerate(self.train_loader):
                 #############################
