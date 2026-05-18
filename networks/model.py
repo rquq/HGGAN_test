@@ -781,12 +781,26 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                     cat_fake_img_lens = cat_fake_lb_lens * self.opt.char_width
 
                 ### Compute discriminative loss for real & fake samples ###
-                fake_disc = self.models.D(cat_fake_imgs.detach(), cat_fake_img_lens, cat_fake_lb_lens)
-                fake_disc_loss = torch.mean(F.relu(1.0 + fake_disc))
+                # Refactored to avoid torch.cat and save memory
+                fake_img_lens = fake_lb_lens * self.opt.char_width
+                style_img_lens = fake_lb_lens * self.opt.char_width
+                recn_img_lens = real_lb_lens * self.opt.char_width
+                
+                # Forward each generated type separately to avoid duplication
+                d_fake = self.models.D(fake_imgs.detach(), fake_img_lens, fake_lb_lens)
+                d_style = self.models.D(style_imgs.detach(), style_img_lens, fake_lb_lens)
+                d_recn = self.models.D(recn_imgs.detach(), recn_img_lens, real_lb_lens)
+                fake_disc_loss = (torch.mean(F.relu(1.0 + d_fake)) + 
+                                  torch.mean(F.relu(1.0 + d_style)) + 
+                                  torch.mean(F.relu(1.0 + d_recn))) / 3
 
-                fake_img_patches = extract_all_patches(cat_fake_imgs, cat_fake_img_lens)
-                fake_disc_patches = self.models.P(fake_img_patches.detach())
-                fake_disc_loss_patch = torch.mean(F.relu(1.0 + fake_disc_patches))
+                # Patch Discriminator forwards
+                p_fake = self.models.P(extract_all_patches(fake_imgs, fake_img_lens).detach())
+                p_style = self.models.P(extract_all_patches(style_imgs, style_img_lens).detach())
+                p_recn = self.models.P(extract_all_patches(recn_imgs, recn_img_lens).detach())
+                fake_disc_loss_patch = (torch.mean(F.relu(1.0 + p_fake)) + 
+                                        torch.mean(F.relu(1.0 + p_style)) + 
+                                        torch.mean(F.relu(1.0 + p_recn))) / 3
 
                 # real_imgs.requires_grad_()
                 real_disc = self.models.D(real_imgs, real_img_lens, real_lb_lens)
@@ -848,16 +862,20 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                     ####################################################
                     ### deal with fake samples ###
                     ### Compute Adversarial loss ###
-                    cat_fake_imgs = torch.cat([fake_imgs, style_imgs, recn_imgs], dim=0)
-                    cat_fake_lb_lens = torch.cat([fake_lb_lens, fake_lb_lens, real_lb_lens], dim=0)
-                    cat_fake_disc = self.models.D(cat_fake_imgs,
-                                                  cat_fake_lb_lens * self.opt.char_width,
-                                                  cat_fake_lb_lens)
-                    adv_loss = -torch.mean(cat_fake_disc)
+                    # Refactored to avoid torch.cat and save memory
+                    fake_img_lens = fake_lb_lens * self.opt.char_width
+                    style_img_lens = fake_lb_lens * self.opt.char_width
+                    recn_img_lens = real_lb_lens * self.opt.char_width
 
-                    fake_img_patches = extract_all_patches(cat_fake_imgs, cat_fake_lb_lens * self.opt.char_width)
-                    fake_disc_patches = self.models.P(fake_img_patches)
-                    adv_loss_patch = -torch.mean(fake_disc_patches)
+                    d_fake = self.models.D(fake_imgs, fake_img_lens, fake_lb_lens)
+                    d_style = self.models.D(style_imgs, style_img_lens, fake_lb_lens)
+                    d_recn = self.models.D(recn_imgs, recn_img_lens, real_lb_lens)
+                    adv_loss = -(torch.mean(d_fake) + torch.mean(d_style) + torch.mean(d_recn)) / 3
+
+                    p_fake = self.models.P(extract_all_patches(fake_imgs, fake_img_lens))
+                    p_style = self.models.P(extract_all_patches(style_imgs, style_img_lens))
+                    p_recn = self.models.P(extract_all_patches(recn_imgs, recn_img_lens))
+                    adv_loss_patch = -(torch.mean(p_fake) + torch.mean(p_style) + torch.mean(p_recn)) / 3
 
                     ### CTC Auxiliary loss ###
                     # self.models.R.frozen_bn()
@@ -912,10 +930,9 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                         gram_loss += self.gram_loss(fake_feat[0], real_img_feat)
                         gram_loss += self.gram_loss(fake_feat[1], real_img_feat)
 
-                    ### KL-Divergency loss ###
                     kl_loss = KLloss(mu, logvar) if self.vae_mode else torch.FloatTensor([0.]).to(self.device)
 
-                    grad_fake_adv = torch.autograd.grad(adv_loss, cat_fake_imgs, create_graph=False, retain_graph=True)[0]
+                    grad_fake_adv = torch.autograd.grad(adv_loss, fake_imgs, create_graph=False, retain_graph=True)[0]
                     grad_fake_OCR = torch.autograd.grad(fake_ctc_loss_rand, fake_ctc_rand, create_graph=False, retain_graph=True)[0]
                     grad_fake_info = torch.autograd.grad(info_loss, fake_imgs, create_graph=False, retain_graph=True)[0]
                     grad_fake_wid = torch.autograd.grad(fake_wid_loss, recn_wid_logits, create_graph=False, retain_graph=True)[0]
