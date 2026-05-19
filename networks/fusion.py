@@ -43,19 +43,12 @@ class StyleContentCrossAttention(nn.Module):
         v = self.v_proj(style_seq).view(B, S, self.nhead, self.head_dim).transpose(1, 2)
         
         # Native SDPA check for PyTorch 2.0+ (FlashAttention/Memory-Efficient Attention under the hood)
-        if hasattr(F, 'scaled_dot_product_attention'):
-            attn_out = F.scaled_dot_product_attention(
-                q, k, v,
-                dropout_p=self.dropout if self.training else 0.0
-            )
-        else:
-            # Fallback for PyTorch < 2.0
-            scale = 1.0 / (self.head_dim ** 0.5)
-            scores = torch.matmul(q * scale, k.transpose(-2, -1)) # (B, nh, L, S)
-            attn_weights = torch.softmax(scores, dim=-1)
-            if self.training and self.dropout > 0.0:
-                attn_weights = F.dropout(attn_weights, p=self.dropout)
-            attn_out = torch.matmul(attn_weights, v) # (B, nh, L, head_dim)
+        scale = 1.0 / (self.head_dim ** 0.5)
+        scores = torch.matmul(q * scale, k.transpose(-2, -1)) # (B, nh, L, S)
+        attn_weights = torch.softmax(scores, dim=-1)
+        if self.training and self.dropout > 0.0:
+            attn_weights = F.dropout(attn_weights, p=self.dropout)
+        attn_out = torch.matmul(attn_weights, v) # (B, nh, L, head_dim)
         
         # Reshape back to (B, L, D) and project
         attn_out = attn_out.transpose(1, 2).contiguous().view(B, L, D)
