@@ -307,6 +307,13 @@ def calculate_fid_kid_is(cfg, data_loader, generator, n_rand_repeat, device, cro
     ATTENTION: the backgroud value of input images must be -1, and the foreground values should be less than 1.
     real_stats: tuple of (act1, m1, s1, logits1)
     '''
+    eval_fid = getattr(cfg, 'validate_fid', True)
+    eval_kid = getattr(cfg, 'validate_kid', True)
+    eval_is = getattr(cfg, 'validate_is', True)
+    
+    res = {}
+    if not (eval_fid or eval_kid or eval_is):
+        return res
     if inceptionV3_model is None:
         block_idx = InceptionV3.BLOCK_INDEX_BY_DIM[2048]
         inceptionV3_model = InceptionV3([block_idx])
@@ -325,20 +332,27 @@ def calculate_fid_kid_is(cfg, data_loader, generator, n_rand_repeat, device, cro
         else:
             act1, m1, s1, logits1 = real_stats
 
-    fid_value = calculate_frechet_distance(m1, s1, m2, s2)
+    if eval_fid:
+        fid_value = calculate_frechet_distance(m1, s1, m2, s2)
+        res['fid'] = fid_value
 
-    is_org = calculate_inception_score(logits1)
-    is_gen = calculate_inception_score(logits2)
+    if eval_is:
+        is_org = calculate_inception_score(logits1)
+        is_gen = calculate_inception_score(logits2)
+        res['is_org'] = is_org
+        res['is_gen'] = is_gen
 
-    ret = polynomial_mmd_averages(
-            act1, act2, degree=cfg.mmd_degree, gamma=cfg.mmd_gamma,
-            coef0=cfg.mmd_coef0, ret_var=cfg.mmd_var,
-            n_subsets=cfg.mmd_subsets, subset_size=cfg.mmd_subset_size)
+    if eval_kid:
+        ret = polynomial_mmd_averages(
+                act1, act2, degree=cfg.mmd_degree, gamma=cfg.mmd_gamma,
+                coef0=cfg.mmd_coef0, ret_var=cfg.mmd_var,
+                n_subsets=cfg.mmd_subsets, subset_size=cfg.mmd_subset_size)
 
-    if cfg.mmd_var:
-        mmd2s, vars = ret
-    else:
-        mmd2s = ret
-    kid = mmd2s.mean() * 100
+        if cfg.mmd_var:
+            mmd2s, vars = ret
+        else:
+            mmd2s = ret
+        kid = mmd2s.mean() * 100
+        res['kid'] = kid
 
-    return {'fid': fid_value, 'kid': kid, 'is_org': is_org, 'is_gen': is_gen}
+    return res
