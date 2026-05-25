@@ -307,7 +307,6 @@ class AdversarialModel(BaseModel):
                                              style_guided, n_rand_repeat)
             return generator
 
-        # Precompute or use cached real statistics for the validation set
         if not hasattr(self, 'valid_real_stats') or self.valid_real_stats is None:
             from metric.fid_kid_is import calculate_activation_statistics, InceptionV3
             print("Precalculating validation set statistics...")
@@ -317,6 +316,8 @@ class AdversarialModel(BaseModel):
             self.valid_real_stats = calculate_activation_statistics(eval_dloader, len(eval_dloader), 
                                                                    self.inception_model, self.opt.valid.dims, 
                                                                    self.device, crop=not test_stage)
+
+        from metric.hwd_score import calculate_hwd_score
 
         if test_stage:
             res = calculate_fid_kid_is(self.opt.valid, eval_dloader, get_generator(), n_rand_repeat, 
@@ -336,6 +337,10 @@ class AdversarialModel(BaseModel):
 
         if getattr(self.opt.valid, 'validate_ocr', True):
             res['cer'], res['wer'] = self.validate_ocr(get_generator(), n_iters=len(eval_dloader) * n_rand_repeat)
+
+        if getattr(self.opt.valid, 'validate_hwd', True):
+            hwd_val = calculate_hwd_score(eval_dloader, get_generator(), n_rand_repeat, self.device)
+            res['hwd'] = hwd_val
 
         torch.cuda.empty_cache()
         return res
