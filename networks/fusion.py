@@ -5,7 +5,8 @@ from .mamba import MambaBlock, RMSNorm
 
 class StyleContentCrossAttention(nn.Module):
     """
-    Direct Query-Key-Value Cross-Attention using PyTorch Scaled Dot Product Attention (SDPA).
+    Direct Query-Key-Value Cross-Attention using pure, compatible PyTorch.
+    Ensures complete T4 compatibility without requiring PyTorch 2.0+ SDPA.
     Allows content character tokens to directly query and align with style sequence features.
     """
     def __init__(self, d_model, nhead=4, dropout=0.1):
@@ -19,7 +20,7 @@ class StyleContentCrossAttention(nn.Module):
         self.v_proj = nn.Linear(d_model, d_model)
         self.out_proj = nn.Linear(d_model, d_model)
         
-        self.dropout = dropout
+        self.dropout = nn.Dropout(dropout)
         self.norm1 = nn.LayerNorm(d_model)
         self.ffn = nn.Sequential(
             nn.Linear(d_model, d_model * 2),
@@ -42,12 +43,11 @@ class StyleContentCrossAttention(nn.Module):
         k = self.k_proj(style_seq).view(B, S, self.nhead, self.head_dim).transpose(1, 2)
         v = self.v_proj(style_seq).view(B, S, self.nhead, self.head_dim).transpose(1, 2)
         
-        # Native SDPA check for PyTorch 2.0+ (FlashAttention/Memory-Efficient Attention under the hood)
+        # Pure, version-friendly scaled dot-product attention
         scale = 1.0 / (self.head_dim ** 0.5)
         scores = torch.matmul(q * scale, k.transpose(-2, -1)) # (B, nh, L, S)
         attn_weights = torch.softmax(scores, dim=-1)
-        if self.training and self.dropout > 0.0:
-            attn_weights = F.dropout(attn_weights, p=self.dropout)
+        attn_weights = self.dropout(attn_weights)
         attn_out = torch.matmul(attn_weights, v) # (B, nh, L, head_dim)
         
         # Reshape back to (B, L, D) and project
@@ -60,9 +60,9 @@ class StyleContentCrossAttention(nn.Module):
 
 class StyleContentMamba(nn.Module):
     """
-    Optimized 1D Prefix-Context Mamba Fusion with Dynamic Cross-Attention.
+    Improved 1D Prefix-Context Mamba Fusion with Dynamic Allograph Cross-Attention.
     Treats the style vector as a prompt/prefix token for the content sequence,
-    and then applies cross-attention for high-fidelity allograph alignment.
+    and then applies cross-attention and a local stroke boundary gate for high-fidelity alignment.
     """
     def __init__(self, d_model, style_dim, d_state=16, d_conv=4, expand=2):
         super().__init__()
@@ -76,16 +76,28 @@ class StyleContentMamba(nn.Module):
         )
         self.content_proj = nn.Linear(d_model, d_model)
         
-        # 2. Optimized 1D Sequence Engine
+        # 2. Sequential 1D Mamba Engine
         self.mamba = MambaBlock(d_model, d_state=d_state, d_conv=d_conv, expand=expand, bidirectional=True)
         
-        # 3. Dynamic Cross-Attention for Allograph Learning
+        # 3. Local Stroke Boundary 1D CNN Gate (smooths scan noise and preserves boundaries)
+        self.local_cnn = nn.Sequential(
+            nn.Conv1d(d_model, d_model, kernel_size=5, padding=2, groups=d_model),
+            nn.GroupNorm(8, d_model),
+            nn.SiLU(),
+            nn.Conv1d(d_model, d_model, kernel_size=1)
+        )
+        self.local_gate = nn.Sequential(
+            nn.Conv1d(d_model, d_model, kernel_size=1),
+            nn.Sigmoid()
+        )
+        
+        # 4. Dynamic Cross-Attention for Allograph Learning
         self.cross_attn = StyleContentCrossAttention(d_model, nhead=4)
         
-        # 4. Normalization and Stability
+        # 5. Normalization and Stability
         self.norm = RMSNorm(d_model)
         
-        # 5. Refined Spatial Modulation
+        # 6. Refined Global Style Modulation (AdaIN style)
         self.style_mod = nn.Sequential(
             nn.Linear(style_dim, d_model),
             nn.SiLU(),
@@ -115,10 +127,16 @@ class StyleContentMamba(nn.Module):
         content_refined = fused[:, S_len:-S_len, :] # Discard the prefix and suffix
         content_fused = self.norm(content_refined + content_seq)
         
-        # --- STAGE 4: Allograph Refinement via Dynamic Cross-Attention ---
-        content_final = self.cross_attn(content_fused, s_feat)
+        # --- STAGE 4: Local Stroke Boundary Smoothing (CNN Gate) ---
+        c_trans = content_fused.transpose(1, 2)
+        local_feat = self.local_cnn(c_trans)
+        gate_val = self.local_gate(c_trans)
+        content_local = content_fused + (local_feat * gate_val).transpose(1, 2)
         
-        # --- STAGE 5: Style Modulation ---
+        # --- STAGE 5: Allograph Refinement via Dynamic Cross-Attention ---
+        content_final = self.cross_attn(content_local, s_feat)
+        
+        # --- STAGE 6: Style Modulation ---
         style_vec = style_seq.sum(dim=1) / style_seq.size(1) # (B, style_dim)
         mod_params = self.style_mod(style_vec).unsqueeze(1) # (B, 1, D*2)
         scale, shift = mod_params.chunk(2, dim=-1)

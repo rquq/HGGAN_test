@@ -39,15 +39,19 @@ training:
   lambda_kl: 0.0001
   lambda_ctx: 2.0
   lambda_gram: 2.0
-  pretrained_w: './pretrained/wid_iam_new.pth'
-  pretrained_r: './pretrained/ocr_iam_new.pth'
+  pretrained_w: ''
+  pretrained_r: ''
   pretrained_ckpt: ''
 
 
 valid:
   dset_name: 'iam_word_org'
   dset_split: 'test'
-  validate_ocr: true
+  validate_ocr: false
+  validate_fid: true
+  validate_kid: true
+  validate_is: true
+  validate_hwd: true
   use_rand_corpus: false
   n_rand_repeat: 10
   batch_size: 32
