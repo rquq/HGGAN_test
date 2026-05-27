@@ -175,3 +175,22 @@ class GramMatrix(nn.Module):
         G = torch.mm(features, features.t())  # compute the gram product
 
         return G.div(a * b * c * d)
+
+
+def contrastive_style_loss(fake_styles, real_styles, temperature=0.07):
+    """
+    Enforces stroke and texture consistency at the latent feature level.
+    fake_styles: (B, 32, style_dim) - Extracted from generated images
+    real_styles: (B, 32, style_dim) - Extracted from input real images
+    """
+    # Mean-pool to get style vectors
+    f_s = F.normalize(fake_styles.mean(dim=1), dim=-1) # (B, D)
+    r_s = F.normalize(real_styles.mean(dim=1), dim=-1) # (B, D)
+    
+    # Compute similarity matrix
+    logits = torch.matmul(f_s, r_s.t()) / temperature # (B, B)
+    labels = torch.arange(f_s.size(0)).to(fake_styles.device)
+    
+    # InfoNCE Loss
+    loss = F.cross_entropy(logits, labels)
+    return loss

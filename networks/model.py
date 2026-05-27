@@ -21,7 +21,7 @@ from lib.datasets import get_dataset, get_collect_fn, Hdf5Dataset
 from lib.alphabet import strLabelConverter, get_lexicon, get_true_alphabet, Alphabets
 from lib.utils import draw_image, get_logger, AverageMeterManager, option_to_string, AverageMeter, plot_heatmap
 from networks.rand_dist import prepare_z_dist, prepare_y_dist
-from networks.loss import recn_l1_loss, CXLoss, KLloss
+from networks.loss import recn_l1_loss, CXLoss, KLloss, contrastive_style_loss
 
 
 class BaseModel(object):
@@ -397,12 +397,15 @@ class AdversarialModel(BaseModel):
             writer_backbone = test_writer_backbone
             print('load pretrained test_writer_identifier: ', self.opt.valid.pretrained_test_w)
         else:
-            writer_identifier = WriterIdentifier(**self.opt.WidModel).to(self.device)
-            writer_backbone = StyleBackbone(**self.opt.StyBackbone).to(self.device)
-            print('load pretrained writer_identifier: ', self.opt.training.pretrained_w)
-            w_dict = torch.load(self.opt.training.pretrained_w, map_location=self.device)
-            writer_identifier.load_state_dict(w_dict['WriterIdentifier'], strict=False)
-            writer_backbone.load_state_dict(w_dict['StyleBackbone'], strict=False)
+            # OPTIMIZATION: Use the already loaded WriterIdentifier and StyleBackbone
+            # from self.models instead of creating a new copy to avoid redundant VRAM allocation and OOM.
+            if self.local_rank > -1:
+                writer_identifier = self.models.W.module
+                writer_backbone = self.models.B.module
+            else:
+                writer_identifier = self.models.W
+                writer_backbone = self.models.B
+            print('Using already loaded writer identifier and style backbone')
 
         writer_identifier.eval(), writer_backbone.eval()
         with torch.no_grad():
@@ -723,6 +726,7 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                                                     'fake_disc_loss_patch',
                                                     'real_disc_loss_patch', 'recn_loss',
                                                     'fake_ctc_loss', 'info_loss',
+                                                    'style_contrastive_loss',
                                                     'fake_wid_loss', 'ctx_loss',
                                                     'kl_loss', 'gram_loss', 'gp_ctc', 'gp_info',
                                                     'gp_wid', 'gp_recn'])
@@ -904,9 +908,10 @@ class GlobalLocalAdversarialModel(AdversarialModel):
 
                     fake_ctc_loss = fake_ctc_loss_rand + fake_ctc_loss_recn + fake_ctc_loss_style
 
-                    ### Style Reconstruction ###
+                    ### Style Reconstruction & Contrastive Loss ###
                     styles = self.models.E(fake_imgs, fake_lb_lens * self.opt.char_width, self.models.B)
                     info_loss = torch.mean(torch.abs(styles - self.z.detach()))
+                    style_contrastive_loss = contrastive_style_loss(styles, self.z.detach())
 
                     ### Content Restruction ###
                     recn_loss = recn_l1_loss(recn_imgs, real_imgs, real_img_lens)
@@ -958,7 +963,7 @@ class GlobalLocalAdversarialModel(AdversarialModel):
 
                     g_loss = adv_loss + adv_loss_patch +\
                              gp_ctc * fake_ctc_loss + \
-                             gp_info * info_loss + \
+                             gp_info * (info_loss + style_contrastive_loss) + \
                              gp_wid * fake_wid_loss + \
                              gp_recn * recn_loss + \
                              self.opt.training.lambda_ctx * ctx_loss + \
@@ -969,6 +974,7 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                     self.averager_meters.update('adv_loss_patch', adv_loss_patch.item())
                     self.averager_meters.update('fake_ctc_loss', fake_ctc_loss.item())
                     self.averager_meters.update('info_loss', info_loss.item())
+                    self.averager_meters.update('style_contrastive_loss', style_contrastive_loss.item())
                     self.averager_meters.update('fake_wid_loss', fake_wid_loss.item())
                     self.averager_meters.update('recn_loss', recn_loss.item())
                     self.averager_meters.update('ctx_loss', ctx_loss.item())
@@ -981,14 +987,15 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                     self.averager_meters.reset_all()
                     info = "[%3d|%3d]-[%4d|%4d] G:%.4f G-p:%.4f D-fake:%.4f D-real:%.4f " \
                            "D-fake-p:%.4f D-real-p:%.4f CTC-fake:%.4f Wid-fake:%.4f " \
-                           "Recn-z:%.4f Recn-c:%.4f Ctx:%.4f Gram:%.4f Kl:%.4f" \
+                           "Recn-z:%.4f Cont-z:%.4f Recn-c:%.4f Ctx:%.4f Gram:%.4f Kl:%.4f" \
                            % (epoch, self.opt.training.epochs,
                               iter_count % len(self.train_loader), len(self.train_loader),
                               meter_vals['adv_loss'], meter_vals['adv_loss_patch'],
                               meter_vals['fake_disc_loss'], meter_vals['real_disc_loss'],
                               meter_vals['fake_disc_loss_patch'], meter_vals['real_disc_loss_patch'],
                               meter_vals['fake_ctc_loss'], meter_vals['fake_wid_loss'], meter_vals['info_loss'],
-                              meter_vals['recn_loss'], meter_vals['ctx_loss'], meter_vals['gram_loss'], meter_vals['kl_loss'])
+                              meter_vals['style_contrastive_loss'], meter_vals['recn_loss'], meter_vals['ctx_loss'],
+                              meter_vals['gram_loss'], meter_vals['kl_loss'])
                     self.print(info) if self.local_rank < 1 else None
 
                     if _is_master:

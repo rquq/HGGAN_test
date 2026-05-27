@@ -5,6 +5,76 @@ import functools
 from networks.block import Conv2dBlock, ActFirstResBlock, DeepBLSTM, DeepGRU, DeepLSTM, Identity
 from networks.mamba import MambaAttention
 from networks.utils import _len2mask, init_weights
+import torch.nn.functional as F
+
+
+class HeavyCNNAttention(nn.Module):
+    def __init__(self, in_dim):
+        super().__init__()
+        # 1. Global Multi-scale dilated convolutions for global context (slant, spacing, aspect ratio)
+        self.conv1 = nn.Conv1d(in_dim, in_dim, kernel_size=3, padding=1)
+        self.conv_dilated1 = nn.Conv1d(in_dim, in_dim, kernel_size=3, padding=2, dilation=2)
+        self.conv_dilated2 = nn.Conv1d(in_dim, in_dim, kernel_size=3, padding=4, dilation=4)
+        self.conv_dilated3 = nn.Conv1d(in_dim, in_dim, kernel_size=3, padding=8, dilation=8)
+        
+        # 2. Local detail branch (depthwise and small convolutions to capture fine-grained glyph strokes and curves)
+        self.local_conv1 = nn.Conv1d(in_dim, in_dim, kernel_size=3, padding=1)
+        self.local_conv2 = nn.Conv1d(in_dim, in_dim, kernel_size=5, padding=2, groups=in_dim)
+        self.local_fuse = nn.Conv1d(in_dim * 2, in_dim, kernel_size=1)
+        
+        # 3. Global bottleneck fusion
+        self.fuse = nn.Sequential(
+            nn.Conv1d(in_dim * 4, in_dim, kernel_size=1),
+            nn.GroupNorm(8, in_dim),
+            nn.SiLU(),
+            nn.Conv1d(in_dim, in_dim, kernel_size=3, padding=1)
+        )
+        
+        # 4. Gating layers to dynamically fuse local and global features based on allographic complexity
+        self.gate_global = nn.Sequential(
+            nn.Conv1d(in_dim, in_dim, kernel_size=1),
+            nn.Sigmoid()
+        )
+        self.gate_local = nn.Sequential(
+            nn.Conv1d(in_dim, in_dim, kernel_size=1),
+            nn.Sigmoid()
+        )
+        
+        # 5. Channel Squeeze-and-Excitation for focused style extraction
+        self.se = nn.Sequential(
+            nn.AdaptiveAvgPool1d(1),
+            nn.Conv1d(in_dim, in_dim // 4, kernel_size=1),
+            nn.SiLU(),
+            nn.Conv1d(in_dim // 4, in_dim, kernel_size=1),
+            nn.Sigmoid()
+        )
+        self.gamma = nn.Parameter(torch.zeros(1))
+        
+    def forward(self, x, **kwargs):
+        # Global context mapping
+        x1 = F.silu(self.conv1(x))
+        x2 = F.silu(self.conv_dilated1(x))
+        x3 = F.silu(self.conv_dilated2(x))
+        x4 = F.silu(self.conv_dilated3(x))
+        
+        fused_global = torch.cat([x1, x2, x3, x4], dim=1)
+        out_global = self.fuse(fused_global)
+        
+        # Local context mapping
+        l1 = F.silu(self.local_conv1(x))
+        l2 = F.silu(self.local_conv2(x))
+        out_local = self.local_fuse(torch.cat([l1, l2], dim=1))
+        
+        # Dynamic Gated Fusion of Global and Local contexts
+        g_g = self.gate_global(out_global)
+        g_l = self.gate_local(out_local)
+        out_fused = out_global * g_g + out_local * g_l
+        
+        # Squeeze-and-Excitation gating
+        scale = self.se(out_fused)
+        out = out_fused * scale
+        
+        return x + self.gamma * out
 
 
 class StyleBackbone(nn.Module):
@@ -81,8 +151,18 @@ class StyleEncoder(nn.Module):
         self.mu = nn.Linear(in_dim, style_dim)
         self.logvar = nn.Linear(in_dim, style_dim)
         
-        # ADD: Sequence model to capture global word geometry (slant, spacing, ratio)
-        self.sequence_model = MambaAttention(in_dim)
+        # ADD: Heavy CNN to capture global word geometry (slant, spacing, ratio)
+        self.sequence_model = HeavyCNNAttention(in_dim)
+        
+        # Local-Global Multi-scale feature projection (channel sum = 2 * (64 + 128 + 256) = 896 due to mean + max concatenation)
+        self.local_proj = nn.Sequential(
+            nn.Conv1d(896, in_dim, kernel_size=1),
+            nn.GroupNorm(8, in_dim),
+            nn.SiLU()
+        )
+        
+        # Projection layer to fuse concatenated average and max pooled sequential style features
+        self.style_proj = nn.Linear(in_dim * 2, in_dim)
         
         if init != 'none':
             init_weights(self, init)
@@ -91,12 +171,37 @@ class StyleEncoder(nn.Module):
         # Always request intermediate features to capture local details
         feat, all_feats = cnn_backbone(img, ret_feats=True)
         
-        # 1. Global context from main feature using Mamba
+        # 1. Global context from main feature using Heavy CNN
         feat_m = self.sequence_model(feat) # feat is (B, C, W), feat_m is (B, C, W)
         
-        # We want to output 32 style tokens
-        style_seq = torch.nn.functional.adaptive_avg_pool1d(feat_m, 32) # (B, C, 32)
-        style_seq = style_seq.transpose(1, 2) # (B, 32, C)
+        # 2. Extract and Fuse multi-scale local details (layer 9, 13, 16)
+        local_features = []
+        for f in all_feats:
+            # f is (B, C_f, H_f, W_f)
+            # Retain both general contextual trends (mean pooling) and key structural stroke bounds (max pooling)
+            f_mean = torch.mean(f, dim=2) # (B, C_f, W_f)
+            f_max = torch.max(f, dim=2)[0] # (B, C_f, W_f)
+            
+            # Concatenate pooled features to preserve spatial curvature allographs
+            f_pooled = torch.cat([f_mean, f_max], dim=1) # (B, C_f * 2, W_f)
+            
+            # Interpolate width to match main feature width
+            f_resized = F.interpolate(f_pooled, size=feat_m.size(-1), mode='linear', align_corners=False)
+            local_features.append(f_resized)
+            
+        local_fused = torch.cat(local_features, dim=1) # (B, 896, W)
+        local_mapped = self.local_proj(local_fused) # (B, in_dim, W)
+        
+        # Stabilized Local-Global Fusion
+        feat_final = feat_m + local_mapped
+        
+        # Output 32 style tokens using both average and max pooling to optimize local/global representation
+        style_avg = torch.nn.functional.adaptive_avg_pool1d(feat_final, 32) # (B, C, 32)
+        style_max = torch.nn.functional.adaptive_max_pool1d(feat_final, 32) # (B, C, 32)
+        
+        style_seq = torch.cat([style_avg, style_max], dim=1) # (B, C * 2, 32)
+        style_seq = style_seq.transpose(1, 2) # (B, 32, C * 2)
+        style_seq = self.style_proj(style_seq) # (B, 32, C)
         
         style = self.linear_style(style_seq)
         style_tokens_mu = self.mu(style) # (B, 32, style_dim)
