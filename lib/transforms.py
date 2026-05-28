@@ -40,7 +40,7 @@ class RandomScale:
         if ratio > 0:
             pic = pic.resize((new_width, height), Image.BILINEAR)
         else:
-            pic = pic.resize((new_width, height), Image.ANTIALIAS)
+            pic = pic.resize((new_width, height), Image.LANCZOS)
         return pic
 
     def __repr__(self):
