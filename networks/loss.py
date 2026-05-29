@@ -160,6 +160,7 @@ class GramStyleLoss(nn.Module):
 
 class GramMatrix(nn.Module):
     def forward(self, input, feat_len=None):
+        input = input.float()  # Cast to float32 to prevent float16 overflow under mixed precision (autocast)
         a, b, c, d = input.size()
 
         if feat_len is not None:
