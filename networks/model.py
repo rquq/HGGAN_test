@@ -687,11 +687,6 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                                betas=(opt.training.adam_b1, opt.training.adam_b2)),
         )
 
-        self.lr_schedulers = Munch(
-            G=get_scheduler(self.optimizers.G, opt.training),
-            D=get_scheduler(self.optimizers.D, opt.training)
-        )
-
         epoch_done = 1
         if os.path.exists(self.opt.training.pretrained_ckpt):
             epoch_done = self.load(self.opt.training.pretrained_ckpt, self.device) + 1
@@ -710,6 +705,11 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                 self.models.R.load_state_dict(r_dict, strict=False)
                 print('load pretrained recognizer: ', self.opt.training.pretrained_r)
                 # self.validate_ocr()
+
+        self.lr_schedulers = Munch(
+            G=get_scheduler(self.optimizers.G, opt.training, last_epoch=epoch_done - 1),
+            D=get_scheduler(self.optimizers.D, opt.training, last_epoch=epoch_done - 1)
+        )
 
         # multi-gpu
         if self.local_rank > -1:
@@ -741,9 +741,6 @@ class GlobalLocalAdversarialModel(AdversarialModel):
         iter_count = (epoch_done - 1) * len(self.train_loader)
         is_best = False
         best_scores = None
-
-        for scheduler in self.lr_schedulers.values():
-            scheduler.step(epoch_done - 1)
 
         for epoch in range(epoch_done, self.opt.training.epochs):
             for i, batch in enumerate(self.train_loader):
@@ -1124,21 +1121,19 @@ class RecognizeModel(BaseModel):
         )
 
         self.optimizers = Munch(R=torch.optim.Adam(self.models.R.parameters(), lr=self.opt.training.lr))
-        self.lr_schedulers = Munch(R=get_scheduler(self.optimizers.R, self.opt.training))
 
         epoch_done = 1
         if self.opt.training.resume:
             epoch_done = self.load(self.opt.training.resume)
             self.print(self.validate())
 
+        self.lr_schedulers = Munch(R=get_scheduler(self.optimizers.R, self.opt.training, last_epoch=epoch_done - 1))
+
         device = self.device
         ctc_loss_meter = AverageMeter()
         ctc_len_scale = self.models.R.len_scale
         best_cer = np.inf
         iter_count = (epoch_done - 1) * len(self.train_loader)
-
-        for scheduler in self.lr_schedulers.values():
-            scheduler.step(epoch_done - 1)
 
         for epoch in range(epoch_done, self.opt.training.epochs):
             for i, batch in enumerate(self.train_loader):
@@ -1289,20 +1284,17 @@ class WriterIdentifyModel(BaseModel):
                                         chain(self.models.W.parameters(), self.models.B.parameters()),
                                     lr=self.opt.training.lr))
 
-        self.lr_schedulers = Munch(W=get_scheduler(self.optimizers.W, self.opt.training))
-
         epoch_done = 1
         if self.opt.training.resume:
             epoch_done = self.load(self.opt.training.resume)
             self.print(self.validate())
 
+        self.lr_schedulers = Munch(W=get_scheduler(self.optimizers.W, self.opt.training, last_epoch=epoch_done - 1))
+
         device = self.device
         wid_loss_meter = AverageMeter()
         best_wrr = 0
         iter_count = (epoch_done - 1) * len(self.train_loader)
-
-        for scheduler in self.lr_schedulers.values():
-            scheduler.step(epoch_done - 1)
 
         for epoch in range(epoch_done, self.opt.training.epochs):
             for i, batch in enumerate(self.train_loader):
