@@ -101,8 +101,12 @@ def get_scheduler(optimizer, opt, last_epoch=-1):
     For 'linear', we keep the same learning rate for the first <opt.n_epochs> epochs
     and linearly decay the rate to zero over the next <opt.n_epochs_decay> epochs.
     For other schedulers (step, plateau, and cosine), we use the default PyTorch schedulers.
-    See https://pytorch.org/docs/stable/optim.html for more details.
     """
+    # If resuming and last_epoch > -1, PyTorch expects initial_lr to be present in all param groups
+    for group in optimizer.param_groups:
+        if 'initial_lr' not in group:
+            group['initial_lr'] = group.get('lr', opt.lr)
+
     if opt.lr_policy == 'linear':
         def lambda_rule(epoch):
             lr_l = 1.0 - min(max(0, (epoch - opt.start_decay_epoch) / float(opt.n_epochs_decay + 1)), 0.999)
