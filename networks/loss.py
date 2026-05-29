@@ -167,7 +167,7 @@ class GramMatrix(nn.Module):
         # Force operations to float32 by explicitly disabling autocast for the Gram matrix computation.
         # This prevents PyTorch AMP from automatically downcasting the matrix multiplication (torch.mm)
         # back to float16, which causes arithmetic overflow (>65504) and subsequent NaN/Inf propagation.
-        with torch.cuda.amp.autocast(enabled=False):
+        with torch.amp.autocast('cuda', enabled=False):
             input = input.float()
             a, b, c, d = input.size()
 
