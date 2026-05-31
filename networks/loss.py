@@ -43,7 +43,7 @@ def calc_loss_perceptual(hout, hgt, img_lens):
     loss = 0
     for j in range(3):
         scale = 2 ** (3 - j)
-        loss += recn_l1_loss(hout[j], hgt[j], torch.div(img_lens, scale, rounding_mode='trunc')) / scale
+        loss += recn_l1_loss(hout[j], hgt[j], img_lens // scale) / scale
     return loss
 
 
@@ -57,7 +57,11 @@ def gram_matrix(feat):
 
 
 def KLloss(mu, logvar):
-    return torch.mean(-0.5 * torch.sum(1 + logvar - mu ** 2 - logvar.exp(), dim=1), dim=0)
+    # Handle both 2D [B, D] and 3D [B, L, D] cases
+    loss = -0.5 * (1 + logvar - mu ** 2 - logvar.exp())
+    # Sum over all dimensions except batch, then mean over batch
+    loss = loss.view(loss.size(0), -1).sum(dim=1)
+    return torch.mean(loss)
 
 
 ##############################################################################
@@ -160,19 +164,33 @@ class GramStyleLoss(nn.Module):
 
 class GramMatrix(nn.Module):
     def forward(self, input, feat_len=None):
-        # Force operations to float32 by explicitly disabling autocast for the Gram matrix computation.
-        # This prevents PyTorch AMP from automatically downcasting the matrix multiplication (torch.mm)
-        # back to float16, which causes arithmetic overflow (>65504) and subsequent NaN/Inf propagation.
-        with torch.amp.autocast('cuda', enabled=False):
-            input = input.float()
-            a, b, c, d = input.size()
+        a, b, c, d = input.size()
 
-            if feat_len is not None:
-                # mask for varying lengths
-                mask = _len2mask(feat_len, d).view(a, 1, 1, d)
-                input = input * mask
+        if feat_len is not None:
+            # mask for varying lengths
+            mask = _len2mask(feat_len, d).view(a, 1, 1, d)
+            input = input * mask
 
-            features = input.view(a * b, c * d)  # resise F_XL into \hat F_XL
-            G = torch.mm(features, features.t())  # compute the gram product
+        features = input.view(a * b, c * d)  # resise F_XL into \hat F_XL
+        G = torch.mm(features, features.t())  # compute the gram product
 
-            return G.div(a * b * c * d)
+        return G.div(a * b * c * d)
+
+
+def contrastive_style_loss(fake_styles, real_styles, temperature=0.07):
+    """
+    Enforces stroke and texture consistency at the latent feature level.
+    fake_styles: (B, 32, style_dim) - Extracted from generated images
+    real_styles: (B, 32, style_dim) - Extracted from input real images
+    """
+    # Mean-pool to get style vectors
+    f_s = F.normalize(fake_styles.mean(dim=1), dim=-1) # (B, D)
+    r_s = F.normalize(real_styles.mean(dim=1), dim=-1) # (B, D)
+    
+    # Compute similarity matrix
+    logits = torch.matmul(f_s, r_s.t()) / temperature # (B, B)
+    labels = torch.arange(f_s.size(0)).to(fake_styles.device)
+    
+    # InfoNCE Loss
+    loss = F.cross_entropy(logits, labels)
+    return loss

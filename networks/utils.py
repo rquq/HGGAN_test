@@ -90,7 +90,7 @@ def get_linear_scheduler(optimizer, start_decay_iter, n_iters_decay):
     return scheduler
 
 
-def get_scheduler(optimizer, opt):
+def get_scheduler(optimizer, opt, last_epoch=-1):
     """Return a learning rate scheduler
 
     Parameters:
@@ -101,19 +101,23 @@ def get_scheduler(optimizer, opt):
     For 'linear', we keep the same learning rate for the first <opt.n_epochs> epochs
     and linearly decay the rate to zero over the next <opt.n_epochs_decay> epochs.
     For other schedulers (step, plateau, and cosine), we use the default PyTorch schedulers.
-    See https://pytorch.org/docs/stable/optim.html for more details.
     """
+    # If resuming and last_epoch > -1, PyTorch expects initial_lr to be present in all param groups
+    for group in optimizer.param_groups:
+        if 'initial_lr' not in group:
+            group['initial_lr'] = group.get('lr', opt.lr)
+
     if opt.lr_policy == 'linear':
         def lambda_rule(epoch):
             lr_l = 1.0 - min(max(0, (epoch - opt.start_decay_epoch) / float(opt.n_epochs_decay + 1)), 0.999)
             return lr_l
-        scheduler = lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda_rule)
+        scheduler = lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda_rule, last_epoch=last_epoch)
     elif opt.lr_policy == 'step':
-        scheduler = lr_scheduler.StepLR(optimizer, step_size=opt.lr_decay_iters, gamma=0.1)
+        scheduler = lr_scheduler.StepLR(optimizer, step_size=opt.lr_decay_iters, gamma=0.1, last_epoch=last_epoch)
     elif opt.lr_policy == 'plateau':
         scheduler = lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.2, threshold=0.01, patience=5)
     elif opt.lr_policy == 'cosine':
-        scheduler = lr_scheduler.CosineAnnealingLR(optimizer, T_max=opt.n_epochs, eta_min=0)
+        scheduler = lr_scheduler.CosineAnnealingLR(optimizer, T_max=opt.n_epochs, eta_min=0, last_epoch=last_epoch)
     else:
         return NotImplementedError('learning rate policy [%s] is not implemented', opt.lr_policy)
     return scheduler
@@ -255,7 +259,7 @@ class PatchSampler(object):
         self.max_y = self.char_size[0] - self.patch_size[0]
 
     def random_sample(self, fake_imgs, img_lens, ret_xy=False):
-        lb_lens = torch.div(img_lens, self.char_size[1], rounding_mode='trunc')
+        lb_lens = img_lens // self.char_size[1]
         patches = []
         pos_xy = []
         for bid in range(fake_imgs.size(0)):

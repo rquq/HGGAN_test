@@ -21,8 +21,8 @@ from lib.datasets import get_dataset, get_collect_fn, Hdf5Dataset
 from lib.alphabet import strLabelConverter, get_lexicon, get_true_alphabet, Alphabets
 from lib.utils import draw_image, get_logger, AverageMeterManager, option_to_string, AverageMeter, plot_heatmap
 from networks.rand_dist import prepare_z_dist, prepare_y_dist
-from networks.loss import recn_l1_loss, CXLoss, KLloss
-from networks.recog_crop import CropConfig, crop_for_recognizer, should_apply
+from networks.loss import recn_l1_loss, CXLoss, KLloss, contrastive_style_loss
+from networks.masking import apply_vertical_stripe_mask, apply_horizontal_stripe_mask, apply_combined_stripe_mask, apply_light_mixed_patch_mask
 
 
 class BaseModel(object):
@@ -270,7 +270,7 @@ class AdversarialModel(BaseModel):
                     if style_guided:
                         enc_z = self.models.E(style_imgs.to(device), style_img_lens.to(device), self.models.B)
                     else:
-                        enc_z = torch.randn(style_lb_lens.size(0), self.models.G.style_dim).to(device)
+                        enc_z = torch.randn(style_lb_lens.size(0), 32, self.models.G.style_dim).to(device)
 
                     fake_batch['style_imgs'] = self.models.G(enc_z, content_lbs, content_lb_lens)
                     fake_batch['style_img_lens'] = fake_batch['lb_lens'] * self.opt.char_width
@@ -306,7 +306,6 @@ class AdversarialModel(BaseModel):
                                              style_guided, n_rand_repeat)
             return generator
 
-        # Precompute or use cached real statistics for the validation set
         if not hasattr(self, 'valid_real_stats') or self.valid_real_stats is None:
             from metric.fid_kid_is import calculate_activation_statistics, InceptionV3
             print("Precalculating validation set statistics...")
@@ -316,6 +315,8 @@ class AdversarialModel(BaseModel):
             self.valid_real_stats = calculate_activation_statistics(eval_dloader, len(eval_dloader), 
                                                                    self.inception_model, self.opt.valid.dims, 
                                                                    self.device, crop=not test_stage)
+                                                                   
+        from metric.hwd_score import calculate_hwd_score
 
         if test_stage:
             res = calculate_fid_kid_is(self.opt.valid, eval_dloader, get_generator(), n_rand_repeat, 
@@ -335,6 +336,10 @@ class AdversarialModel(BaseModel):
 
         if getattr(self.opt.valid, 'validate_ocr', True):
             res['cer'], res['wer'] = self.validate_ocr(get_generator(), n_iters=len(eval_dloader) * n_rand_repeat)
+
+        if getattr(self.opt.valid, 'validate_hwd', True):
+            hwd_val = calculate_hwd_score(eval_dloader, get_generator(), n_rand_repeat, self.device)
+            res['hwd'] = hwd_val
 
         torch.cuda.empty_cache()
         return res
@@ -363,7 +368,7 @@ class AdversarialModel(BaseModel):
                 logits = logits.cpu().numpy()
                 word_preds = []
                 for logit, img_len in zip(logits, batch['style_img_lens'].cpu().numpy()):
-                    label = ctc_greedy_decoder(logit[:int(img_len) // int(ctc_len_scale)])
+                    label = ctc_greedy_decoder(logit[:img_len // ctc_len_scale])
                     word_preds.append(self.label_converter.decode(label))
                 word_reals = self.label_converter.decode(batch['lbs'], batch['lb_lens'])
                 for word_pred, word_real in zip(word_preds, word_reals):
@@ -393,12 +398,15 @@ class AdversarialModel(BaseModel):
             writer_backbone = test_writer_backbone
             print('load pretrained test_writer_identifier: ', self.opt.valid.pretrained_test_w)
         else:
-            writer_identifier = WriterIdentifier(**self.opt.WidModel).to(self.device)
-            writer_backbone = StyleBackbone(**self.opt.StyBackbone).to(self.device)
-            print('load pretrained writer_identifier: ', self.opt.training.pretrained_w)
-            w_dict = torch.load(self.opt.training.pretrained_w, map_location=self.device)
-            writer_identifier.load_state_dict(w_dict['WriterIdentifier'], strict=False)
-            writer_backbone.load_state_dict(w_dict['StyleBackbone'], strict=False)
+            # OPTIMIZATION: Use the already loaded WriterIdentifier and StyleBackbone
+            # from self.models instead of creating a new copy to avoid redundant VRAM allocation and OOM.
+            if self.local_rank > -1:
+                writer_identifier = self.models.W.module
+                writer_backbone = self.models.B.module
+            else:
+                writer_identifier = self.models.W
+                writer_backbone = self.models.B
+            print('Using already loaded writer identifier and style backbone')
 
         writer_identifier.eval(), writer_backbone.eval()
         with torch.no_grad():
@@ -446,7 +454,7 @@ class AdversarialModel(BaseModel):
 
                 # style0 = torch.zeros((1, self.opt.GenModel.style_dim)) + 1e-1
                 # style1 = torch.ones_like(style0) - 1e-1
-                style0 = torch.randn((1, self.opt.EncModel.style_dim))
+                style0 = torch.randn((1, 32, self.opt.EncModel.style_dim))
                 style1 = torch.randn(style0.size())
 
                 styles = [torch.lerp(style0, style1, i / (interp_num - 1)) for i in range(interp_num)]
@@ -644,6 +652,8 @@ class GlobalLocalAdversarialModel(AdversarialModel):
         self.ctc_loss = CTCLoss(zero_infinity=True, reduction='mean')
         self.classify_loss = CrossEntropyLoss()
         self.contextual_loss = CXLoss()
+        from networks.loss import GramStyleLoss
+        self.gram_loss = GramStyleLoss()
 
     def train(self):
         self.info()
@@ -678,11 +688,6 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                                betas=(opt.training.adam_b1, opt.training.adam_b2)),
         )
 
-        self.lr_schedulers = Munch(
-            G=get_scheduler(self.optimizers.G, opt.training),
-            D=get_scheduler(self.optimizers.D, opt.training)
-        )
-
         epoch_done = 1
         if os.path.exists(self.opt.training.pretrained_ckpt):
             epoch_done = self.load(self.opt.training.pretrained_ckpt, self.device) + 1
@@ -702,6 +707,11 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                 print('load pretrained recognizer: ', self.opt.training.pretrained_r)
                 # self.validate_ocr()
 
+        self.lr_schedulers = Munch(
+            G=get_scheduler(self.optimizers.G, opt.training, last_epoch=epoch_done - 1),
+            D=get_scheduler(self.optimizers.D, opt.training, last_epoch=epoch_done - 1)
+        )
+
         # multi-gpu
         if self.local_rank > -1:
             for key in self.models.keys():
@@ -717,8 +727,9 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                                                     'fake_disc_loss_patch',
                                                     'real_disc_loss_patch', 'recn_loss',
                                                     'fake_ctc_loss', 'info_loss',
+                                                    'style_contrastive_loss',
                                                     'fake_wid_loss', 'ctx_loss',
-                                                    'kl_loss', 'gp_ctc', 'gp_info',
+                                                    'kl_loss', 'gram_loss', 'gp_ctc', 'gp_info',
                                                     'gp_wid', 'gp_recn'])
         device = self.device
 
@@ -727,24 +738,10 @@ class GlobalLocalAdversarialModel(AdversarialModel):
         else:
             ctc_len_scale = self.models.R.len_scale
 
-        # Resolve recognizer-crop config once.
-        self.crop_cfg = CropConfig.from_opt(
-            getattr(self.opt.training, 'recog_crop', None),
-            char_width=self.opt.char_width,
-        )
-        if self.crop_cfg is not None:
-            self.print(
-                f"recog_crop enabled: mode={self.crop_cfg.mode} "
-                f"prob={self.crop_cfg.prob} min_chars={self.crop_cfg.min_chars}"
-            )
-
         best_fid = np.inf
         iter_count = (epoch_done - 1) * len(self.train_loader)
         is_best = False
         best_scores = None
-
-        for scheduler in self.lr_schedulers.values():
-            scheduler.step(epoch_done - 1)
 
         for epoch in range(epoch_done, self.opt.training.epochs):
             for i, batch in enumerate(self.train_loader):
@@ -805,9 +802,19 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                                   torch.mean(F.relu(1.0 + d_recn))) / 3
 
                 # Patch Discriminator forwards
-                p_fake = self.models.P(extract_all_patches(fake_imgs, fake_img_lens).detach())
-                p_style = self.models.P(extract_all_patches(style_imgs, style_img_lens).detach())
-                p_recn = self.models.P(extract_all_patches(recn_imgs, recn_img_lens).detach())
+                p_fake_patches = extract_all_patches(fake_imgs, fake_img_lens).detach()
+                p_style_patches = extract_all_patches(style_imgs, style_img_lens).detach()
+                p_recn_patches = extract_all_patches(recn_imgs, recn_img_lens).detach()
+
+                masking_mode = getattr(self.opt.training, 'masking_mode', 'none')
+                if masking_mode != 'none':
+                    p_fake_patches = apply_light_mixed_patch_mask(p_fake_patches)
+                    p_style_patches = apply_light_mixed_patch_mask(p_style_patches)
+                    p_recn_patches = apply_light_mixed_patch_mask(p_recn_patches)
+
+                p_fake = self.models.P(p_fake_patches)
+                p_style = self.models.P(p_style_patches)
+                p_recn = self.models.P(p_recn_patches)
                 fake_disc_loss_patch = (torch.mean(F.relu(1.0 + p_fake)) + 
                                         torch.mean(F.relu(1.0 + p_style)) + 
                                         torch.mean(F.relu(1.0 + p_recn))) / 3
@@ -820,9 +827,10 @@ class GlobalLocalAdversarialModel(AdversarialModel):
 
                 real_img_patches = extract_all_patches(real_imgs, real_img_lens, plot=False)
                 real_aug_imgs_patches = extract_all_patches(real_aug_imgs, real_aug_img_lens)
-                real_disc_patches = self.models.P(torch.cat([real_img_patches,
-                                                             real_aug_imgs_patches],
-                                                             dim=0) .detach())
+                real_patches_cat = torch.cat([real_img_patches, real_aug_imgs_patches], dim=0).detach()
+                if masking_mode != 'none':
+                    real_patches_cat = apply_light_mixed_patch_mask(real_patches_cat)
+                real_disc_patches = self.models.P(real_patches_cat)
                 real_disc_loss_patch = torch.mean(F.relu(1.0 - real_disc_patches))
 
                 disc_loss = real_disc_loss + fake_disc_loss + real_disc_loss_patch + fake_disc_loss_patch
@@ -858,6 +866,8 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                     self.z.sample_()
                     fake_imgs = self.models.G(self.z, fake_lbs, fake_lb_lens)
 
+                    # Keep style encoder inputs clean as masking is applied strictly to local patches
+                    masking_mode = getattr(self.opt.training, 'masking_mode', 'none')
                     if self.vae_mode:
                         (enc_z, mu, logvar), real_img_feats = self.models.E(real_imgs, real_img_lens, self.models.B,
                                                                             ret_feats=True, vae_mode=True)
@@ -882,50 +892,45 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                     d_recn = self.models.D(recn_imgs, recn_img_lens, real_lb_lens)
                     adv_loss = -(torch.mean(d_fake) + torch.mean(d_style) + torch.mean(d_recn)) / 3
 
-                    p_fake = self.models.P(extract_all_patches(fake_imgs, fake_img_lens))
-                    p_style = self.models.P(extract_all_patches(style_imgs, style_img_lens))
-                    p_recn = self.models.P(extract_all_patches(recn_imgs, recn_img_lens))
+                    p_fake_patches = extract_all_patches(fake_imgs, fake_img_lens)
+                    p_style_patches = extract_all_patches(style_imgs, style_img_lens)
+                    p_recn_patches = extract_all_patches(recn_imgs, recn_img_lens)
+                    if masking_mode != 'none':
+                        p_fake_patches = apply_light_mixed_patch_mask(p_fake_patches)
+                        p_style_patches = apply_light_mixed_patch_mask(p_style_patches)
+                        p_recn_patches = apply_light_mixed_patch_mask(p_recn_patches)
+
+                    p_fake = self.models.P(p_fake_patches)
+                    p_style = self.models.P(p_style_patches)
+                    p_recn = self.models.P(p_recn_patches)
                     adv_loss_patch = -(torch.mean(p_fake) + torch.mean(p_style) + torch.mean(p_recn)) / 3
 
                     ### CTC Auxiliary loss ###
                     # self.models.R.frozen_bn()
-                    apply_crop = should_apply(self.crop_cfg)
-                    if apply_crop and self.crop_cfg is not None:
-                        rand_in, rand_in_lens, rand_lbs, rand_lb_lens = crop_for_recognizer(
-                            fake_imgs, fake_lbs, fake_lb_lens, self.crop_cfg)
-                        style_in, style_in_lens, style_target_lbs, style_target_lb_lens = crop_for_recognizer(
-                            style_imgs, fake_lbs, fake_lb_lens, self.crop_cfg)
-                        recn_in, recn_in_lens, recn_target_lbs, recn_target_lb_lens = crop_for_recognizer(
-                            recn_imgs, real_lbs, real_lb_lens, self.crop_cfg)
-                    else:
-                        rand_in, rand_in_lens = fake_imgs, fake_lb_lens * self.opt.char_width
-                        rand_lbs, rand_lb_lens = fake_lbs, fake_lb_lens
-                        style_in, style_in_lens = style_imgs, fake_lb_lens * self.opt.char_width
-                        style_target_lbs, style_target_lb_lens = fake_lbs, fake_lb_lens
-                        recn_in, recn_in_lens = recn_imgs, real_lb_lens * self.opt.char_width
-                        recn_target_lbs, recn_target_lb_lens = real_lbs, real_lb_lens
+                    fake_img_lens = fake_lb_lens * self.opt.char_width
+                    fake_ctc_rand = self.models.R(fake_imgs, fake_img_lens)
+                    fake_ctc_loss_rand = self.ctc_loss(fake_ctc_rand, fake_lbs,
+                                                       torch.div(fake_img_lens, ctc_len_scale, rounding_mode='trunc'),
+                                                       fake_lb_lens)
 
-                    fake_img_lens = fake_lb_lens * self.opt.char_width  # kept for downstream code
-                    fake_ctc_rand = self.models.R(rand_in, rand_in_lens)
-                    fake_ctc_loss_rand = self.ctc_loss(fake_ctc_rand, rand_lbs,
-                                                       torch.div(rand_in_lens, ctc_len_scale, rounding_mode='trunc'),
-                                                       rand_lb_lens)
+                    style_img_lens = fake_lb_lens * self.opt.char_width
+                    fake_ctc_style = self.models.R(style_imgs, style_img_lens)
+                    fake_ctc_loss_style = self.ctc_loss(fake_ctc_style, fake_lbs,
+                                                        torch.div(style_img_lens, ctc_len_scale, rounding_mode='trunc'),
+                                                        fake_lb_lens)
 
-                    fake_ctc_style = self.models.R(style_in, style_in_lens)
-                    fake_ctc_loss_style = self.ctc_loss(fake_ctc_style, style_target_lbs,
-                                                        torch.div(style_in_lens, ctc_len_scale, rounding_mode='trunc'),
-                                                        style_target_lb_lens)
-
-                    fake_ctc_recn = self.models.R(recn_in, recn_in_lens)
-                    fake_ctc_loss_recn = self.ctc_loss(fake_ctc_recn, recn_target_lbs,
-                                                       torch.div(recn_in_lens, ctc_len_scale, rounding_mode='trunc'),
-                                                       recn_target_lb_lens)
+                    recn_img_lens = real_lb_lens * self.opt.char_width
+                    fake_ctc_recn = self.models.R(recn_imgs, recn_img_lens)
+                    fake_ctc_loss_recn = self.ctc_loss(fake_ctc_recn, real_lbs,
+                                                       torch.div(recn_img_lens, ctc_len_scale, rounding_mode='trunc'),
+                                                       real_lb_lens)
 
                     fake_ctc_loss = fake_ctc_loss_rand + fake_ctc_loss_recn + fake_ctc_loss_style
 
-                    ### Style Reconstruction ###
+                    ### Style Reconstruction & Contrastive Loss ###
                     styles = self.models.E(fake_imgs, fake_lb_lens * self.opt.char_width, self.models.B)
                     info_loss = torch.mean(torch.abs(styles - self.z.detach()))
+                    style_contrastive_loss = contrastive_style_loss(styles, self.z.detach())
 
                     ### Content Restruction ###
                     recn_loss = recn_l1_loss(recn_imgs, real_imgs, real_img_lens)
@@ -941,6 +946,7 @@ class GlobalLocalAdversarialModel(AdversarialModel):
 
                     ###  Contextual Loss and Gram Loss for non-aligned data  ###
                     ctx_loss = torch.FloatTensor([0.]).to(self.device)
+                    gram_loss = torch.FloatTensor([0.]).to(self.device)
                     for real_img_feat, fake_img_feat \
                             in zip(real_img_feats, fake_imgs_feats):
                         fake_feat = fake_img_feat.chunk(2, dim=0)
@@ -948,6 +954,10 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                         ctx_loss += self.contextual_loss(real_img_feat, fake_feat[0])
                         # ctx_loss for recn_imgs
                         ctx_loss += self.contextual_loss(real_img_feat, fake_feat[1])
+
+                        # gram_loss
+                        gram_loss += self.gram_loss(fake_feat[0], real_img_feat)
+                        gram_loss += self.gram_loss(fake_feat[1], real_img_feat)
 
                     kl_loss = KLloss(mu, logvar) if self.vae_mode else torch.FloatTensor([0.]).to(self.device)
 
@@ -972,19 +982,22 @@ class GlobalLocalAdversarialModel(AdversarialModel):
 
                     g_loss = adv_loss + adv_loss_patch +\
                              gp_ctc * fake_ctc_loss + \
-                             gp_info * info_loss + \
+                             gp_info * (info_loss + style_contrastive_loss) + \
                              gp_wid * fake_wid_loss + \
                              gp_recn * recn_loss + \
                              self.opt.training.lambda_ctx * ctx_loss + \
+                             self.opt.training.lambda_gram * gram_loss + \
                              self.opt.training.lambda_kl * kl_loss
                     g_loss.backward()
                     self.averager_meters.update('adv_loss', adv_loss.item())
                     self.averager_meters.update('adv_loss_patch', adv_loss_patch.item())
                     self.averager_meters.update('fake_ctc_loss', fake_ctc_loss.item())
                     self.averager_meters.update('info_loss', info_loss.item())
+                    self.averager_meters.update('style_contrastive_loss', style_contrastive_loss.item())
                     self.averager_meters.update('fake_wid_loss', fake_wid_loss.item())
                     self.averager_meters.update('recn_loss', recn_loss.item())
                     self.averager_meters.update('ctx_loss', ctx_loss.item())
+                    self.averager_meters.update('gram_loss', gram_loss.item())
                     self.averager_meters.update('kl_loss', kl_loss.item())
                     self.optimizers.G.step()
 
@@ -993,14 +1006,15 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                     self.averager_meters.reset_all()
                     info = "[%3d|%3d]-[%4d|%4d] G:%.4f G-p:%.4f D-fake:%.4f D-real:%.4f " \
                            "D-fake-p:%.4f D-real-p:%.4f CTC-fake:%.4f Wid-fake:%.4f " \
-                           "Recn-z:%.4f Recn-c:%.4f Ctx:%.4f Kl:%.4f" \
+                           "Recn-z:%.4f Cont-z:%.4f Recn-c:%.4f Ctx:%.4f Gram:%.4f Kl:%.4f" \
                            % (epoch, self.opt.training.epochs,
                               iter_count % len(self.train_loader), len(self.train_loader),
                               meter_vals['adv_loss'], meter_vals['adv_loss_patch'],
                               meter_vals['fake_disc_loss'], meter_vals['real_disc_loss'],
                               meter_vals['fake_disc_loss_patch'], meter_vals['real_disc_loss_patch'],
                               meter_vals['fake_ctc_loss'], meter_vals['fake_wid_loss'], meter_vals['info_loss'],
-                              meter_vals['recn_loss'], meter_vals['ctx_loss'], meter_vals['kl_loss'])
+                              meter_vals['style_contrastive_loss'], meter_vals['recn_loss'], meter_vals['ctx_loss'],
+                              meter_vals['gram_loss'], meter_vals['kl_loss'])
                     self.print(info) if self.local_rank < 1 else None
 
                     if _is_master:
@@ -1129,21 +1143,19 @@ class RecognizeModel(BaseModel):
         )
 
         self.optimizers = Munch(R=torch.optim.Adam(self.models.R.parameters(), lr=self.opt.training.lr))
-        self.lr_schedulers = Munch(R=get_scheduler(self.optimizers.R, self.opt.training))
 
         epoch_done = 1
         if self.opt.training.resume:
             epoch_done = self.load(self.opt.training.resume)
             self.print(self.validate())
 
+        self.lr_schedulers = Munch(R=get_scheduler(self.optimizers.R, self.opt.training, last_epoch=epoch_done - 1))
+
         device = self.device
         ctc_loss_meter = AverageMeter()
         ctc_len_scale = self.models.R.len_scale
         best_cer = np.inf
         iter_count = (epoch_done - 1) * len(self.train_loader)
-
-        for scheduler in self.lr_schedulers.values():
-            scheduler.step(epoch_done - 1)
 
         for epoch in range(epoch_done, self.opt.training.epochs):
             for i, batch in enumerate(self.train_loader):
@@ -1160,7 +1172,7 @@ class RecognizeModel(BaseModel):
                 self.optimizers.R.zero_grad()
                 ### Compute CTC loss for real samples###
                 real_ctc = self.models.R(real_imgs, real_img_lens)
-                real_ctc_lens = torch.div(real_img_lens, ctc_len_scale, rounding_mode='trunc')
+                real_ctc_lens = real_img_lens // ctc_len_scale
                 real_ctc_loss = self.ctc_loss(real_ctc, real_lbs, real_ctc_lens, real_lb_lens)
                 ctc_loss_meter.update(real_ctc_loss.item())
                 real_ctc_loss.backward()
@@ -1214,7 +1226,7 @@ class RecognizeModel(BaseModel):
                 logits = logits.cpu().numpy()
                 word_preds = []
                 for logit, img_len in zip(logits, batch['style_img_lens'].cpu().numpy()):
-                    label = ctc_greedy_decoder(logit[:int(img_len) // int(ctc_len_scale)])
+                    label = ctc_greedy_decoder(logit[:img_len // ctc_len_scale])
                     word_preds.append(self.label_converter.decode(label))
 
                 word_reals = self.label_converter.decode(batch['lbs'], batch['lb_lens'])
@@ -1294,20 +1306,17 @@ class WriterIdentifyModel(BaseModel):
                                         chain(self.models.W.parameters(), self.models.B.parameters()),
                                     lr=self.opt.training.lr))
 
-        self.lr_schedulers = Munch(W=get_scheduler(self.optimizers.W, self.opt.training))
-
         epoch_done = 1
         if self.opt.training.resume:
             epoch_done = self.load(self.opt.training.resume)
             self.print(self.validate())
 
+        self.lr_schedulers = Munch(W=get_scheduler(self.optimizers.W, self.opt.training, last_epoch=epoch_done - 1))
+
         device = self.device
         wid_loss_meter = AverageMeter()
         best_wrr = 0
         iter_count = (epoch_done - 1) * len(self.train_loader)
-
-        for scheduler in self.lr_schedulers.values():
-            scheduler.step(epoch_done - 1)
 
         for epoch in range(epoch_done, self.opt.training.epochs):
             for i, batch in enumerate(self.train_loader):
