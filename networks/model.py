@@ -661,7 +661,7 @@ class GlobalLocalAdversarialModel(AdversarialModel):
         _is_master = self.local_rank < 1
         if _is_master:
             import wandb as _wandb
-            _wandb.login(key='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')
+            _wandb.login(key='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')
             _wandb.init(
                 project='HiGANplus',
                 name=os.path.basename(self.log_root) if self.log_root else 'run',
@@ -1041,6 +1041,8 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                     self.print('Calculate FID_KID (iter {})'.format(iter_count + 1)) if self.local_rank < 1 else None
                     scores = self.validate()
                     if _is_master:
+                        score_str = ", ".join([f"{k}: {v:.4f}" if isinstance(v, float) else f"{k}: {v}" for k, v in scores.items()])
+                        self.print(f"Validation metrics at iter {iter_count + 1}: {score_str}")
                         import wandb as _wandb
                         if _wandb.run:
                             _wandb.log({'valid/' + k: v for k, v in scores.items()}, step=iter_count + 1)
