@@ -160,19 +160,14 @@ class GramStyleLoss(nn.Module):
 
 class GramMatrix(nn.Module):
     def forward(self, input, feat_len=None):
-        # Force operations to float32 by explicitly disabling autocast for the Gram matrix computation.
-        # This prevents PyTorch AMP from automatically downcasting the matrix multiplication (torch.mm)
-        # back to float16, which causes arithmetic overflow (>65504) and subsequent NaN/Inf propagation.
-        with torch.amp.autocast('cuda', enabled=False):
-            input = input.float()
-            a, b, c, d = input.size()
+        a, b, c, d = input.size()
 
-            if feat_len is not None:
-                # mask for varying lengths
-                mask = _len2mask(feat_len, d).view(a, 1, 1, d)
-                input = input * mask
+        if feat_len is not None:
+            # mask for varying lengths
+            mask = _len2mask(feat_len, d).view(a, 1, 1, d)
+            input = input * mask
 
-            features = input.view(a * b, c * d)  # resise F_XL into \hat F_XL
-            G = torch.mm(features, features.t())  # compute the gram product
+        features = input.view(a * b, c * d)  # resise F_XL into \hat F_XL
+        G = torch.mm(features, features.t())  # compute the gram product
 
-            return G.div(a * b * c * d)
+        return G.div(a * b * c * d)

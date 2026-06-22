@@ -37,10 +37,11 @@ class RandomScale:
         ratio = (np.random.random() - 0.5) * 2 * self.var
         new_width = int(width * (1 + ratio))
         new_width = self._recalc_len(new_width, scale=CharWidth)
+        resample = getattr(Image, 'Resampling', Image)
         if ratio > 0:
-            pic = pic.resize((new_width, height), Image.BILINEAR)
+            pic = pic.resize((new_width, height), resample.BILINEAR)
         else:
-            pic = pic.resize((new_width, height), Image.LANCZOS)
+            pic = pic.resize((new_width, height), resample.LANCZOS)
         return pic
 
     def __repr__(self):
