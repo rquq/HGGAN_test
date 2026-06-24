@@ -8,26 +8,28 @@ import matplotlib.pyplot as plt
 
 def get_logger(logdir):
     logger = logging.getLogger("gan")
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+    logger.handlers = []
+
     ts = str(datetime.datetime.now()).split(".")[0].replace(" ", "_")
     ts = ts.replace(":", "_").replace("-", "_")
     file_path = os.path.join(logdir, "run_{}.log".format(ts))
 
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(levelname)s - %(message)s',
-        filename= file_path,
-        filemode='w'
-    )
-    # define a new Handler to log to console as well
+    # File handler
+    file_handler = logging.FileHandler(file_path, mode='w')
+    file_handler.setLevel(logging.INFO)
+    file_formatter = logging.Formatter('%(message)s')
+    file_handler.setFormatter(file_formatter)
+    logger.addHandler(file_handler)
+
+    # Console handler
     console = logging.StreamHandler()
-    # optional, set the logging level
     console.setLevel(logging.INFO)
-    # set a format which is the same for console use
-    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-    # tell the handler to use this format
+    formatter = logging.Formatter('%(message)s')
     console.setFormatter(formatter)
-    # add the handler to the root logger
-    logging.getLogger('').addHandler(console)
+    logger.addHandler(console)
+    
     return logger
 
 
