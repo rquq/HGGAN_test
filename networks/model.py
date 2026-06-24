@@ -1,4 +1,5 @@
 import torch, os
+import wandb
 from PIL import Image
 from munch import Munch
 from itertools import chain
@@ -637,14 +638,13 @@ class GlobalLocalAdversarialModel(AdversarialModel):
 
         # ── WandB init (master process only) ──────────────────────────────
         _is_master = self.local_rank < 1
-        if _is_master:
-            import wandb as _wandb
-            _wandb.login(key='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')
-            _wandb.init(
-                project='HiGANplus',
-                name=os.path.basename(self.log_root) if self.log_root else 'run',
+        if _is_master and hasattr(self.opt, 'wandb'):
+            wandb.login(key=self.opt.wandb.key)
+            wandb.init(
+                project=self.opt.wandb.project,
+                name=self.opt.wandb.name or (os.path.basename(self.log_root) if self.log_root else 'run'),
                 config=vars(self.opt) if hasattr(self.opt, '__dict__') else dict(self.opt),
-                resume='allow',
+                resume=self.opt.wandb.resume,
             )
 
         opt = self.opt
@@ -958,9 +958,8 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                         for i_, attn_info in enumerate(info_attns):
                             wandb_log['loss/gamma%d' % i_] = attn_info['gamma']
 
-                        import wandb as _wandb
-                        if _wandb.run:
-                            _wandb.log(wandb_log, step=iter_count + 1)
+                        if wandb.run:
+                            wandb.log(wandb_log, step=iter_count + 1)
 
                 if (iter_count + 1) % self.opt.training.sample_iter_val == 0:
                     if not (self.logger and self.writer):
@@ -988,9 +987,8 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                     if _is_master:
                         score_str = ", ".join([f"{k}: {v:.4f}" if isinstance(v, float) else f"{k}: {v}" for k, v in scores.items()])
                         self.print(f"Validation metrics at iter {iter_count + 1}: {score_str}")
-                        import wandb as _wandb
-                        if _wandb.run:
-                            _wandb.log({'valid/' + k: v for k, v in scores.items()}, step=iter_count + 1)
+                        if wandb.run:
+                            wandb.log({'valid/' + k: v for k, v in scores.items()}, step=iter_count + 1)
                     
                     if 'fid' in scores and scores['fid'] < best_fid:
                         best_fid = scores['fid']
@@ -1017,8 +1015,7 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                 scheduler.step(epoch)
 
         if _is_master:
-            import wandb as _wandb
-            _wandb.finish()
+            wandb.finish()
 
 
 class RecognizeModel(BaseModel):

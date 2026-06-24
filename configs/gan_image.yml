@@ -1,5 +1,11 @@
 device: 'cuda:0'
 model: 'gl_adversarial_model'
+
+wandb:
+  key: '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'
+  project: 'HiGANplus'
+  name: ~
+  resume: 'allow'
 dataset: 'custom'
 seed: 123456
 img_height: 64
