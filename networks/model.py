@@ -232,6 +232,9 @@ class AdversarialModel(BaseModel):
                 im.save(save_path)
                 if self.writer:
                     self.writer.add_image('Image', res_img.transpose((2, 0, 1)), iteration_done)
+                if wandb.run:
+                    wandb.log({'samples/generated': wandb.Image(res_img, caption=f'iter {iteration_done}')},
+                              step=iteration_done)
             except RuntimeError as e:
                 print(e)
 
