@@ -330,38 +330,43 @@ class AdversarialModel(BaseModel):
             res['hwd'] = hwd_val
 
         if getattr(self.opt.valid, 'validate_cmmd', True):
-            from metric.cmmd_score import calculate_cmmd_score, compute_real_embeddings
-            if not hasattr(self, 'cmmd_embedding_model') or self.cmmd_embedding_model is None:
-                from metric.cmmd.embedding import ClipEmbeddingModel
-                self.cmmd_embedding_model = ClipEmbeddingModel()
-            if not hasattr(self, 'real_cmmd_embeddings') or self.real_cmmd_embeddings is None:
-                import os
-                import numpy as np
-                cache_dir = "./pretrained"
-                cache_path = os.path.join(cache_dir, f"real_cmmd_{self.opt.valid.dset_name}_{self.opt.valid.dset_split}.npy")
-                if os.path.exists(cache_path):
-                    self.print(f"Loading cached real CMMD embeddings from {cache_path}...")
-                    self.real_cmmd_embeddings = np.load(cache_path)
-                else:
-                    self.print("Precalculating real image embeddings for CMMD...")
-                    self.real_cmmd_embeddings = compute_real_embeddings(
-                        eval_dloader, self.cmmd_embedding_model, device=self.device
-                    )
-                    try:
-                        os.makedirs(cache_dir, exist_ok=True)
-                        np.save(cache_path, self.real_cmmd_embeddings)
-                        self.print(f"Saved real CMMD embeddings to cache: {cache_path}")
-                    except Exception as e:
-                        self.print(f"Could not save real CMMD embeddings cache: {e}")
-            cmmd_val = calculate_cmmd_score(
-                eval_dloader, 
-                get_generator(), 
-                n_rand_repeat, 
-                self.device,
-                real_embeddings=self.real_cmmd_embeddings,
-                embedding_model=self.cmmd_embedding_model
-            )
-            res['cmmd'] = cmmd_val
+            current_epoch = kwargs.get('current_epoch', None)
+            every_n = getattr(self.opt.valid, 'validate_cmmd_every_n_epochs', 1)
+            should_run_cmmd = test_stage or (current_epoch is None) or (current_epoch % every_n == 0)
+            
+            if should_run_cmmd:
+                from metric.cmmd_score import calculate_cmmd_score, compute_real_embeddings
+                if not hasattr(self, 'cmmd_embedding_model') or self.cmmd_embedding_model is None:
+                    from metric.cmmd.embedding import ClipEmbeddingModel
+                    self.cmmd_embedding_model = ClipEmbeddingModel()
+                if not hasattr(self, 'real_cmmd_embeddings') or self.real_cmmd_embeddings is None:
+                    import os
+                    import numpy as np
+                    cache_dir = "./pretrained"
+                    cache_path = os.path.join(cache_dir, f"real_cmmd_{self.opt.valid.dset_name}_{self.opt.valid.dset_split}.npy")
+                    if os.path.exists(cache_path):
+                        self.print(f"Loading cached real CMMD embeddings from {cache_path}...")
+                        self.real_cmmd_embeddings = np.load(cache_path)
+                    else:
+                        self.print("Precalculating real image embeddings for CMMD...")
+                        self.real_cmmd_embeddings = compute_real_embeddings(
+                            eval_dloader, self.cmmd_embedding_model, device=self.device
+                        )
+                        try:
+                            os.makedirs(cache_dir, exist_ok=True)
+                            np.save(cache_path, self.real_cmmd_embeddings)
+                            self.print(f"Saved real CMMD embeddings to cache: {cache_path}")
+                        except Exception as e:
+                            self.print(f"Could not save real CMMD embeddings cache: {e}")
+                cmmd_val = calculate_cmmd_score(
+                    eval_dloader, 
+                    get_generator(), 
+                    n_rand_repeat, 
+                    self.device,
+                    real_embeddings=self.real_cmmd_embeddings,
+                    embedding_model=self.cmmd_embedding_model
+                )
+                res['cmmd'] = cmmd_val
 
         torch.cuda.empty_cache()
         return res
@@ -1020,7 +1025,7 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                 
                 if should_eval:
                     self.print('Calculate FID_KID (iter {})'.format(iter_count + 1)) if self.local_rank < 1 else None
-                    scores = self.validate()
+                    scores = self.validate(current_epoch=epoch)
                     if _is_master:
                         score_str = ", ".join([f"{k}: {v:.4f}" if isinstance(v, float) else f"{k}: {v}" for k, v in scores.items()])
                         self.print(f"Validation metrics at iter {iter_count + 1}: {score_str}")
