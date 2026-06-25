@@ -57,6 +57,7 @@ valid:
   validate_kid: true
   validate_is: true
   validate_hwd: true
+  validate_cmmd: true
   use_rand_corpus: false
   n_rand_repeat: 10
   batch_size: 32
