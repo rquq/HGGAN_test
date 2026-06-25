@@ -13,10 +13,15 @@ def PSNR(x_image, y_image, max_value=1.0):
 def MSSIM(x_image, y_image, max_value=1.0):
     x = np.asarray(x_image, np.float32)
     y = np.asarray(y_image, np.float32)
+    min_dim = min(x.shape[0], x.shape[1])
+    win_size = 7
+    if min_dim < 7:
+        win_size = min_dim if min_dim % 2 == 1 else min_dim - 1
+    if win_size < 3:
+        return 1.0
     return metrics.structural_similarity(x, y,
-                                         win_size=None, # default win_size is 7
-                                         data_range=max_value,
-                                         multichannel=(x.ndim>2))
+                                         win_size=win_size,
+                                         data_range=max_value)
 
 
 def calculate_mssim_psnr(data_loader, generator):
@@ -35,8 +40,8 @@ def calculate_mssim_psnr(data_loader, generator):
                 show_image_pair(src_img[0, :, :src_img_len].cpu().numpy(),
                                 gen_img[0, :, :gen_img_len].cpu().numpy(),
                                 'src_img', 'gen_img')
-            src_img = (src_img[:, :, :src_img_len].permute(1, 2, 0).cpu().numpy() + 1) / 2
-            gen_img = (gen_img[:, :, :gen_img_len].permute(1, 2, 0).cpu().numpy() + 1) / 2
+            src_img = (src_img[0, :, :src_img_len].cpu().numpy() + 1) / 2
+            gen_img = (gen_img[0, :, :gen_img_len].cpu().numpy() + 1) / 2
             psnr.append(PSNR(src_img, gen_img, max_value=1.0))
             mssim.append(MSSIM(src_img, gen_img, max_value=1.0))
 

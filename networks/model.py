@@ -339,6 +339,24 @@ class AdversarialModel(BaseModel):
             hwd_val = calculate_hwd_score(eval_dloader, get_generator(), n_rand_repeat, self.device)
             res['hwd'] = hwd_val
 
+        if getattr(self.opt.valid, 'validate_cmmd', True):
+            from metric.cmmd_score import calculate_cmmd_score, compute_real_embeddings
+            if not hasattr(self, 'cmmd_embedding_model') or self.cmmd_embedding_model is None:
+                from metric.cmmd.embedding import ClipEmbeddingModel
+                self.cmmd_embedding_model = ClipEmbeddingModel()
+            if not hasattr(self, 'real_cmmd_embeddings') or self.real_cmmd_embeddings is None:
+                self.print("Precalculating real image embeddings for CMMD...")
+                self.real_cmmd_embeddings = compute_real_embeddings(eval_dloader, self.cmmd_embedding_model)
+            cmmd_val = calculate_cmmd_score(
+                eval_dloader, 
+                get_generator(), 
+                n_rand_repeat, 
+                self.device,
+                real_embeddings=self.real_cmmd_embeddings,
+                embedding_model=self.cmmd_embedding_model
+            )
+            res['cmmd'] = cmmd_val
+
         torch.cuda.empty_cache()
         return res
 
