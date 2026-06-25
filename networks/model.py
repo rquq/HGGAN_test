@@ -335,8 +335,24 @@ class AdversarialModel(BaseModel):
                 from metric.cmmd.embedding import ClipEmbeddingModel
                 self.cmmd_embedding_model = ClipEmbeddingModel()
             if not hasattr(self, 'real_cmmd_embeddings') or self.real_cmmd_embeddings is None:
-                self.print("Precalculating real image embeddings for CMMD...")
-                self.real_cmmd_embeddings = compute_real_embeddings(eval_dloader, self.cmmd_embedding_model)
+                import os
+                import numpy as np
+                cache_dir = "./pretrained"
+                cache_path = os.path.join(cache_dir, f"real_cmmd_{self.opt.valid.dset_name}_{self.opt.valid.dset_split}.npy")
+                if os.path.exists(cache_path):
+                    self.print(f"Loading cached real CMMD embeddings from {cache_path}...")
+                    self.real_cmmd_embeddings = np.load(cache_path)
+                else:
+                    self.print("Precalculating real image embeddings for CMMD...")
+                    self.real_cmmd_embeddings = compute_real_embeddings(
+                        eval_dloader, self.cmmd_embedding_model, device=self.device
+                    )
+                    try:
+                        os.makedirs(cache_dir, exist_ok=True)
+                        np.save(cache_path, self.real_cmmd_embeddings)
+                        self.print(f"Saved real CMMD embeddings to cache: {cache_path}")
+                    except Exception as e:
+                        self.print(f"Could not save real CMMD embeddings cache: {e}")
             cmmd_val = calculate_cmmd_score(
                 eval_dloader, 
                 get_generator(), 
