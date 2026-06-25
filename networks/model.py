@@ -22,6 +22,7 @@ from lib.alphabet import strLabelConverter, get_lexicon, get_true_alphabet, Alph
 from lib.utils import draw_image, get_logger, AverageMeterManager, option_to_string, AverageMeter, plot_heatmap
 from networks.rand_dist import prepare_z_dist, prepare_y_dist
 from networks.loss import recn_l1_loss, CXLoss, KLloss, contrastive_style_loss
+from networks.masking import apply_vertical_stripe_mask, apply_horizontal_stripe_mask, apply_combined_stripe_mask
 
 
 class BaseModel(object):
@@ -340,38 +341,43 @@ class AdversarialModel(BaseModel):
             res['hwd'] = hwd_val
 
         if getattr(self.opt.valid, 'validate_cmmd', True):
-            from metric.cmmd_score import calculate_cmmd_score, compute_real_embeddings
-            if not hasattr(self, 'cmmd_embedding_model') or self.cmmd_embedding_model is None:
-                from metric.cmmd.embedding import ClipEmbeddingModel
-                self.cmmd_embedding_model = ClipEmbeddingModel()
-            if not hasattr(self, 'real_cmmd_embeddings') or self.real_cmmd_embeddings is None:
-                import os
-                import numpy as np
-                cache_dir = "./pretrained"
-                cache_path = os.path.join(cache_dir, f"real_cmmd_{self.opt.valid.dset_name}_{self.opt.valid.dset_split}.npy")
-                if os.path.exists(cache_path):
-                    self.print(f"Loading cached real CMMD embeddings from {cache_path}...")
-                    self.real_cmmd_embeddings = np.load(cache_path)
-                else:
-                    self.print("Precalculating real image embeddings for CMMD...")
-                    self.real_cmmd_embeddings = compute_real_embeddings(
-                        eval_dloader, self.cmmd_embedding_model, device=self.device
-                    )
-                    try:
-                        os.makedirs(cache_dir, exist_ok=True)
-                        np.save(cache_path, self.real_cmmd_embeddings)
-                        self.print(f"Saved real CMMD embeddings to cache: {cache_path}")
-                    except Exception as e:
-                        self.print(f"Could not save real CMMD embeddings cache: {e}")
-            cmmd_val = calculate_cmmd_score(
-                eval_dloader, 
-                get_generator(), 
-                n_rand_repeat, 
-                self.device,
-                real_embeddings=self.real_cmmd_embeddings,
-                embedding_model=self.cmmd_embedding_model
-            )
-            res['cmmd'] = cmmd_val
+            current_epoch = kwargs.get('current_epoch', None)
+            every_n = getattr(self.opt.valid, 'validate_cmmd_every_n_epochs', 1)
+            should_run_cmmd = test_stage or (current_epoch is None) or (current_epoch % every_n == 0)
+            
+            if should_run_cmmd:
+                from metric.cmmd_score import calculate_cmmd_score, compute_real_embeddings
+                if not hasattr(self, 'cmmd_embedding_model') or self.cmmd_embedding_model is None:
+                    from metric.cmmd.embedding import ClipEmbeddingModel
+                    self.cmmd_embedding_model = ClipEmbeddingModel()
+                if not hasattr(self, 'real_cmmd_embeddings') or self.real_cmmd_embeddings is None:
+                    import os
+                    import numpy as np
+                    cache_dir = "./pretrained"
+                    cache_path = os.path.join(cache_dir, f"real_cmmd_{self.opt.valid.dset_name}_{self.opt.valid.dset_split}.npy")
+                    if os.path.exists(cache_path):
+                        self.print(f"Loading cached real CMMD embeddings from {cache_path}...")
+                        self.real_cmmd_embeddings = np.load(cache_path)
+                    else:
+                        self.print("Precalculating real image embeddings for CMMD...")
+                        self.real_cmmd_embeddings = compute_real_embeddings(
+                            eval_dloader, self.cmmd_embedding_model, device=self.device
+                        )
+                        try:
+                            os.makedirs(cache_dir, exist_ok=True)
+                            np.save(cache_path, self.real_cmmd_embeddings)
+                            self.print(f"Saved real CMMD embeddings to cache: {cache_path}")
+                        except Exception as e:
+                            self.print(f"Could not save real CMMD embeddings cache: {e}")
+                cmmd_val = calculate_cmmd_score(
+                    eval_dloader, 
+                    get_generator(), 
+                    n_rand_repeat, 
+                    self.device,
+                    real_embeddings=self.real_cmmd_embeddings,
+                    embedding_model=self.cmmd_embedding_model
+                )
+                res['cmmd'] = cmmd_val
 
         torch.cuda.empty_cache()
         return res
@@ -430,12 +436,15 @@ class AdversarialModel(BaseModel):
             writer_backbone = test_writer_backbone
             print('load pretrained test_writer_identifier: ', self.opt.valid.pretrained_test_w)
         else:
-            writer_identifier = WriterIdentifier(**self.opt.WidModel).to(self.device)
-            writer_backbone = StyleBackbone(**self.opt.StyBackbone).to(self.device)
-            print('load pretrained writer_identifier: ', self.opt.training.pretrained_w)
-            w_dict = torch.load(self.opt.training.pretrained_w, map_location=self.device)
-            writer_identifier.load_state_dict(w_dict['WriterIdentifier'], strict=False)
-            writer_backbone.load_state_dict(w_dict['StyleBackbone'], strict=False)
+            # OPTIMIZATION: Use the already loaded WriterIdentifier and StyleBackbone
+            # from self.models instead of creating a new copy to avoid redundant VRAM allocation and OOM.
+            if self.local_rank > -1:
+                writer_identifier = self.models.W.module
+                writer_backbone = self.models.B.module
+            else:
+                writer_identifier = self.models.W
+                writer_backbone = self.models.B
+            print('Using already loaded writer identifier and style backbone')
 
         writer_identifier.eval(), writer_backbone.eval()
         with torch.no_grad():
@@ -716,11 +725,6 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                                betas=(opt.training.adam_b1, opt.training.adam_b2)),
         )
 
-        self.lr_schedulers = Munch(
-            G=get_scheduler(self.optimizers.G, opt.training),
-            D=get_scheduler(self.optimizers.D, opt.training)
-        )
-
         epoch_done = 1
         if os.path.exists(self.opt.training.pretrained_ckpt):
             epoch_done = self.load(self.opt.training.pretrained_ckpt, self.device) + 1
@@ -739,6 +743,11 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                 self.models.R.load_state_dict(r_dict, strict=False)
                 print('load pretrained recognizer: ', self.opt.training.pretrained_r)
                 # self.validate_ocr()
+
+        self.lr_schedulers = Munch(
+            G=get_scheduler(self.optimizers.G, opt.training, last_epoch=epoch_done - 1),
+            D=get_scheduler(self.optimizers.D, opt.training, last_epoch=epoch_done - 1)
+        )
 
         # multi-gpu
         if self.local_rank > -1:
@@ -770,9 +779,6 @@ class GlobalLocalAdversarialModel(AdversarialModel):
         iter_count = (epoch_done - 1) * len(self.train_loader)
         is_best = False
         best_scores = None
-
-        for scheduler in self.lr_schedulers.values():
-            scheduler.step(epoch_done - 1)
 
         for epoch in range(epoch_done, self.opt.training.epochs):
             for i, batch in enumerate(self.train_loader):
@@ -806,10 +812,19 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                     self.z.sample_()
                     fake_imgs = self.models.G(self.z, fake_lbs, fake_lb_lens)
 
-                    if self.vae_mode:
-                        enc_z, _, _ = self.models.E(real_imgs, real_img_lens, self.models.B, vae_mode=True)
+                    # Apply horizontal masking to style encoder inputs to improve horizontal learning
+                    masking_mode = getattr(self.opt.training, 'masking_mode', 'none')
+                    if masking_mode == 'horizontal':
+                        masked_real_imgs = apply_horizontal_stripe_mask(real_imgs, real_img_lens)
+                    elif masking_mode == 'combined':
+                        masked_real_imgs = apply_combined_stripe_mask(real_imgs, real_img_lens)
                     else:
-                        enc_z = self.models.E(real_imgs, real_img_lens, self.models.B, vae_mode=False)
+                        masked_real_imgs = real_imgs
+
+                    if self.vae_mode:
+                        enc_z, _, _ = self.models.E(masked_real_imgs, real_img_lens, self.models.B, vae_mode=True)
+                    else:
+                        enc_z = self.models.E(masked_real_imgs, real_img_lens, self.models.B, vae_mode=False)
 
                     style_imgs = self.models.G(enc_z, fake_lbs, fake_lb_lens)
                     recn_imgs = self.models.G(enc_z, real_lbs, real_lb_lens)
@@ -833,9 +848,18 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                                   torch.mean(F.relu(1.0 + d_recn))) / 3
 
                 # Patch Discriminator forwards
-                p_fake = self.models.P(extract_all_patches(fake_imgs, fake_img_lens).detach())
-                p_style = self.models.P(extract_all_patches(style_imgs, style_img_lens).detach())
-                p_recn = self.models.P(extract_all_patches(recn_imgs, recn_img_lens).detach())
+                p_fake_patches, p_fake_rows = extract_all_patches(fake_imgs, fake_img_lens, ret_y_indices=True)
+                p_fake_patches, p_fake_rows = p_fake_patches.detach(), p_fake_rows.detach()
+                p_style_patches, p_style_rows = extract_all_patches(style_imgs, style_img_lens, ret_y_indices=True)
+                p_style_patches, p_style_rows = p_style_patches.detach(), p_style_rows.detach()
+                p_recn_patches, p_recn_rows = extract_all_patches(recn_imgs, recn_img_lens, ret_y_indices=True)
+                p_recn_patches, p_recn_rows = p_recn_patches.detach(), p_recn_rows.detach()
+
+                masking_mode = getattr(self.opt.training, 'masking_mode', 'none')
+
+                p_fake = self.models.P(p_fake_patches, row_indices=p_fake_rows)
+                p_style = self.models.P(p_style_patches, row_indices=p_style_rows)
+                p_recn = self.models.P(p_recn_patches, row_indices=p_recn_rows)
                 fake_disc_loss_patch = (torch.mean(F.relu(1.0 + p_fake)) + 
                                         torch.mean(F.relu(1.0 + p_style)) + 
                                         torch.mean(F.relu(1.0 + p_recn))) / 3
@@ -846,11 +870,11 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                 real_disc_loss = (torch.mean(F.relu(1.0 - real_disc)) +
                                   torch.mean(F.relu(1.0 - real_disc_aug))) / 2
 
-                real_img_patches = extract_all_patches(real_imgs, real_img_lens, plot=False)
-                real_aug_imgs_patches = extract_all_patches(real_aug_imgs, real_aug_img_lens)
-                real_disc_patches = self.models.P(torch.cat([real_img_patches,
-                                                             real_aug_imgs_patches],
-                                                             dim=0) .detach())
+                real_img_patches, real_img_rows = extract_all_patches(real_imgs, real_img_lens, plot=False, ret_y_indices=True)
+                real_aug_imgs_patches, real_aug_rows = extract_all_patches(real_aug_imgs, real_aug_img_lens, ret_y_indices=True)
+                real_patches_cat = torch.cat([real_img_patches, real_aug_imgs_patches], dim=0).detach()
+                real_rows_cat = torch.cat([real_img_rows, real_aug_rows], dim=0).detach()
+                real_disc_patches = self.models.P(real_patches_cat, row_indices=real_rows_cat)
                 real_disc_loss_patch = torch.mean(F.relu(1.0 - real_disc_patches))
 
                 disc_loss = real_disc_loss + fake_disc_loss + real_disc_loss_patch + fake_disc_loss_patch
@@ -886,12 +910,25 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                     self.z.sample_()
                     fake_imgs = self.models.G(self.z, fake_lbs, fake_lb_lens)
 
-                    if self.vae_mode:
-                        (enc_z, mu, logvar), real_img_feats = self.models.E(real_imgs, real_img_lens, self.models.B,
-                                                                            ret_feats=True, vae_mode=True)
+                    # Apply horizontal masking to style encoder inputs to improve horizontal learning
+                    masking_mode = getattr(self.opt.training, 'masking_mode', 'none')
+                    if masking_mode == 'horizontal':
+                        masked_real_imgs = apply_horizontal_stripe_mask(real_imgs, real_img_lens)
+                    elif masking_mode == 'combined':
+                        masked_real_imgs = apply_combined_stripe_mask(real_imgs, real_img_lens)
                     else:
-                        enc_z, real_img_feats = self.models.E(real_imgs, real_img_lens, self.models.B,
-                                                              ret_feats=True, vae_mode=False)
+                        masked_real_imgs = real_imgs
+
+                    if self.vae_mode:
+                        enc_z, mu, logvar = self.models.E(masked_real_imgs, real_img_lens, self.models.B,
+                                                          ret_feats=False, vae_mode=True)
+                        _, real_img_feats = self.models.E(real_imgs, real_img_lens, self.models.B,
+                                                          ret_feats=True, vae_mode=False)
+                    else:
+                        enc_z = self.models.E(masked_real_imgs, real_img_lens, self.models.B,
+                                             ret_feats=False, vae_mode=False)
+                        _, real_img_feats = self.models.E(real_imgs, real_img_lens, self.models.B,
+                                                          ret_feats=True, vae_mode=False)
                     style_imgs = self.models.G(enc_z, fake_lbs, fake_lb_lens)
                     recn_imgs = self.models.G(enc_z, real_lbs, real_lb_lens)
 
@@ -910,9 +947,14 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                     d_recn = self.models.D(recn_imgs, recn_img_lens, real_lb_lens)
                     adv_loss = -(torch.mean(d_fake) + torch.mean(d_style) + torch.mean(d_recn)) / 3
 
-                    p_fake = self.models.P(extract_all_patches(fake_imgs, fake_img_lens))
-                    p_style = self.models.P(extract_all_patches(style_imgs, style_img_lens))
-                    p_recn = self.models.P(extract_all_patches(recn_imgs, recn_img_lens))
+                    p_fake_patches, p_fake_rows = extract_all_patches(fake_imgs, fake_img_lens, ret_y_indices=True)
+                    p_style_patches, p_style_rows = extract_all_patches(style_imgs, style_img_lens, ret_y_indices=True)
+                    p_recn_patches, p_recn_rows = extract_all_patches(recn_imgs, recn_img_lens, ret_y_indices=True)
+
+
+                    p_fake = self.models.P(p_fake_patches, row_indices=p_fake_rows)
+                    p_style = self.models.P(p_style_patches, row_indices=p_style_rows)
+                    p_recn = self.models.P(p_recn_patches, row_indices=p_recn_rows)
                     adv_loss_patch = -(torch.mean(p_fake) + torch.mean(p_style) + torch.mean(p_recn)) / 3
 
                     ### CTC Auxiliary loss ###
@@ -1070,7 +1112,7 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                 
                 if should_eval:
                     self.print('Calculate FID_KID (iter {})'.format(iter_count + 1)) if self.local_rank < 1 else None
-                    scores = self.validate()
+                    scores = self.validate(current_epoch=epoch)
                     if _is_master:
                         score_str = ", ".join([f"{k}: {v:.4f}" if isinstance(v, float) else f"{k}: {v}" for k, v in scores.items()])
                         self.print(f"Validation metrics at iter {iter_count + 1}: {score_str}")
@@ -1152,21 +1194,19 @@ class RecognizeModel(BaseModel):
         )
 
         self.optimizers = Munch(R=torch.optim.Adam(self.models.R.parameters(), lr=self.opt.training.lr))
-        self.lr_schedulers = Munch(R=get_scheduler(self.optimizers.R, self.opt.training))
 
         epoch_done = 1
         if self.opt.training.resume:
             epoch_done = self.load(self.opt.training.resume)
             self.print(self.validate())
 
+        self.lr_schedulers = Munch(R=get_scheduler(self.optimizers.R, self.opt.training, last_epoch=epoch_done - 1))
+
         device = self.device
         ctc_loss_meter = AverageMeter()
         ctc_len_scale = self.models.R.len_scale
         best_cer = np.inf
         iter_count = (epoch_done - 1) * len(self.train_loader)
-
-        for scheduler in self.lr_schedulers.values():
-            scheduler.step(epoch_done - 1)
 
         for epoch in range(epoch_done, self.opt.training.epochs):
             for i, batch in enumerate(self.train_loader):
@@ -1317,20 +1357,17 @@ class WriterIdentifyModel(BaseModel):
                                         chain(self.models.W.parameters(), self.models.B.parameters()),
                                     lr=self.opt.training.lr))
 
-        self.lr_schedulers = Munch(W=get_scheduler(self.optimizers.W, self.opt.training))
-
         epoch_done = 1
         if self.opt.training.resume:
             epoch_done = self.load(self.opt.training.resume)
             self.print(self.validate())
 
+        self.lr_schedulers = Munch(W=get_scheduler(self.optimizers.W, self.opt.training, last_epoch=epoch_done - 1))
+
         device = self.device
         wid_loss_meter = AverageMeter()
         best_wrr = 0
         iter_count = (epoch_done - 1) * len(self.train_loader)
-
-        for scheduler in self.lr_schedulers.values():
-            scheduler.step(epoch_done - 1)
 
         for epoch in range(epoch_done, self.opt.training.epochs):
             for i, batch in enumerate(self.train_loader):

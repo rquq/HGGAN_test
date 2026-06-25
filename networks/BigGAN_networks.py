@@ -407,6 +407,51 @@ class Discriminator(nn.Module):
 class PatchDiscriminator(Discriminator):
     def __init__(self, *args, **kwargs):
         super(PatchDiscriminator, self).__init__(*args, **kwargs)
+        # Learnable row-specific spatial bias to make the patch discriminator row-aware (for 5 vertical positions)
+        self.row_bias = nn.Parameter(torch.zeros(5, 1, 32, 32))
+        nn.init.normal_(self.row_bias, std=0.01)
+
+        # Learnable row-specific projection embedding for conditional row discrimination
+        self.row_embed = self.which_embedding(5, self.arch['out_channels'][-1])
+        nn.init.orthogonal_(self.row_embed.weight)
+
+    def forward(self, x, x_lens=None, y_lens=None, row_indices=None):
+        if row_indices is not None:
+            # Add row-specific spatial bias to inject vertical position information
+            x = x + self.row_bias[row_indices]
+
+        # Process through the standard discriminator blocks
+        h = x
+        len_scale = 1
+        for index, blocklist in enumerate(self.blocks):
+            for block in blocklist:
+                h = block(h, x_len=torch.div(x_lens, len_scale, rounding_mode='trunc') if x_lens is not None else None)
+            len_scale *= 2 if self.arch['downsample'][index] else 1
+
+        # Global sum pooling
+        if x_lens is None:
+            h = torch.sum(self.activation(h), [2, 3])
+        else:
+            h = self.activation(h)
+            h_lens = torch.div(x_lens * h.size(-1), (x.size(-1) + 1e-8), rounding_mode='trunc')
+            mask = _len2mask(h_lens.int(), h.size(-1), torch.float32).to(x.device).detach()
+            mask = mask.view(mask.size(0), 1, 1, mask.size(1))
+            h = torch.sum(h * mask, [2, 3])
+            h = h / y_lens.unsqueeze(dim=-1)
+
+        # Base validity score
+        out = self.linear(h)
+
+        # Projection conditioning: compute dot product of the feature and row embedding
+        if row_indices is not None:
+            if self.one_hot:
+                row_input = F.one_hot(row_indices, num_classes=5).float()
+            else:
+                row_input = row_indices
+            proj = torch.sum(h * self.row_embed(row_input), dim=1, keepdim=True)
+            out = out + proj
+
+        return out
 
 
 

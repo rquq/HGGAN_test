@@ -58,11 +58,59 @@ class StyleContentCrossAttention(nn.Module):
         ffn_out = self.ffn(x)
         return self.norm2(x + ffn_out)
 
+class AllographicModulation(nn.Module):
+    """
+    Dynamic character-conditioned allograph modulation (AdaIN style).
+    Allows each content character token to dynamically pool style tokens that best match
+    its spatial/glyph properties, predicting character-specific scale and shift.
+    """
+    def __init__(self, d_model):
+        super().__init__()
+        self.q_proj = nn.Linear(d_model, d_model)
+        self.k_proj = nn.Linear(d_model, d_model)
+        self.v_proj = nn.Linear(d_model, d_model)
+        
+        self.mod_proj = nn.Sequential(
+            nn.Linear(d_model, d_model),
+            nn.SiLU(),
+            nn.Linear(d_model, d_model * 2)
+        )
+        
+    def forward(self, content_seq, style_seq):
+        """
+        Args:
+            content_seq: (B, L, D) refined content sequence
+            style_seq: (B, S, D) style sequence features
+        """
+        B, L, D = content_seq.shape
+        S = style_seq.shape[1]
+        
+        # Compute dynamic character-conditioned query-key alignment weights
+        q = self.q_proj(content_seq) # (B, L, D)
+        k = self.k_proj(style_seq)   # (B, S, D)
+        v = self.v_proj(style_seq)   # (B, S, D)
+        
+        # Scaled dot-product attention
+        scores = torch.matmul(q, k.transpose(-2, -1)) / (D ** 0.5) # (B, L, S)
+        attn_weights = torch.softmax(scores, dim=-1) # (B, L, S)
+        
+        # Character-specific style features: (B, L, S) * (B, S, D) -> (B, L, D)
+        style_char = torch.matmul(attn_weights, v) 
+        
+        # Dynamic AdaIN scale & shift parameters per character
+        mod_params = self.mod_proj(style_char) # (B, L, D*2)
+        scale, shift = mod_params.chunk(2, dim=-1)
+        
+        return content_seq * (1 + scale) + shift
+
+
 class StyleContentMamba(nn.Module):
     """
-    Improved 1D Prefix-Context Mamba Fusion with Dynamic Allograph Cross-Attention.
+    Improved 1D Prefix-Context Mamba Fusion with Dynamic Allograph Cross-Attention
+    and Character-Conditioned Allographic Modulation.
     Treats the style vector as a prompt/prefix token for the content sequence,
-    and then applies cross-attention and a local stroke boundary gate for high-fidelity alignment.
+    and then applies cross-attention, a local stroke boundary gate, and a highly responsive
+    character-style dynamic modulation block to synthesize hyper-realistic glyph details.
     """
     def __init__(self, d_model, style_dim, d_state=16, d_conv=4, expand=2):
         super().__init__()
@@ -97,8 +145,11 @@ class StyleContentMamba(nn.Module):
         # 5. Normalization and Stability
         self.norm = RMSNorm(d_model)
         
-        # 6. Refined Global Style Modulation (AdaIN style)
-        self.style_mod = nn.Sequential(
+        # 6. Character-Conditioned Allographic Modulation
+        self.allograph_mod = AllographicModulation(d_model)
+        
+        # 7. Global Style Modulation (maintained as a residual global bias)
+        self.global_style_mod = nn.Sequential(
             nn.Linear(style_dim, d_model),
             nn.SiLU(),
             nn.Linear(d_model, d_model * 2)
@@ -136,12 +187,16 @@ class StyleContentMamba(nn.Module):
         # --- STAGE 5: Allograph Refinement via Dynamic Cross-Attention ---
         content_final = self.cross_attn(content_local, s_feat)
         
-        # --- STAGE 6: Style Modulation ---
+        # --- STAGE 6: Allographic Modulation (Dynamic Character-Conditioned) ---
+        content_modulated = self.allograph_mod(content_final, s_feat)
+        
+        # --- STAGE 7: Global Style Modulation Residual ---
         style_vec = style_seq.sum(dim=1) / style_seq.size(1) # (B, style_dim)
-        mod_params = self.style_mod(style_vec).unsqueeze(1) # (B, 1, D*2)
+        mod_params = self.global_style_mod(style_vec).unsqueeze(1) # (B, 1, D*2)
         scale, shift = mod_params.chunk(2, dim=-1)
         
-        return content_final * (1 + scale) + shift
+        return content_modulated * (1 + scale) + shift
+
 
 class MixMamba(nn.Module):
     def __init__(self, d_model, style_dim):

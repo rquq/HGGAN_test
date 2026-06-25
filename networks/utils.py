@@ -90,7 +90,7 @@ def get_linear_scheduler(optimizer, start_decay_iter, n_iters_decay):
     return scheduler
 
 
-def get_scheduler(optimizer, opt):
+def get_scheduler(optimizer, opt, last_epoch=-1):
     """Return a learning rate scheduler
 
     Parameters:
@@ -101,19 +101,23 @@ def get_scheduler(optimizer, opt):
     For 'linear', we keep the same learning rate for the first <opt.n_epochs> epochs
     and linearly decay the rate to zero over the next <opt.n_epochs_decay> epochs.
     For other schedulers (step, plateau, and cosine), we use the default PyTorch schedulers.
-    See https://pytorch.org/docs/stable/optim.html for more details.
     """
+    # If resuming and last_epoch > -1, PyTorch expects initial_lr to be present in all param groups
+    for group in optimizer.param_groups:
+        if 'initial_lr' not in group:
+            group['initial_lr'] = group.get('lr', opt.lr)
+
     if opt.lr_policy == 'linear':
         def lambda_rule(epoch):
             lr_l = 1.0 - min(max(0, (epoch - opt.start_decay_epoch) / float(opt.n_epochs_decay + 1)), 0.999)
             return lr_l
-        scheduler = lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda_rule)
+        scheduler = lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda_rule, last_epoch=last_epoch)
     elif opt.lr_policy == 'step':
-        scheduler = lr_scheduler.StepLR(optimizer, step_size=opt.lr_decay_iters, gamma=0.1)
+        scheduler = lr_scheduler.StepLR(optimizer, step_size=opt.lr_decay_iters, gamma=0.1, last_epoch=last_epoch)
     elif opt.lr_policy == 'plateau':
         scheduler = lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.2, threshold=0.01, patience=5)
     elif opt.lr_policy == 'cosine':
-        scheduler = lr_scheduler.CosineAnnealingLR(optimizer, T_max=opt.n_epochs, eta_min=0)
+        scheduler = lr_scheduler.CosineAnnealingLR(optimizer, T_max=opt.n_epochs, eta_min=0, last_epoch=last_epoch)
     else:
         return NotImplementedError('learning rate policy [%s] is not implemented', opt.lr_policy)
     return scheduler
@@ -305,7 +309,7 @@ def extract_patches_2d(img,patch_shape,step=[1.0,1.0],batch_first=False):
         patches = patches.permute(1,0,2,3,4)
     return patches
 
-def extract_all_patches(org_imgs, org_img_lens, block_size=32, step=8, plot=False):
+def extract_all_patches(org_imgs, org_img_lens, block_size=32, step=8, plot=False, ret_y_indices=False):
     img_h = org_imgs.size(-2)
     n_patch_row = (img_h - block_size) // step + 1
     patches = extract_patches_2d(org_imgs, (block_size, block_size), step=[step, step], batch_first=True)
@@ -313,6 +317,16 @@ def extract_all_patches(org_imgs, org_img_lens, block_size=32, step=8, plot=Fals
     mask = _len2mask(patch_lens, patches.size(1) // n_patch_row).repeat(1, n_patch_row).bool()
     patches = patches.masked_select(mask.view(*mask.size(), 1, 1, 1))
     patches = patches.view(-1, 1, block_size, block_size)
+    
+    if ret_y_indices:
+        row_indices = []
+        for k in range(org_imgs.size(0)):
+            L_k = int(patch_lens[k].item())
+            for r in range(n_patch_row):
+                row_indices.extend([r] * L_k)
+        row_indices = torch.tensor(row_indices, dtype=torch.long, device=org_imgs.device)
+        return patches, row_indices
+
     if plot:
         idx = np.random.randint(1, org_imgs.size(0))
 

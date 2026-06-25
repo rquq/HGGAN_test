@@ -48,6 +48,7 @@ training:
   pretrained_w: './pretrained/wid_iam_new.pth'
   pretrained_r: './pretrained/ocr_iam_new.pth'
   pretrained_ckpt: ''
+  masking_mode: 'horizontal'
 
 
 valid:
@@ -59,6 +60,7 @@ valid:
   validate_is: true
   validate_hwd: true
   validate_cmmd: true
+  validate_cmmd_every_n_epochs: 3
   use_rand_corpus: false
   n_rand_repeat: 10
   batch_size: 32
@@ -92,7 +94,7 @@ test:
 
 # network configuration
 GenModel:
-  G_ch: 32
+  G_ch: 64
   style_dim: 32
   bottom_width: 4
   bottom_height: 4
