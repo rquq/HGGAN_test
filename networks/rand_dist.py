@@ -56,10 +56,22 @@ class Distribution(torch.Tensor):
     # # Silly hack: overwrite the to() method to wrap the new object
     # # in a distribution as well
     def to(self, *args, **kwargs):
-        new_obj = Distribution(self)
-        new_obj.init_distribution(self.dist_type, **self.dist_kwargs)
-        new_obj.data = super().to(*args, **kwargs)
+        device_tensor = super().to(*args, **kwargs)
+        new_obj = Distribution(device_tensor)
+        new_obj.dist_type = self.dist_type
+        new_obj.dist_kwargs = self.dist_kwargs
+        if self.dist_type == 'normal':
+            new_obj.mean, new_obj.var = self.mean, self.var
+        elif self.dist_type == 'uniform':
+            new_obj.low, new_obj.high = self.low, self.high
+        elif self.dist_type == 'categorical':
+            new_obj.num_categories = self.num_categories
+        elif self.dist_type == 'poisson':
+            new_obj.lam = self.lam
+        elif self.dist_type == 'gamma':
+            new_obj.scale = self.scale
         return new_obj
+
 
 # Convenience function to prepare a z vector
 def prepare_z_dist(G_batch_size, dim_z, device='cuda', seed=0, num_tokens=32):

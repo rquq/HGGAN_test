@@ -109,6 +109,7 @@ class BaseModel(object):
                 print('Load %s failed'%('OPT.' + key))
 
         epoch = 0 if 'Epoch' not in ckpt else ckpt['Epoch']
+        self.iter_count_loaded = ckpt.get('iter_count', None)
         del ckpt
         import gc
         gc.collect()
@@ -776,7 +777,9 @@ class GlobalLocalAdversarialModel(AdversarialModel):
             ctc_len_scale = self.models.R.len_scale
 
         best_fid = np.inf
-        iter_count = (epoch_done - 1) * len(self.train_loader)
+        iter_count = getattr(self, 'iter_count_loaded', None)
+        if iter_count is None:
+            iter_count = (epoch_done - 1) * len(self.train_loader)
         is_best = False
         best_scores = None
 
@@ -1129,9 +1132,9 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                     if not os.path.exists(ckpt_root):
                         os.makedirs(ckpt_root) if self.local_rank < 1 else None
                     
-                    self.save('last', epoch)
+                    self.save('last', epoch, iter_count=iter_count)
                     if is_best:
-                        self.save('best', epoch, **best_scores) if self.local_rank < 1 else None
+                        self.save('best', epoch, iter_count=iter_count, **best_scores) if self.local_rank < 1 else None
                         is_best = False
 
                 iter_count += 1
@@ -1206,7 +1209,9 @@ class RecognizeModel(BaseModel):
         ctc_loss_meter = AverageMeter()
         ctc_len_scale = self.models.R.len_scale
         best_cer = np.inf
-        iter_count = (epoch_done - 1) * len(self.train_loader)
+        iter_count = getattr(self, 'iter_count_loaded', None)
+        if iter_count is None:
+            iter_count = (epoch_done - 1) * len(self.train_loader)
 
         for epoch in range(epoch_done, self.opt.training.epochs):
             for i, batch in enumerate(self.train_loader):
@@ -1254,7 +1259,7 @@ class RecognizeModel(BaseModel):
                 if not os.path.exists(ckpt_root):
                     os.makedirs(ckpt_root)
 
-                self.save('last', epoch)
+                self.save('last', epoch, iter_count=iter_count)
 
 
             for scheduler in self.lr_schedulers.values():
@@ -1367,7 +1372,9 @@ class WriterIdentifyModel(BaseModel):
         device = self.device
         wid_loss_meter = AverageMeter()
         best_wrr = 0
-        iter_count = (epoch_done - 1) * len(self.train_loader)
+        iter_count = getattr(self, 'iter_count_loaded', None)
+        if iter_count is None:
+            iter_count = (epoch_done - 1) * len(self.train_loader)
 
         for epoch in range(epoch_done, self.opt.training.epochs):
             for i, batch in enumerate(self.train_loader):
@@ -1416,7 +1423,7 @@ class WriterIdentifyModel(BaseModel):
                 if not os.path.exists(ckpt_root):
                     os.makedirs(ckpt_root)
 
-                self.save('last', epoch)
+                self.save('last', epoch, iter_count=iter_count)
 
 
             for scheduler in self.lr_schedulers.values():
