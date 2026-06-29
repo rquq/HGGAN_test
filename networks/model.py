@@ -114,8 +114,9 @@ class BaseModel(object):
             except Exception as e:
                 print('Load %s failed'%('OPT.' + key))
 
-        ckpt['Epoch'] = 0 if 'Epoch' not in ckpt else ckpt['Epoch']
-        return ckpt['Epoch']
+        epoch = 0 if 'Epoch' not in ckpt else ckpt['Epoch']
+        self.iter_count_loaded = ckpt.get('iter_count', None)
+        return epoch
 
     def set_mode(self, mode='eval'):
         for model in self.models.values():
@@ -757,7 +758,9 @@ class GlobalLocalAdversarialModel(AdversarialModel):
         best_fid = np.inf
         is_best = False
         best_scores = {}
-        iter_count = 0
+        iter_count = getattr(self, 'iter_count_loaded', None)
+        if iter_count is None:
+            iter_count = (epoch_done - 1) * len(self.train_loader)
         for epoch in range(epoch_done, self.opt.training.epochs):
             for i, batch in enumerate(self.train_loader):
                 #############################
@@ -1042,9 +1045,9 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                     if not os.path.exists(ckpt_root):
                         os.makedirs(ckpt_root) if self.local_rank < 1 else None
                     
-                    self.save('last', epoch)
+                    self.save('last', epoch, iter_count=iter_count)
                     if is_best:
-                        self.save('best', epoch, **best_scores) if self.local_rank < 1 else None
+                        self.save('best', epoch, iter_count=iter_count, **best_scores) if self.local_rank < 1 else None
                         is_best = False
 
                 iter_count += 1
@@ -1118,7 +1121,9 @@ class RecognizeModel(BaseModel):
         ctc_loss_meter = AverageMeter()
         ctc_len_scale = self.models.R.len_scale
         best_cer = np.inf
-        iter_count = 0
+        iter_count = getattr(self, 'iter_count_loaded', None)
+        if iter_count is None:
+            iter_count = (epoch_done - 1) * len(self.train_loader)
         for epoch in range(epoch_done, self.opt.training.epochs):
             for i, batch in enumerate(self.train_loader):
                 #############################
@@ -1167,7 +1172,7 @@ class RecognizeModel(BaseModel):
                 if not os.path.exists(ckpt_root):
                     os.makedirs(ckpt_root)
 
-                self.save('last', epoch)
+                self.save('last', epoch, iter_count=iter_count)
                 if epoch >= self.opt.training.start_save_epoch_val and \
                         (epoch % self.opt.training.save_epoch_val == 0 or
                          epoch >= self.opt.training.epochs):
@@ -1181,7 +1186,7 @@ class RecognizeModel(BaseModel):
                     self.print('WER:{} CER:{}'.format(wer, cer))
                     if cer < best_cer:
                         best_cer = cer
-                        self.save('best', epoch, WER=wer, CER=cer)
+                        self.save('best', epoch, iter_count=iter_count, WER=wer, CER=cer)
                     if self.writer:
                         self.writer.add_scalar('valid/WER', wer, epoch)
                         self.writer.add_scalar('valid/CER', cer, epoch)
@@ -1296,7 +1301,9 @@ class WriterIdentifyModel(BaseModel):
         device = self.device
         wid_loss_meter = AverageMeter()
         best_wrr = 0
-        iter_count = 0
+        iter_count = getattr(self, 'iter_count_loaded', None)
+        if iter_count is None:
+            iter_count = (epoch_done - 1) * len(self.train_loader)
         for epoch in range(epoch_done, self.opt.training.epochs):
             for i, batch in enumerate(self.train_loader):
                 #############################
@@ -1344,7 +1351,7 @@ class WriterIdentifyModel(BaseModel):
                 if not os.path.exists(ckpt_root):
                     os.makedirs(ckpt_root)
 
-                self.save('last', epoch)
+                self.save('last', epoch, iter_count=iter_count)
                 if epoch >= self.opt.training.start_save_epoch_val and \
                         (epoch % self.opt.training.save_epoch_val == 0 or
                          epoch >= self.opt.training.epochs):
@@ -1357,7 +1364,7 @@ class WriterIdentifyModel(BaseModel):
                     self.print('WRR:{:.2f}'.format(wrr))
                     if wrr > best_wrr:
                         best_wrr = wrr
-                        self.save('best', epoch, WRR=wrr)
+                        self.save('best', epoch, iter_count=iter_count, WRR=wrr)
                     if self.writer:
                         self.writer.add_scalar('valid/WRR', wrr, epoch)
 
