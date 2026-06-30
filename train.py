@@ -15,12 +15,34 @@ if __name__ == "__main__":
         default="configs/gan_iam.yml",
         help="Configuration file to use",
     )
+    parser.add_argument(
+        "--local_rank",
+        type=int,
+        default=-1,
+        help="Local rank for distributed training",
+    )
 
     args = parser.parse_args()
     cfg = yaml2config(args.config)
-    run_id = datetime.strftime(datetime.now(), '%m-%d-%H-%M')
+    
+    local_rank = args.local_rank
+    if local_rank == -1 and "LOCAL_RANK" in os.environ:
+        local_rank = int(os.environ["LOCAL_RANK"])
+    cfg.local_rank = local_rank
+
+    if local_rank > -1:
+        import torch
+        torch.cuda.set_device(local_rank)
+        torch.distributed.init_process_group(backend='nccl')
+        
+        run_id = datetime.strftime(datetime.now(), '%m-%d-%H-%M')
+        run_id_tensor = torch.tensor([ord(c) for c in run_id], dtype=torch.long, device=local_rank)
+        torch.distributed.broadcast(run_id_tensor, src=0)
+        run_id = "".join([chr(c) for c in run_id_tensor.cpu().tolist()])
+    else:
+        run_id = datetime.strftime(datetime.now(), '%m-%d-%H-%M')
+
     logdir = os.path.join("runs", os.path.basename(args.config)[:-4] + '-' + str(run_id))
 
     model = get_model(cfg.model)(cfg, logdir)
     model.train()
-

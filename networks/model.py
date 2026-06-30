@@ -322,6 +322,8 @@ class AdversarialModel(BaseModel):
 
     @save_rng_state
     def validate(self, style_guided=True, test_stage=False, *args, **kwargs):
+        if self.local_rank >= 1:
+            return {}
         self.set_mode('eval')
         # style images are resized
         eval_dloader = DataLoader(
@@ -721,7 +723,21 @@ class GlobalLocalAdversarialModel(AdversarialModel):
         # ── WandB init (master process only) ──────────────────────────────
         _is_master = self.local_rank < 1
         if _is_master and hasattr(self.opt, 'wandb'):
-            wandb.login(key=self.opt.wandb.key)
+            wandb_key = os.environ.get('WANDB_API_KEY')
+            if not wandb_key:
+                for path in ['wandb_key.txt', '../wandb_key.txt', '../../wandb_key.txt', '../../../wandb_key.txt']:
+                    if os.path.exists(path):
+                        try:
+                            with open(path, 'r') as f:
+                                wandb_key = f.read().strip()
+                            if wandb_key:
+                                break
+                        except Exception:
+                            pass
+            if not wandb_key:
+                wandb_key = self.opt.wandb.get('key')
+            if wandb_key:
+                wandb.login(key=wandb_key)
             wandb.init(
                 project=self.opt.wandb.project,
                 name=self.opt.wandb.name or (os.path.basename(self.log_root) if self.log_root else 'run'),
