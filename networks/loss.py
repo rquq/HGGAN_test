@@ -82,68 +82,38 @@ class CXLoss(nn.Module):
     def l2_normalize_channelwise(self, features):
         # Normalize on channel dimension (axis=1)
         norms = features.norm(p=2, dim=1, keepdim=True)
-        features = features.div(norms)
+        features = features.div(norms + 1e-8)
         return features
 
-    def patch_decomposition(self, features):
-        N, C, H, W = features.shape
-        assert N == 1
-        P = H * W
-        # NCHW --> 1x1xCXHW --> HWxCx1x1
-        patches = features.view(1, 1, C, P).permute((3, 2, 0, 1))
-        return patches
-
-    def calc_relative_distances(self, raw_dist, axis=1):
-        epsilon = 1e-5
-        # [0] means get the value, torch min will return the index as well
-        div = torch.min(raw_dist, dim=axis, keepdim=True)[0]
-        relative_dist = raw_dist / (div + epsilon)
-        return relative_dist
-
-    def calc_CX(self, dist, axis=1):
-        W = torch.exp((self.b - dist) / self.sigma)
-        W_sum = W.sum(dim=axis, keepdim=True)
-        return W.div(W_sum)
-
     def forward(self, featureT, featureI):
-        '''
-        :param featureT: target
-        :param featureI: inference
-        :return:
-        '''
-
-        # print("featureT target size:", featureT.shape)
-        # print("featureI inference size:", featureI.shape)
-
         featureI, featureT = self.center_by_T(featureI, featureT)
-
         featureI = self.l2_normalize_channelwise(featureI)
         featureT = self.l2_normalize_channelwise(featureT)
 
-        dist = []
-        N = featureT.size()[0]
-        for i in range(N):
-            # NCHW
-            featureT_i = featureT[i, :, :, :].unsqueeze(0)
-            # NCHW
-            featureI_i = featureI[i, :, :, :].unsqueeze(0)
-            featureT_patch = self.patch_decomposition(featureT_i)
-            # Calculate cosine similarity
-            dist_i = F.conv2d(featureI_i, featureT_patch)
-            dist.append(dist_i)
+        B, C, H, W = featureT.shape
+        P = H * W
 
-        # NCHW
-        dist = torch.cat(dist, dim=0)
+        # Reshape to (B, C, P)
+        featI_flat = featureI.view(B, C, P)
+        featT_flat = featureT.view(B, C, P)
+
+        # Compute cosine similarity matrix of shape (B, P_T, P_I)
+        dist = torch.bmm(featT_flat.transpose(1, 2), featI_flat)
 
         raw_dist = (1. - dist) / 2.
 
-        relative_dist = self.calc_relative_distances(raw_dist)
+        epsilon = 1e-5
+        div = torch.min(raw_dist, dim=1, keepdim=True)[0]
+        relative_dist = raw_dist / (div + epsilon)
 
-        CX = self.calc_CX(relative_dist)
-        CX = torch.mean(CX.max(dim=3)[0].max(dim=2)[0], dim=1)
+        W = torch.exp((self.b - relative_dist) / self.sigma)
+        W_sum = W.sum(dim=1, keepdim=True)
+        CX = W.div(W_sum + 1e-8)
+
+        # Max over P_I (dim=2), then mean over P_T (dim=1)
+        CX = torch.mean(CX.max(dim=2)[0], dim=1)
         CX = torch.mean(-torch.log(CX + 1e-5))
         return CX
-
 
 
 ##############################################################################
@@ -171,10 +141,10 @@ class GramMatrix(nn.Module):
             mask = _len2mask(feat_len, d).view(a, 1, 1, d)
             input = input * mask
 
-        features = input.view(a * b, c * d)  # resise F_XL into \hat F_XL
-        G = torch.mm(features, features.t())  # compute the gram product
+        features = input.view(a, b, c * d)
+        G = torch.bmm(features, features.transpose(1, 2))
 
-        return G.div(a * b * c * d)
+        return G.div(b * c * d)
 
 
 def contrastive_style_loss(fake_styles, real_styles, temperature=0.07):
