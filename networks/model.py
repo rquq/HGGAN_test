@@ -23,6 +23,31 @@ from lib.utils import draw_image, get_logger, AverageMeterManager, option_to_str
 from networks.rand_dist import prepare_z_dist, prepare_y_dist
 from networks.loss import recn_l1_loss, CXLoss, KLloss, contrastive_style_loss
 from networks.masking import apply_vertical_stripe_mask, apply_horizontal_stripe_mask, apply_combined_stripe_mask
+import random
+
+class SaveRNGState:
+    def __enter__(self):
+        self.py_state = random.get_state()
+        self.np_state = np.random.get_state()
+        self.torch_cpu_state = torch.get_rng_state()
+        self.torch_gpu_states = []
+        if torch.cuda.is_available():
+            for i in range(torch.cuda.device_count()):
+                self.torch_gpu_states.append(torch.cuda.get_rng_state(i))
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        random.set_state(self.py_state)
+        np.random.set_state(self.np_state)
+        torch.set_rng_state(self.torch_cpu_state)
+        if torch.cuda.is_available():
+            for i, state in enumerate(self.torch_gpu_states):
+                torch.cuda.set_rng_state(state, i)
+
+def save_rng_state(func):
+    def wrapper(*args, **kwargs):
+        with SaveRNGState():
+            return func(*args, **kwargs)
+    return wrapper
 
 
 class BaseModel(object):
@@ -145,11 +170,21 @@ class AdversarialModel(BaseModel):
         self.collect_fn = get_collect_fn(self.opt.training.sort_input, sort_style=True)
         self.inception_model = None
         self.valid_real_stats = None
+        dataset = get_dataset(opt.dataset, opt.training.dset_split,
+                              recogn_aug=True, wid_aug=True, process_style=True)
+        if self.local_rank > -1:
+            from torch.utils.data.distributed import DistributedSampler
+            sampler = DistributedSampler(dataset, num_replicas=None, rank=self.local_rank, shuffle=True)
+            shuffle = False
+        else:
+            sampler = None
+            shuffle = True
+
         self.train_loader = DataLoader(
-            get_dataset(opt.dataset, opt.training.dset_split,
-                        recogn_aug=True, wid_aug=True, process_style=True),
+            dataset,
             batch_size=opt.training.batch_size,
-            shuffle=True,
+            shuffle=shuffle,
+            sampler=sampler,
             collate_fn=self.collect_fn,
             num_workers=4,
             drop_last=True
@@ -176,6 +211,7 @@ class AdversarialModel(BaseModel):
     def train(self):
         raise NotImplementedError()
 
+    @save_rng_state
     def sample_images(self, iteration_done=0):
         self.set_mode('eval')
 
@@ -283,6 +319,7 @@ class AdversarialModel(BaseModel):
 
                     yield fake_batch
 
+    @save_rng_state
     def validate(self, style_guided=True, test_stage=False, *args, **kwargs):
         self.set_mode('eval')
         # style images are resized
@@ -383,6 +420,7 @@ class AdversarialModel(BaseModel):
         torch.cuda.empty_cache()
         return res
 
+    @save_rng_state
     def validate_ocr(self, dloader, n_iters):
         self.set_mode('eval')
         # Use the already loaded recognizer from self.models instead of creating a new one
@@ -425,6 +463,7 @@ class AdversarialModel(BaseModel):
         print('CER:{:.4f}  WER:{:.4f}'.format(cer, wer))
         return cer, wer
 
+    @save_rng_state
     def validate_wid(self, generator, real_dloader, split='test'):
         if split == 'test':
             assert os.path.exists(self.opt.valid.pretrained_test_w)
@@ -709,14 +748,15 @@ class GlobalLocalAdversarialModel(AdversarialModel):
             )
 
         opt = self.opt
+        rank_seed = self.opt.seed + self.local_rank if self.local_rank > -1 else self.opt.seed
         self.z = prepare_z_dist(opt.training.batch_size, opt.EncModel.style_dim, self.device,
-                                seed=self.opt.seed)
-        self.y = prepare_y_dist(opt.training.batch_size, len(self.lexicon), self.device, seed=self.opt.seed)
+                                seed=rank_seed)
+        self.y = prepare_y_dist(opt.training.batch_size, len(self.lexicon), self.device, seed=rank_seed)
 
         self.eval_z = prepare_z_dist(opt.training.eval_batch_size, opt.EncModel.style_dim, self.device,
-                                     seed=self.opt.seed)
+                                     seed=rank_seed)
         self.eval_y = prepare_y_dist(opt.training.eval_batch_size, len(self.lexicon), self.device,
-                                     seed=self.opt.seed)
+                                     seed=rank_seed)
 
         self.optimizers = Munch(
             G=torch.optim.Adam(chain(self.models.G.parameters(), self.models.E.parameters()),
@@ -784,6 +824,8 @@ class GlobalLocalAdversarialModel(AdversarialModel):
         best_scores = None
 
         for epoch in range(epoch_done, self.opt.training.epochs):
+            if self.local_rank > -1 and hasattr(self.train_loader, 'sampler') and self.train_loader.sampler is not None:
+                self.train_loader.sampler.set_epoch(epoch)
             for i, batch in enumerate(self.train_loader):
                 #############################
                 # Prepare inputs & Network Forward
@@ -1188,15 +1230,34 @@ class RecognizeModel(BaseModel):
 
         trainset_info = (self.opt.training.dset_name, self.opt.training.dset_split, False, self.opt.training.augment, True)
         self.print('Trainset: {} [{}]'.format(*trainset_info))
+        dataset = get_dataset(*trainset_info)
+        if self.local_rank > -1:
+            from torch.utils.data.distributed import DistributedSampler
+            sampler = DistributedSampler(dataset, num_replicas=None, rank=self.local_rank, shuffle=True)
+            shuffle = False
+        else:
+            sampler = None
+            shuffle = True
+
         self.train_loader = DataLoader(
-            get_dataset(*trainset_info),
+            dataset,
             batch_size=self.opt.training.batch_size,
-            shuffle=True,
+            shuffle=shuffle,
+            sampler=sampler,
             collate_fn=self.collect_fn,
             num_workers=4
         )
 
         self.optimizers = Munch(R=torch.optim.Adam(self.models.R.parameters(), lr=self.opt.training.lr))
+
+        # multi-gpu
+        if self.local_rank > -1:
+            self.models.R = torch.nn.parallel.DistributedDataParallel(
+                self.models.R,
+                device_ids=[self.local_rank],
+                output_device=self.local_rank,
+                broadcast_buffers=False
+            )
 
         epoch_done = 1
         if self.opt.training.resume:
@@ -1207,13 +1268,15 @@ class RecognizeModel(BaseModel):
 
         device = self.device
         ctc_loss_meter = AverageMeter()
-        ctc_len_scale = self.models.R.len_scale
+        ctc_len_scale = self.models.R.module.len_scale if self.local_rank > -1 else self.models.R.len_scale
         best_cer = np.inf
         iter_count = getattr(self, 'iter_count_loaded', None)
         if iter_count is None:
             iter_count = (epoch_done - 1) * len(self.train_loader)
 
         for epoch in range(epoch_done, self.opt.training.epochs):
+            if self.local_rank > -1 and hasattr(self.train_loader, 'sampler') and self.train_loader.sampler is not None:
+                self.train_loader.sampler.set_epoch(epoch)
             for i, batch in enumerate(self.train_loader):
                 #############################
                 # Prepare inputs
@@ -1267,7 +1330,7 @@ class RecognizeModel(BaseModel):
 
     def validate(self, *args, **kwargs):
         self.set_mode('eval')
-        ctc_len_scale = self.models.R.len_scale
+        ctc_len_scale = self.models.R.module.len_scale if self.local_rank > -1 else self.models.R.len_scale
         char_trans = 0
         total_chars = 0
         word_trans = 0
@@ -1346,10 +1409,20 @@ class WriterIdentifyModel(BaseModel):
                          self.opt.training.random_clip,
                          False, self.opt.training.process_style)
         self.print('Trainset: {} [{}]'.format(*trainset_info))
+        dataset = get_dataset(*trainset_info)
+        if self.local_rank > -1:
+            from torch.utils.data.distributed import DistributedSampler
+            sampler = DistributedSampler(dataset, num_replicas=None, rank=self.local_rank, shuffle=True)
+            shuffle = False
+        else:
+            sampler = None
+            shuffle = True
+
         self.train_loader = DataLoader(
-            get_dataset(*trainset_info),
+            dataset,
             batch_size=self.opt.training.batch_size,
-            shuffle=True,
+            shuffle=shuffle,
+            sampler=sampler,
             collate_fn=get_collect_fn(sort_input=True, sort_style=False),
             num_workers=4
         )
@@ -1361,6 +1434,21 @@ class WriterIdentifyModel(BaseModel):
             self.optimizers = Munch(W=torch.optim.Adam(
                                         chain(self.models.W.parameters(), self.models.B.parameters()),
                                     lr=self.opt.training.lr))
+
+        # multi-gpu
+        if self.local_rank > -1:
+            self.models.W = torch.nn.parallel.DistributedDataParallel(
+                self.models.W,
+                device_ids=[self.local_rank],
+                output_device=self.local_rank,
+                broadcast_buffers=False
+            )
+            self.models.B = torch.nn.parallel.DistributedDataParallel(
+                self.models.B,
+                device_ids=[self.local_rank],
+                output_device=self.local_rank,
+                broadcast_buffers=False
+            )
 
         epoch_done = 1
         if self.opt.training.resume:
@@ -1377,6 +1465,8 @@ class WriterIdentifyModel(BaseModel):
             iter_count = (epoch_done - 1) * len(self.train_loader)
 
         for epoch in range(epoch_done, self.opt.training.epochs):
+            if self.local_rank > -1 and hasattr(self.train_loader, 'sampler') and self.train_loader.sampler is not None:
+                self.train_loader.sampler.set_epoch(epoch)
             for i, batch in enumerate(self.train_loader):
                 #############################
                 # Prepare inputs
@@ -1387,7 +1477,10 @@ class WriterIdentifyModel(BaseModel):
                                                       batch['wids'].to(device)
 
                 if self.opt.training.frozen_backbone:
-                    self.models.B.frozen_bn()
+                    if self.local_rank > -1:
+                        self.models.B.module.frozen_bn()
+                    else:
+                        self.models.B.frozen_bn()
 
                 #############################
                 # OptimizingRecognizer
