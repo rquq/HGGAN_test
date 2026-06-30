@@ -27,7 +27,7 @@ import random
 
 class SaveRNGState:
     def __enter__(self):
-        self.py_state = random.get_state()
+        self.py_state = random.getstate()
         self.np_state = np.random.get_state()
         self.torch_cpu_state = torch.get_rng_state()
         self.torch_gpu_states = []
@@ -36,7 +36,7 @@ class SaveRNGState:
                 self.torch_gpu_states.append(torch.cuda.get_rng_state(i))
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        random.set_state(self.py_state)
+        random.setstate(self.py_state)
         np.random.set_state(self.np_state)
         torch.set_rng_state(self.torch_cpu_state)
         if torch.cuda.is_available():
