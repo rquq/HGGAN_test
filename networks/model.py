@@ -772,7 +772,6 @@ class GlobalLocalAdversarialModel(AdversarialModel):
         epoch_done = 1
         if os.path.exists(self.opt.training.pretrained_ckpt):
             epoch_done = self.load(self.opt.training.pretrained_ckpt, self.device)
-            self.validate(style_guided=True)
         else:
             if os.path.exists(self.opt.training.pretrained_w):
                 w_dict = torch.load(self.opt.training.pretrained_w, self.device)
@@ -1193,7 +1192,6 @@ class RecognizeModel(BaseModel):
         epoch_done = 1
         if self.opt.training.resume:
             epoch_done = self.load(self.opt.training.resume)
-            self.print(self.validate())
 
         device = self.device
         ctc_loss_meter = AverageMeter()
@@ -1401,7 +1399,6 @@ class WriterIdentifyModel(BaseModel):
         epoch_done = 1
         if self.opt.training.resume:
             epoch_done = self.load(self.opt.training.resume)
-            self.print(self.validate())
 
         device = self.device
         wid_loss_meter = AverageMeter()
