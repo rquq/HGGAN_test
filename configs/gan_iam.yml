@@ -18,7 +18,7 @@ training:
   lr_policy: 'linear'
   start_decay_epoch: 25
   n_epochs_decay: 46
-  batch_size: 8
+  batch_size: 6
   eval_batch_size: 6
   sample_nrow: 3
   # optimization:
