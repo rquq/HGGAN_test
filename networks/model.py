@@ -24,6 +24,13 @@ from networks.rand_dist import prepare_z_dist, prepare_y_dist
 from networks.loss import recn_l1_loss, CXLoss, KLloss, contrastive_style_loss
 
 
+def seed_worker(worker_id):
+    worker_seed = torch.initial_seed() % 2**32
+    np.random.seed(worker_seed)
+    import random
+    random.seed(worker_seed)
+
+
 class BaseModel(object):
     def __init__(self, opt, log_root='./'):
         self.opt = opt
@@ -39,6 +46,8 @@ class BaseModel(object):
         self.label_converter = strLabelConverter(alphabet_key)
 
     def print(self, info):
+        if self.local_rank > 0:
+            return
         if self.logger is None:
             print(info)
         else:
@@ -68,6 +77,8 @@ class BaseModel(object):
         self.print('=' * 20)
 
     def save(self, tag='best', epoch_done=0, **kwargs):
+        if self.local_rank > 0:
+            return
         ckpt = {}
         for model in self.models.values():
             ckpt[type(model).__name__] = model.state_dict()
@@ -89,7 +100,7 @@ class BaseModel(object):
             modules = [modules]
 
         print('load checkpoint from ', ckpt)
-        ckpt = torch.load(ckpt, map_location='cpu')
+        ckpt = torch.load(ckpt, map_location='cpu', weights_only=False)
 
         if ckpt is None:
             return
@@ -143,14 +154,26 @@ class AdversarialModel(BaseModel):
         self.collect_fn = get_collect_fn(self.opt.training.sort_input, sort_style=True)
         self.inception_model = None
         self.valid_real_stats = None
+        dataset = get_dataset(opt.dataset, opt.training.dset_split,
+                              recogn_aug=True, wid_aug=True, process_style=True)
+        if self.local_rank > -1:
+            from torch.utils.data.distributed import DistributedSampler
+            self.train_sampler = DistributedSampler(dataset, num_replicas=None, rank=self.local_rank, shuffle=True)
+            shuffle = False
+        else:
+            self.train_sampler = None
+            shuffle = True
+
         self.train_loader = DataLoader(
-            get_dataset(opt.dataset, opt.training.dset_split,
-                        recogn_aug=True, wid_aug=True, process_style=True),
+            dataset,
             batch_size=opt.training.batch_size,
-            shuffle=True,
+            shuffle=shuffle,
+            sampler=self.train_sampler,
             collate_fn=self.collect_fn,
             num_workers=4,
-            drop_last=True
+            drop_last=True,
+            pin_memory=(self.device.type == 'cuda'),
+            worker_init_fn=seed_worker
         )
 
         self.tst_loader = DataLoader(
@@ -158,7 +181,8 @@ class AdversarialModel(BaseModel):
                         recogn_aug=False, wid_aug=False, process_style=True),
             batch_size=opt.training.eval_batch_size // 2,
             shuffle=True,
-            collate_fn=self.collect_fn
+            collate_fn=self.collect_fn,
+            pin_memory=(self.device.type == 'cuda')
         )
 
         self.tst_loader2 = DataLoader(
@@ -166,7 +190,8 @@ class AdversarialModel(BaseModel):
                         recogn_aug=False, wid_aug=False, process_style=True),
             batch_size=opt.training.eval_batch_size // 2,
             shuffle=True,
-            collate_fn=self.collect_fn
+            collate_fn=self.collect_fn,
+            pin_memory=(self.device.type == 'cuda')
         )
 
         self.models = None
@@ -290,7 +315,9 @@ class AdversarialModel(BaseModel):
             collate_fn=self.collect_fn,
             batch_size=self.opt.valid.batch_size,
             shuffle=False,
-            num_workers=4
+            num_workers=4,
+            pin_memory=(self.device.type == 'cuda'),
+            worker_init_fn=seed_worker
         )
 
         if 'E' not in self.models:
@@ -340,6 +367,8 @@ class AdversarialModel(BaseModel):
             hwd_val = calculate_hwd_score(eval_dloader, get_generator(), n_rand_repeat, self.device)
             res['hwd'] = hwd_val
 
+        import gc
+        gc.collect()
         torch.cuda.empty_cache()
         return res
 
@@ -388,7 +417,7 @@ class AdversarialModel(BaseModel):
     def validate_wid(self, generator, real_dloader, split='test'):
         if split == 'test':
             assert os.path.exists(self.opt.valid.pretrained_test_w)
-            w_dict = torch.load(self.opt.valid.pretrained_test_w, map_location=self.device)
+            w_dict = torch.load(self.opt.valid.pretrained_test_w, map_location=self.device, weights_only=False)
             test_writer = WriterIdentifier(**self.opt.valid.test_wid_model).to(self.device)
             test_writer.load_state_dict(w_dict['WriterIdentifier'], strict=False)
             test_writer_backbone = StyleBackbone(**self.opt.StyBackbone).to(self.device)
@@ -661,7 +690,27 @@ class GlobalLocalAdversarialModel(AdversarialModel):
         _is_master = self.local_rank < 1
         if _is_master:
             import wandb as _wandb
-            _wandb.login(key='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')
+            wandb_key = os.environ.get('WANDB_API_KEY')
+            if not wandb_key:
+                for path_candidate in [
+                    '/home/quq/machineLearning/HTG/wandb_key.txt',
+                    '/kaggle/working/wandb_key.txt',
+                    '../../wandb_key.txt',
+                    '../wandb_key.txt',
+                    './wandb_key.txt'
+                ]:
+                    if os.path.exists(path_candidate):
+                        try:
+                            with open(path_candidate, 'r') as f:
+                                wandb_key = f.read().strip()
+                            if wandb_key:
+                                break
+                        except Exception:
+                            pass
+            if wandb_key:
+                _wandb.login(key=wandb_key)
+            else:
+                _wandb.login()
             _wandb.init(
                 project='HiGANplus',
                 name=os.path.basename(self.log_root) if self.log_root else 'run',
@@ -695,13 +744,13 @@ class GlobalLocalAdversarialModel(AdversarialModel):
             torch.cuda.empty_cache()
         else:
             if os.path.exists(self.opt.training.pretrained_w):
-                w_dict = torch.load(self.opt.training.pretrained_w, map_location='cpu')
+                w_dict = torch.load(self.opt.training.pretrained_w, map_location='cpu', weights_only=False)
                 self.models.W.load_state_dict(w_dict['WriterIdentifier'], strict=False)
                 self.models.B.load_state_dict(w_dict['StyleBackbone'], strict=False)
                 print('load pretrained writer_identifier: ', self.opt.training.pretrained_w)
                 # self.validate_wid()
             if os.path.exists(self.opt.training.pretrained_r):
-                r_dict = torch.load(self.opt.training.pretrained_r, map_location='cpu')['Recognizer']
+                r_dict = torch.load(self.opt.training.pretrained_r, map_location='cpu', weights_only=False)['Recognizer']
                 self.models.R.load_state_dict(r_dict, strict=False)
                 print('load pretrained recognizer: ', self.opt.training.pretrained_r)
                 # self.validate_ocr()
@@ -743,6 +792,8 @@ class GlobalLocalAdversarialModel(AdversarialModel):
         best_scores = None
 
         for epoch in range(epoch_done, self.opt.training.epochs):
+            if getattr(self, 'train_sampler', None) is not None:
+                self.train_sampler.set_epoch(epoch)
             for i, batch in enumerate(self.train_loader):
                 #############################
                 # Prepare inputs & Network Forward
@@ -1085,7 +1136,7 @@ class RecognizeModel(BaseModel):
         recognizer = Recognizer(**opt.OcrModel).to(device)
         # print(recognizer.cnn_backbone)
         if os.path.exists(opt.training.pretrained_backbone):
-            ckpt = torch.load(opt.training.pretrained_backbone, device)['Recognizer']
+            ckpt = torch.load(opt.training.pretrained_backbone, device, weights_only=False)['Recognizer']
             new_ckpt = {}
             for key, val in ckpt.items():
                 if not key.startswith('ctc_cls'):
@@ -1094,7 +1145,7 @@ class RecognizeModel(BaseModel):
             print('load pretrained backbone from ', opt.training.pretrained_backbone)
 
         if os.path.exists(opt.training.resume):
-            ckpt = torch.load(opt.training.resume, device)['Recognizer']
+            ckpt = torch.load(opt.training.resume, device, weights_only=False)['Recognizer']
             recognizer.load_state_dict(ckpt)
             print('load pretrained model from ', opt.training.resume)
 
@@ -1119,7 +1170,9 @@ class RecognizeModel(BaseModel):
             batch_size=self.opt.training.batch_size,
             shuffle=True,
             collate_fn=self.collect_fn,
-            num_workers=4
+            num_workers=4,
+            pin_memory=(self.device.type == 'cuda'),
+            worker_init_fn=seed_worker
         )
 
         self.optimizers = Munch(R=torch.optim.Adam(self.models.R.parameters(), lr=self.opt.training.lr))
@@ -1235,7 +1288,7 @@ class WriterIdentifyModel(BaseModel):
 
         style_backbone = StyleBackbone(**opt.StyBackbone).to(device)
         if os.path.exists(opt.training.pretrained_backbone):
-            ckpt = torch.load(opt.training.pretrained_backbone, device)
+            ckpt = torch.load(opt.training.pretrained_backbone, device, weights_only=False)
 
             if 'Recognizer' in ckpt:
                 ckpt = ckpt['Recognizer']
@@ -1275,7 +1328,9 @@ class WriterIdentifyModel(BaseModel):
             batch_size=self.opt.training.batch_size,
             shuffle=True,
             collate_fn=get_collect_fn(sort_input=True, sort_style=False),
-            num_workers=4
+            num_workers=4,
+            pin_memory=(self.device.type == 'cuda'),
+            worker_init_fn=seed_worker
         )
 
         if self.opt.training.frozen_backbone:

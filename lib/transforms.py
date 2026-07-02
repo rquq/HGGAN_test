@@ -2,6 +2,10 @@ import numpy as np
 from PIL import Image
 from lib.path_config import ImgHeight, CharWidth
 
+# Pillow >=9.1 moved resampling constants to Image.Resampling;
+# older versions expose them directly on Image.
+_Resampling = getattr(Image, 'Resampling', Image)
+
 
 class RandomClip:
     def __init__(self, min_clip_width=ImgHeight * 2):
@@ -38,9 +42,9 @@ class RandomScale:
         new_width = int(width * (1 + ratio))
         new_width = self._recalc_len(new_width, scale=CharWidth)
         if ratio > 0:
-            pic = pic.resize((new_width, height), Image.BILINEAR)
+            pic = pic.resize((new_width, height), _Resampling.BILINEAR)
         else:
-            pic = pic.resize((new_width, height), Image.LANCZOS)
+            pic = pic.resize((new_width, height), _Resampling.LANCZOS)
         return pic
 
     def __repr__(self):

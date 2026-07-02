@@ -2,8 +2,20 @@ import os
 from datetime import datetime
 import argparse
 
+import random
+import numpy as np
+import torch
+
 from lib.utils import yaml2config
 from networks import get_model
+
+
+def seed_everything(seed):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
 
 
 if __name__ == "__main__":
@@ -18,6 +30,10 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
     cfg = yaml2config(args.config)
+
+    if hasattr(cfg, "seed") and cfg.seed is not None:
+        seed_everything(cfg.seed)
+
     run_id = datetime.strftime(datetime.now(), '%m-%d-%H-%M')
     logdir = os.path.join("runs", os.path.basename(args.config)[:-4] + '-' + str(run_id))
 
