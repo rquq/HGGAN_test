@@ -44,6 +44,7 @@ class BaseModel(object):
         alphabet_key = 'rimes_word' if opt.dataset.startswith('rimes') else 'all'
         self.alphabet = Alphabets[alphabet_key]
         self.label_converter = strLabelConverter(alphabet_key)
+        self.epoch_start = 1
 
     def print(self, info):
         if self.local_rank > 0:
@@ -63,7 +64,7 @@ class BaseModel(object):
         opt_str = option_to_string(self.opt)
         with open(os.path.join(self.log_root, 'config.txt'), 'w') as f:
             f.writelines(opt_str)
-        print('log_root: ', self.log_root)
+        self.print(f'log_root: {self.log_root}')
         self.logger = get_logger(self.log_root)
 
     def info(self, extra=None):
@@ -99,24 +100,26 @@ class BaseModel(object):
         elif not isinstance(modules, list):
             modules = [modules]
 
-        print('load checkpoint from ', ckpt)
-        ckpt = torch.load(ckpt, map_location='cpu', weights_only=False)
+        self.print(f'load checkpoint from {ckpt}')
+        if map_location is None:
+            map_location = 'cpu'
+        ckpt = torch.load(ckpt, map_location=map_location, weights_only=False)
 
         if ckpt is None:
-            return
+            return 0
 
         models = self.models.values() if len(modules) == 0 else modules
         for model in models:
             try:
                 model.load_state_dict(ckpt.pop(type(model).__name__))
             except Exception as e:
-                print('Load %s failed'%type(model).__name__)
+                self.print(f'Load {type(model).__name__} failed: {e}')
 
         for key in self.optimizers.keys():
             try:
                 self.optimizers[key].load_state_dict(ckpt.pop('OPT.' + key))
             except Exception as e:
-                print('Load %s failed'%('OPT.' + key))
+                self.print(f'Load OPT.{key} failed: {e}')
 
         epoch = 0 if 'Epoch' not in ckpt else ckpt['Epoch']
         del ckpt
@@ -135,11 +138,11 @@ class BaseModel(object):
                 raise NotImplementedError()
 
     def validate(self, *args, **kwargs):
-        yield NotImplementedError()
+        raise NotImplementedError()
 
 
     def train(self):
-        yield NotImplementedError()
+        raise NotImplementedError()
 
 
 class AdversarialModel(BaseModel):
@@ -260,7 +263,7 @@ class AdversarialModel(BaseModel):
                     _wandb.log({'samples/generated': _wandb.Image(res_img, caption=f'iter {iteration_done}')},
                                step=iteration_done)
             except RuntimeError as e:
-                print(e)
+                self.print(e)
 
     def image_generator(self, style_dloader, use_rand_corpus=False, style_guided=True, n_repeats=1):
         device = self.device
@@ -309,16 +312,18 @@ class AdversarialModel(BaseModel):
 
     def validate(self, style_guided=True, test_stage=False, *args, **kwargs):
         self.set_mode('eval')
-        # style images are resized
-        eval_dloader = DataLoader(
-            get_dataset(self.opt.valid.dset_name, self.opt.valid.dset_split, process_style=True),
-            collate_fn=self.collect_fn,
-            batch_size=self.opt.valid.batch_size,
-            shuffle=False,
-            num_workers=4,
-            pin_memory=(self.device.type == 'cuda'),
-            worker_init_fn=seed_worker
-        )
+        # OPTIMIZATION: Cache validation DataLoader to avoid worker startup/shutdown overhead
+        if not hasattr(self, 'eval_dloader') or self.eval_dloader is None:
+            self.eval_dloader = DataLoader(
+                get_dataset(self.opt.valid.dset_name, self.opt.valid.dset_split, process_style=True),
+                collate_fn=self.collect_fn,
+                batch_size=self.opt.valid.batch_size,
+                shuffle=False,
+                num_workers=4,
+                pin_memory=(self.device.type == 'cuda'),
+                worker_init_fn=seed_worker
+            )
+        eval_dloader = self.eval_dloader
 
         if 'E' not in self.models:
             style_guided = False
@@ -332,9 +337,26 @@ class AdversarialModel(BaseModel):
                                              style_guided, n_rand_repeat)
             return generator
 
+        # OPTIMIZATION: Pre-generate and cache fake image batches on CPU to avoid running the generator 6 times.
+        # This speeds up validation by up to 6x.
+        def batch_to_cpu(batch):
+            cpu_batch = {}
+            for k, v in batch.items():
+                if isinstance(v, torch.Tensor):
+                    cpu_batch[k] = v.cpu()
+                else:
+                    cpu_batch[k] = v
+            return cpu_batch
+
+        self.print("Generating and caching validation fake images...")
+        generator_list = [batch_to_cpu(b) for b in get_generator()]
+
+        def get_cached_generator():
+            return generator_list
+
         if not hasattr(self, 'valid_real_stats') or self.valid_real_stats is None:
             from metric.fid_kid_is import calculate_activation_statistics, InceptionV3
-            print("Precalculating validation set statistics...")
+            self.print("Precalculating validation set statistics...")
             block_idx = InceptionV3.BLOCK_INDEX_BY_DIM[2048]
             if self.inception_model is None:
                 self.inception_model = InceptionV3([block_idx]).to(self.device).eval()
@@ -345,27 +367,85 @@ class AdversarialModel(BaseModel):
         from metric.hwd_score import calculate_hwd_score
 
         if test_stage:
-            res = calculate_fid_kid_is(self.opt.valid, eval_dloader, get_generator(), n_rand_repeat, 
+            res = calculate_fid_kid_is(self.opt.valid, eval_dloader, get_cached_generator(), n_rand_repeat, 
                                      self.device, real_stats=self.valid_real_stats, inceptionV3_model=self.inception_model)
         else:
-            res = calculate_fid_kid_is(self.opt.valid, eval_dloader, get_generator(), n_rand_repeat, 
+            res = calculate_fid_kid_is(self.opt.valid, eval_dloader, get_cached_generator(), n_rand_repeat, 
                                      self.device, crop=True, real_stats=self.valid_real_stats, inceptionV3_model=self.inception_model)
 
         if test_stage:
             if not self.opt.valid.use_rand_corpus:
-                psnr_mssim = calculate_mssim_psnr(eval_dloader, get_generator())
+                psnr_mssim = calculate_mssim_psnr(eval_dloader, get_cached_generator())
                 res['psnr'] = psnr_mssim['psnr']
                 res['mssim'] = psnr_mssim['mssim']
             if style_guided:
-                wier = self.validate_wid(get_generator(), real_dloader=eval_dloader, split=self.opt.valid.dset_split)
+                wier = self.validate_wid(get_cached_generator(), real_dloader=eval_dloader, split=self.opt.valid.dset_split)
                 res['wier'] = wier
 
         if getattr(self.opt.valid, 'validate_ocr', True):
-            res['cer'], res['wer'] = self.validate_ocr(get_generator(), n_iters=len(eval_dloader) * n_rand_repeat)
+            res['cer'], res['wer'] = self.validate_ocr(get_cached_generator(), n_iters=len(eval_dloader) * n_rand_repeat)
 
         if getattr(self.opt.valid, 'validate_hwd', True):
-            hwd_val = calculate_hwd_score(eval_dloader, get_generator(), n_rand_repeat, self.device)
+            # OPTIMIZATION: Cache real HWD dataset/features to avoid reprocessing real images every epoch.
+            if not hasattr(self, 'valid_real_hwd_dataset') or self.valid_real_hwd_dataset is None:
+                self.print("Precalculating real image features for HWD...")
+                from metric.hwd_score import ImageListDataset, tensor_to_pil
+                real_imgs_list = []
+                real_authors_list = []
+                for idx, batch in enumerate(tqdm(eval_dloader, desc='HWD Real Images')):
+                    imgs = batch['org_imgs']
+                    lens = batch['org_img_lens']
+                    wids = batch.get('wids', torch.arange(imgs.size(0)))
+                    for i in range(imgs.size(0)):
+                        pil_img = tensor_to_pil(imgs[i], lens[i].item())
+                        real_imgs_list.append(pil_img)
+                        real_authors_list.append(str(wids[i].item()))
+                self.valid_real_hwd_dataset = ImageListDataset(real_imgs_list, real_authors_list)
+
+            hwd_val = calculate_hwd_score(eval_dloader, get_cached_generator(), n_rand_repeat, self.device, real_dataset=self.valid_real_hwd_dataset)
             res['hwd'] = hwd_val
+
+        if getattr(self.opt.valid, 'validate_cmmd', True):
+            current_epoch = kwargs.get('current_epoch', None)
+            every_n = getattr(self.opt.valid, 'validate_cmmd_every_n_epochs', 3)
+            should_run_cmmd = test_stage or (current_epoch is None)
+            if not should_run_cmmd:
+                epoch_start = getattr(self, 'epoch_start', 1)
+                should_run_cmmd = (current_epoch - epoch_start) % every_n == 0
+                
+            if should_run_cmmd:
+                from metric.cmmd_score import calculate_cmmd_score, compute_real_embeddings
+                if not hasattr(self, 'cmmd_embedding_model') or self.cmmd_embedding_model is None:
+                    from metric.cmmd.embedding import ClipEmbeddingModel
+                    self.cmmd_embedding_model = ClipEmbeddingModel()
+                if not hasattr(self, 'real_cmmd_embeddings') or self.real_cmmd_embeddings is None:
+                    import os
+                    import numpy as np
+                    cache_dir = "./pretrained"
+                    cache_path = os.path.join(cache_dir, f"real_cmmd_{self.opt.valid.dset_name}_{self.opt.valid.dset_split}.npy")
+                    if os.path.exists(cache_path):
+                        self.print(f"Loading cached real CMMD embeddings from {cache_path}...")
+                        self.real_cmmd_embeddings = np.load(cache_path)
+                    else:
+                        self.print("Precalculating real image embeddings for CMMD...")
+                        self.real_cmmd_embeddings = compute_real_embeddings(
+                            eval_dloader, self.cmmd_embedding_model, device=self.device
+                        )
+                        try:
+                            os.makedirs(cache_dir, exist_ok=True)
+                            np.save(cache_path, self.real_cmmd_embeddings)
+                            self.print(f"Saved real CMMD embeddings to cache: {cache_path}")
+                        except Exception as e:
+                            self.print(f"Could not save real CMMD embeddings cache: {e}")
+                cmmd_val = calculate_cmmd_score(
+                    eval_dloader, 
+                    get_cached_generator(), 
+                    n_rand_repeat, 
+                    self.device,
+                    real_embeddings=self.real_cmmd_embeddings,
+                    embedding_model=self.cmmd_embedding_model
+                )
+                res['cmmd'] = cmmd_val
 
         import gc
         gc.collect()
@@ -407,11 +487,9 @@ class AdversarialModel(BaseModel):
                     if char_tran > 0:
                         word_trans += 1
 
-        for model in self.models.values():
-            model.train()
-        cer = char_trans * 1.0 / total_chars
-        wer = word_trans * 1.0 / total_words
-        print('CER:{:.4f}  WER:{:.4f}'.format(cer, wer))
+        cer = char_trans * 1.0 / max(total_chars, 1)
+        wer = word_trans * 1.0 / max(total_words, 1)
+        self.print('CER:{:.4f}  WER:{:.4f}'.format(cer, wer))
         return cer, wer
 
     def validate_wid(self, generator, real_dloader, split='test'):
@@ -422,9 +500,7 @@ class AdversarialModel(BaseModel):
             test_writer.load_state_dict(w_dict['WriterIdentifier'], strict=False)
             test_writer_backbone = StyleBackbone(**self.opt.StyBackbone).to(self.device)
             test_writer_backbone.load_state_dict(w_dict['StyleBackbone'], strict=False)
-            writer_identifier = test_writer
-            writer_backbone = test_writer_backbone
-            print('load pretrained test_writer_identifier: ', self.opt.valid.pretrained_test_w)
+            self.print(f'load pretrained test_writer_identifier: {self.opt.valid.pretrained_test_w}')
         else:
             # OPTIMIZATION: Use the already loaded WriterIdentifier and StyleBackbone
             # from self.models instead of creating a new copy to avoid redundant VRAM allocation and OOM.
@@ -434,7 +510,7 @@ class AdversarialModel(BaseModel):
             else:
                 writer_identifier = self.models.W
                 writer_backbone = self.models.B
-            print('Using already loaded writer identifier and style backbone')
+            self.print('Using already loaded writer identifier and style backbone')
 
         writer_identifier.eval(), writer_backbone.eval()
         with torch.no_grad():
@@ -460,9 +536,7 @@ class AdversarialModel(BaseModel):
 
             wier = 1 - acc_counts * 1. / total_counts
 
-        for model in self.models.values():
-            model.train()
-        print('WID_wier:{:.2f}'.format(wier))
+        self.print('WID_wier:{:.2f}'.format(wier))
         return wier
 
     def eval_interp(self):
@@ -523,12 +597,7 @@ class AdversarialModel(BaseModel):
                 imgs, img_lens, lbs, lb_lens = \
                     batch['style_imgs'], batch['style_img_lens'], batch['lbs'], batch['lb_lens']
                 real_imgs, real_img_lens = imgs.to(self.device), img_lens.to(self.device)
-                if len(texts) == 1:
-                    fake_lbs = self.label_converter.encode(texts)
-                    fake_lbs = torch.LongTensor(fake_lbs)
-                    fake_lb_lens = torch.IntTensor([len(texts[0])])
-                else:
-                    fake_lbs, fake_lb_lens = self.label_converter.encode(texts)
+                fake_lbs, fake_lb_lens = self.label_converter.encode(texts)
 
                 nrow = batch['style_imgs'].size(0)
                 fake_lbs = fake_lbs.repeat(nrow, 1).to(self.device)
@@ -572,12 +641,7 @@ class AdversarialModel(BaseModel):
 
                 texts = text.split(' ')
                 ncol = len(texts)
-                if len(texts) == 1:
-                    fake_lbs = self.label_converter.encode(texts)
-                    fake_lbs = torch.LongTensor(fake_lbs)
-                    fake_lb_lens = torch.IntTensor([len(texts[0])])
-                else:
-                    fake_lbs, fake_lb_lens = self.label_converter.encode(texts)
+                fake_lbs, fake_lb_lens = self.label_converter.encode(texts)
 
                 fake_lbs = fake_lbs.repeat(nrow, 1).to(self.device)
                 fake_lb_lens = fake_lb_lens.repeat(nrow, ).to(self.device)
@@ -747,13 +811,15 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                 w_dict = torch.load(self.opt.training.pretrained_w, map_location='cpu', weights_only=False)
                 self.models.W.load_state_dict(w_dict['WriterIdentifier'], strict=False)
                 self.models.B.load_state_dict(w_dict['StyleBackbone'], strict=False)
-                print('load pretrained writer_identifier: ', self.opt.training.pretrained_w)
+                self.print(f'load pretrained writer_identifier: {self.opt.training.pretrained_w}')
                 # self.validate_wid()
             if os.path.exists(self.opt.training.pretrained_r):
                 r_dict = torch.load(self.opt.training.pretrained_r, map_location='cpu', weights_only=False)['Recognizer']
                 self.models.R.load_state_dict(r_dict, strict=False)
-                print('load pretrained recognizer: ', self.opt.training.pretrained_r)
+                self.print(f'load pretrained recognizer: {self.opt.training.pretrained_r}')
                 # self.validate_ocr()
+
+        self.epoch_start = epoch_done
 
         self.lr_schedulers = Munch(
             G=get_scheduler(self.optimizers.G, opt.training, last_epoch=epoch_done - 1),
@@ -869,7 +935,7 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                 real_aug_imgs_patches = extract_all_patches(real_aug_imgs, real_aug_img_lens)
                 real_disc_patches = self.models.P(torch.cat([real_img_patches,
                                                              real_aug_imgs_patches],
-                                                             dim=0) .detach())
+                                                             dim=0))
                 real_disc_loss_patch = torch.mean(F.relu(1.0 - real_disc_patches))
 
                 disc_loss = real_disc_loss + fake_disc_loss + real_disc_loss_patch + fake_disc_loss_patch
@@ -1090,7 +1156,7 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                 
                 if should_eval:
                     self.print('Calculate FID_KID (iter {})'.format(iter_count + 1)) if self.local_rank < 1 else None
-                    scores = self.validate()
+                    scores = self.validate(current_epoch=epoch)
                     if _is_master:
                         score_str = ", ".join([f"{k}: {v:.4f}" if isinstance(v, float) else f"{k}: {v}" for k, v in scores.items()])
                         self.print(f"Validation metrics at iter {iter_count + 1}: {score_str}")
@@ -1142,12 +1208,12 @@ class RecognizeModel(BaseModel):
                 if not key.startswith('ctc_cls'):
                     new_ckpt[key] = val
             recognizer.load_state_dict(new_ckpt, strict=False)
-            print('load pretrained backbone from ', opt.training.pretrained_backbone)
+            self.print(f'load pretrained backbone from {opt.training.pretrained_backbone}')
 
         if os.path.exists(opt.training.resume):
             ckpt = torch.load(opt.training.resume, device, weights_only=False)['Recognizer']
             recognizer.load_state_dict(ckpt)
-            print('load pretrained model from ', opt.training.resume)
+            self.print(f'load pretrained model from {opt.training.resume}')
 
         self.models = Munch(R=recognizer)
 
@@ -1249,7 +1315,7 @@ class RecognizeModel(BaseModel):
         total_chars = 0
         word_trans = 0
         total_words = 0
-        print(self.tst_loader.dataset.file_path)
+        self.print(self.tst_loader.dataset.file_path)
         with torch.no_grad():
             for i, batch in tqdm(enumerate(self.tst_loader), total=len(self.tst_loader)):
                 real_imgs, real_img_lens = batch['style_imgs'].to(self.device), batch['style_img_lens'].to(self.device)
@@ -1275,8 +1341,8 @@ class RecognizeModel(BaseModel):
         for model in self.models.values():
             model.train()
 
-        cer = char_trans * 1.0 / total_chars
-        wer = word_trans * 1.0 / total_words
+        cer = char_trans * 1.0 / max(total_chars, 1)
+        wer = word_trans * 1.0 / max(total_words, 1)
         return {'CER': cer, 'WER': wer}
 
 
@@ -1301,7 +1367,7 @@ class WriterIdentifyModel(BaseModel):
                 ckpt = ckpt['StyleBackbone']
                 style_backbone.load_state_dict(ckpt)
 
-            print('Load style_backbone from ', opt.training.pretrained_backbone)
+            self.print(f'Load style_backbone from {opt.training.pretrained_backbone}')
 
         identifier = WriterIdentifier(**opt.WidModel).to(device)
         self.models = Munch(W=identifier, B=style_backbone)
@@ -1334,7 +1400,7 @@ class WriterIdentifyModel(BaseModel):
         )
 
         if self.opt.training.frozen_backbone:
-            print('frozen_backbone')
+            self.print('frozen_backbone')
             self.optimizers = Munch(W=torch.optim.Adam(self.models.W.parameters()), lr=self.opt.training.lr)
         else:
             self.optimizers = Munch(W=torch.optim.Adam(
@@ -1423,7 +1489,7 @@ class WriterIdentifyModel(BaseModel):
 
             wrr = acc_counts * 100. / total_counts
             wier = 1 - acc_counts * 1. / total_counts
-            print('wier: ', wier)
+            self.print(f'wier: {wier}')
 
         for model in self.models.values():
             model.train()

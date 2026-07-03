@@ -40,33 +40,37 @@ def tensor_to_pil(img_tensor, length):
     return Image.fromarray(img_np)
 
 
-def calculate_hwd_score(data_loader, generator, n_rand_repeat, device, n_batches=None):
+def calculate_hwd_score(data_loader, generator, n_rand_repeat, device, n_batches=None, real_dataset=None):
     if n_batches is None:
         n_batches = len(data_loader)
         
-    real_imgs_list = []
-    real_authors_list = []
-    
     fake_imgs_list = []
     fake_authors_list = []
     
-    print("Extracting images for HWD calculation...")
-    
-    # Process real data
-    for batch in tqdm(data_loader, total=n_batches, desc='Real Images'):
-        imgs = batch['org_imgs']
-        lens = batch['org_img_lens']
-        # authors might not be available directly in HGGAN eval loader, 
-        # so we mock author ids using idx or if 'wids' exists
-        wids = batch.get('wids', torch.arange(imgs.size(0)))
-        
-        for i in range(imgs.size(0)):
-            pil_img = tensor_to_pil(imgs[i], lens[i].item())
-            real_imgs_list.append(pil_img)
-            real_authors_list.append(str(wids[i].item()))
+    if real_dataset is None:
+        real_imgs_list = []
+        real_authors_list = []
+        print("Extracting images for HWD calculation...")
+        # Process real data
+        for idx, batch in enumerate(tqdm(data_loader, total=n_batches, desc='Real Images')):
+            if idx >= n_batches:
+                break
+            imgs = batch['org_imgs']
+            lens = batch['org_img_lens']
+            # authors might not be available directly in HGGAN eval loader, 
+            # so we mock author ids using idx or if 'wids' exists
+            wids = batch.get('wids', torch.arange(imgs.size(0)))
+            
+            for i in range(imgs.size(0)):
+                pil_img = tensor_to_pil(imgs[i], lens[i].item())
+                real_imgs_list.append(pil_img)
+                real_authors_list.append(str(wids[i].item()))
+        real_dataset = ImageListDataset(real_imgs_list, real_authors_list)
             
     # Process fake data
-    for batch in tqdm(generator, total=n_batches * n_rand_repeat, desc='Fake Images'):
+    for idx, batch in enumerate(tqdm(generator, total=n_batches * n_rand_repeat, desc='Fake Images')):
+        if idx >= n_batches * n_rand_repeat:
+            break
         imgs = batch['org_imgs']
         lens = batch['org_img_lens']
         wids = batch.get('wids', torch.arange(imgs.size(0)))
@@ -76,7 +80,6 @@ def calculate_hwd_score(data_loader, generator, n_rand_repeat, device, n_batches
             fake_imgs_list.append(pil_img)
             fake_authors_list.append(str(wids[i].item()))
             
-    real_dataset = ImageListDataset(real_imgs_list, real_authors_list)
     fake_dataset = ImageListDataset(fake_imgs_list, fake_authors_list)
     
     print("Computing HWD Score...")

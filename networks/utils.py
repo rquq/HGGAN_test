@@ -119,7 +119,7 @@ def get_scheduler(optimizer, opt, last_epoch=-1):
     elif opt.lr_policy == 'cosine':
         scheduler = lr_scheduler.CosineAnnealingLR(optimizer, T_max=opt.n_epochs, eta_min=0, last_epoch=last_epoch)
     else:
-        return NotImplementedError('learning rate policy [%s] is not implemented', opt.lr_policy)
+        raise NotImplementedError('learning rate policy [%s] is not implemented' % opt.lr_policy)
     return scheduler
 
 
@@ -272,7 +272,6 @@ class PatchSampler(object):
             rand_top_xy = np.stack([rand_x, rand_y]).transpose().astype('int')
             pos_xy.append(rand_top_xy)
             for tx, ty in rand_top_xy:
-                print(tx, ' ', ty)
                 patch = fake_imgs[bid, :, ty:ty+self.patch_size[0], tx:tx+self.patch_size[1]]
                 patches.append(patch)
 
@@ -379,7 +378,7 @@ def augment_images(imgs, img_lens, lbs, lb_lens):
 
     target_idx = np.argsort(ref_img_lens)[::-1]
 
-    ref_img_lens = np.array(ref_img_lens, dtype=np.int)
+    ref_img_lens = np.array(ref_img_lens, dtype=int)
     pad_imgs = -np.ones((bz, c, h, _recalc_len(ref_img_lens.max(), h)))
     for i, (img, img_len, ref_img_len) in enumerate(zip(imgs.detach(), img_lens, ref_img_lens)):
         mode = 'area' if img_len > ref_img_len else 'bilinear'
@@ -422,6 +421,6 @@ def rescale_images2(imgs, img_lens, lb_lens, ref_img_lens, ref_lb_lens):
     return resized_imgs, target_img_lens
 
 
-def pad_image_lengths(img_lens:torch.Tensor, scale=ImgHeight):
-    pad_img_lens = [_recalc_len(img_len, scale) for img_len in img_lens.detach()]
-    return torch.stack(pad_img_lens, 0).detach()
+def pad_image_lengths(img_lens: torch.Tensor, scale=ImgHeight):
+    tmp = img_lens % scale
+    return torch.where(tmp != 0, img_lens + scale - tmp, img_lens).detach()

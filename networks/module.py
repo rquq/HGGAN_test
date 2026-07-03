@@ -324,7 +324,7 @@ class Recognizer(nn.Module):
         ctc_feat = cnn_feat2.squeeze(-2).transpose(1, 2)
         if self.use_rnn:
             if self.bidirectional:
-                ctc_len = torch.div(x_len, (self.len_scale + 1e-8), rounding_mode='trunc')
+                ctc_len = torch.div(x_len, self.len_scale, rounding_mode='trunc')
             else:
                 ctc_len = None
             ctc_feat = self.rnn_ctc(ctc_feat, ctc_len.cpu())

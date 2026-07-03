@@ -492,7 +492,7 @@ class ccbn(nn.Module):
                 out = F.instance_norm(x, self.stored_mean, self.stored_var, None, None,
                                       self.training, 0.1, self.eps)
             elif self.norm_style == 'gn':
-                out = groupnorm(x, self.normstyle)
+                out = groupnorm(x, self.norm_style)
             elif self.norm_style == 'nonorm':
                 out = x
             return out * gain + bias

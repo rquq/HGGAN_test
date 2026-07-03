@@ -589,8 +589,7 @@ class InstanceLayerNorm2d(nn.Module):
         ln_mean, ln_var = torch.mean(input, dim=[1, 2, 3], keepdim=True), torch.var(input, dim=[1, 2, 3], keepdim=True)
         out_ln = (input - ln_mean) / torch.sqrt(ln_var + self.eps)
 
-        softmax = nn.Softmax(2)
-        rho = softmax(self.rho)
+        rho = F.softmax(self.rho, dim=2)
 
         if self.using_bn:
             if self.training:
@@ -667,8 +666,7 @@ class AdaptiveInstanceLayerNorm2d(nn.Module):
         out_in = (input - in_mean) / torch.sqrt(in_var + self.eps)
         ln_mean, ln_var = torch.mean(input, dim=[1, 2, 3], keepdim=True), torch.var(input, dim=[1, 2, 3], keepdim=True)
         out_ln = (input - ln_mean) / torch.sqrt(ln_var + self.eps)
-        softmax = nn.Softmax(2)
-        rho = softmax(self.rho)
+        rho = F.softmax(self.rho, dim=2)
 
         if self.using_bn:
             if self.training:

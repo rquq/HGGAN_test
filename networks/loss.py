@@ -35,7 +35,7 @@ def tv_loss(img, img_lens):
 def recn_l1_loss(img1, img2, img_lens):
     mask = _len2mask(img_lens, img1.size(-1)).to(img1.device)
     diff_img = (img1 - img2) * mask.view(mask.size(0), 1, 1, mask.size(1))
-    loss = diff_img.abs().sum() / (diff_img.size(1) * diff_img.size(2) * img_lens.sum())
+    loss = diff_img.abs().sum() / (diff_img.size(1) * diff_img.size(2) * torch.clamp(img_lens.sum(), min=1))
     return loss
 
 

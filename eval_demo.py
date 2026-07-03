@@ -44,4 +44,4 @@ if __name__ == '__main__':
     elif args.mode == 'text':
         model.eval_text()
     else:
-        print('Unsupported mode: {} | [rand] [style] [text] [interp]'.format(cfg.mode))
+        print('Unsupported mode: {} | [rand] [style] [text] [interp]'.format(args.mode))

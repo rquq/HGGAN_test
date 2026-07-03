@@ -27,7 +27,9 @@ def get_logger(logdir):
     # tell the handler to use this format
     console.setFormatter(formatter)
     # add the handler to the root logger
-    logging.getLogger('').addHandler(console)
+    root_logger = logging.getLogger('')
+    if not any(isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler) for h in root_logger.handlers):
+        root_logger.addHandler(console)
     return logger
 
 

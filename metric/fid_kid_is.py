@@ -47,7 +47,9 @@ def get_activations(data_source, n_batches, model, dims, device, crop=False):
     """
     model.eval()
     pred_arr, pred_logits = [], []
-    for batch in tqdm(data_source, total=n_batches):
+    for idx, batch in enumerate(tqdm(data_source, total=n_batches)):
+        if idx >= n_batches:
+            break
         imgs, org_img_lens = batch['org_imgs'].to(device), batch['org_img_lens'].to(device)
         img_lens = pad_image_lengths(org_img_lens, scale=imgs.size(-2))
         imgs = (imgs + 1) / 2

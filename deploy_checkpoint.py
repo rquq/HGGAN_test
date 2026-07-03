@@ -4,7 +4,7 @@ import torch
 ckpt_path = './pretrained/HiGAN+.pth'
 dst_path = './pretrained/deploy_HiGAN+.pth'
 
-state_dict = torch.load(ckpt_path)
+state_dict = torch.load(ckpt_path, weights_only=False)
 new_state_dict = {}
 for key in ['Generator', 'StyleEncoder', 'StyleBackbone']:
     new_state_dict[key] = state_dict[key]
