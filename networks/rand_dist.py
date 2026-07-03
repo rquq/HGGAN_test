@@ -19,9 +19,18 @@ def seed_rng(seed):
 class Distribution(torch.Tensor):
     # Init the params of the distribution
     def init_distribution(self, dist_type, **kwargs):
-        seed_rng(kwargs['seed'])
         self.dist_type = dist_type
         self.dist_kwargs = kwargs
+        # Use a LOCAL generator so we never corrupt the global RNG state.
+        # The global seeds (set by seed_everything in train.py) stay intact.
+        seed = kwargs.get('seed')
+        if seed is not None:
+            self.generator = torch.Generator(device=self.device)
+            self.generator.manual_seed(seed)
+            self.np_rng = np.random.RandomState(seed)
+        else:
+            self.generator = None
+            self.np_rng = None
         if self.dist_type == 'normal':
             self.mean, self.var = kwargs['mean'], kwargs['var']
         elif self.dist_type == 'uniform':
@@ -35,20 +44,22 @@ class Distribution(torch.Tensor):
 
     def sample_(self):
         if self.dist_type == 'normal':
-            self.normal_(self.mean, self.var)
+            self.normal_(self.mean, self.var, generator=self.generator)
         elif self.dist_type == 'uniform':
-            self.uniform_(self.low, self.high)
+            self.uniform_(self.low, self.high, generator=self.generator)
         elif self.dist_type == 'categorical':
-            self.random_(0, self.num_categories)
+            self.random_(0, self.num_categories, generator=self.generator)
         elif self.dist_type == 'poisson':
             type = self.type()
             device = self.device
-            data = np.random.poisson(self.lam, self.size())
+            rng = self.np_rng if self.np_rng is not None else np.random
+            data = rng.poisson(self.lam, self.size())
             self.data = torch.from_numpy(data).type(type).to(device)
         elif self.dist_type == 'gamma':
             type = self.type()
             device = self.device
-            data = np.random.gamma(shape=1, scale=self.scale, size=self.size())
+            rng = self.np_rng if self.np_rng is not None else np.random
+            data = rng.gamma(shape=1, scale=self.scale, size=self.size())
             self.data = torch.from_numpy(data).type(type).to(device)
             # return self.variable
         return self
@@ -56,9 +67,38 @@ class Distribution(torch.Tensor):
     # # Silly hack: overwrite the to() method to wrap the new object
     # # in a distribution as well
     def to(self, *args, **kwargs):
-        new_obj = Distribution(self)
-        new_obj.init_distribution(self.dist_type, **self.dist_kwargs)
-        new_obj.data = super().to(*args, **kwargs)
+        device_tensor = super().to(*args, **kwargs)
+        new_obj = Distribution(device_tensor)
+        dist_type = getattr(self, 'dist_type', 'normal')
+        dist_kwargs = getattr(self, 'dist_kwargs', {})
+        new_obj.dist_type = dist_type
+        new_obj.dist_kwargs = dist_kwargs
+        # Migrate the local torch Generator to the target device
+        if hasattr(self, 'generator') and self.generator is not None:
+            target_device = device_tensor.device
+            if self.generator.device != target_device:
+                new_obj.generator = torch.Generator(device=target_device)
+                seed = dist_kwargs.get('seed')
+                if seed is not None:
+                    new_obj.generator.manual_seed(seed)
+            else:
+                new_obj.generator = self.generator
+        else:
+            new_obj.generator = None
+        # Share the numpy RNG instance (device-independent)
+        new_obj.np_rng = getattr(self, 'np_rng', None)
+        if dist_type == 'normal':
+            new_obj.mean = getattr(self, 'mean', 0)
+            new_obj.var = getattr(self, 'var', 1.0)
+        elif dist_type == 'uniform':
+            new_obj.low = getattr(self, 'low', 0)
+            new_obj.high = getattr(self, 'high', 1)
+        elif dist_type == 'categorical':
+            new_obj.num_categories = getattr(self, 'num_categories', 1)
+        elif dist_type == 'poisson':
+            new_obj.lam = getattr(self, 'lam', 1)
+        elif dist_type == 'gamma':
+            new_obj.scale = getattr(self, 'scale', 1)
         return new_obj
 
 # Convenience function to prepare a z vector

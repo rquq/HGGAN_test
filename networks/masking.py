@@ -1,4 +1,5 @@
 import torch
+import random
 
 
 def apply_vertical_stripe_mask(imgs, img_lens, mask_ratio_range=(0.04, 0.10), stripe_width_range=(1, 3)):
@@ -23,14 +24,14 @@ def apply_vertical_stripe_mask(imgs, img_lens, mask_ratio_range=(0.04, 0.10), st
         if valid_len <= 0:
             continue
 
-        mask_ratio = torch.rand(1).item() * (mask_ratio_range[1] - mask_ratio_range[0]) + mask_ratio_range[0]
+        mask_ratio = random.uniform(mask_ratio_range[0], mask_ratio_range[1])
         num_pixels_to_mask = int(valid_len * mask_ratio)
 
-        stripe_width = torch.randint(stripe_width_range[0], stripe_width_range[1] + 1, (1,)).item()
+        stripe_width = random.randint(stripe_width_range[0], stripe_width_range[1])
 
         num_stripes = max(1, num_pixels_to_mask // stripe_width)
         for _ in range(num_stripes):
-            start_pos = torch.randint(0, max(1, valid_len - stripe_width), (1,)).item()
+            start_pos = random.randint(0, max(0, valid_len - stripe_width - 1))
             end_pos = min(start_pos + stripe_width, valid_len)
             # Mask value is -1 (background is white/blank in normalized space)
             masked_imgs[i, :, :, start_pos:end_pos] = -1
@@ -56,16 +57,16 @@ def apply_horizontal_stripe_mask(imgs, img_lens, mask_ratio_range=(0.04, 0.10), 
     masked_imgs = imgs.clone()
 
     for i in range(B):
-        mask_ratio = torch.rand(1).item() * (mask_ratio_range[1] - mask_ratio_range[0]) + mask_ratio_range[0]
+        mask_ratio = random.uniform(mask_ratio_range[0], mask_ratio_range[1])
         num_pixels_to_mask = int(H * mask_ratio)
 
-        stripe_height = torch.randint(stripe_height_range[0], stripe_height_range[1] + 1, (1,)).item()
+        stripe_height = random.randint(stripe_height_range[0], stripe_height_range[1])
 
         num_stripes = max(1, num_pixels_to_mask // stripe_height)
         valid_len = int(img_lens[i].item())
 
         for _ in range(num_stripes):
-            start_pos = torch.randint(0, max(1, H - stripe_height), (1,)).item()
+            start_pos = random.randint(0, max(0, H - stripe_height - 1))
             end_pos = min(start_pos + stripe_height, H)
             masked_imgs[i, :, start_pos:end_pos, :valid_len] = -1
 
@@ -114,25 +115,25 @@ def apply_light_mixed_patch_mask(patches, mask_ratio_range=(0.02, 0.05), stripe_
 
     for i in range(N):
         # 1. Horizontal stripe (row masking) - helps model learn descenders/vertical placement
-        if torch.rand(1).item() < 0.7:  # 70% chance to apply
-            mask_ratio_h = torch.rand(1).item() * (mask_ratio_range[1] - mask_ratio_range[0]) + mask_ratio_range[0]
+        if random.random() < 0.7:  # 70% chance to apply
+            mask_ratio_h = random.uniform(mask_ratio_range[0], mask_ratio_range[1])
             num_pixels_h = int(H * mask_ratio_h)
-            stripe_h = torch.randint(stripe_size_range[0], stripe_size_range[1] + 1, (1,)).item()
+            stripe_h = random.randint(stripe_size_range[0], stripe_size_range[1])
             num_stripes_h = max(1, num_pixels_h // stripe_h)
             for _ in range(num_stripes_h):
-                start_h = torch.randint(0, max(1, H - stripe_h), (1,)).item()
+                start_h = random.randint(0, max(0, H - stripe_h - 1))
                 end_h = min(start_h + stripe_h, H)
                 # Background in normalized image space is represented by -1
                 masked_patches[i, :, start_h:end_h, :] = -1
 
         # 2. Vertical stripe (column masking) - helps model learn spacing/character connects
-        if torch.rand(1).item() < 0.7:  # 70% chance to apply
-            mask_ratio_w = torch.rand(1).item() * (mask_ratio_range[1] - mask_ratio_range[0]) + mask_ratio_range[0]
+        if random.random() < 0.7:  # 70% chance to apply
+            mask_ratio_w = random.uniform(mask_ratio_range[0], mask_ratio_range[1])
             num_pixels_w = int(W * mask_ratio_w)
-            stripe_w = torch.randint(stripe_size_range[0], stripe_size_range[1] + 1, (1,)).item()
+            stripe_w = random.randint(stripe_size_range[0], stripe_size_range[1])
             num_stripes_w = max(1, num_pixels_w // stripe_w)
             for _ in range(num_stripes_w):
-                start_w = torch.randint(0, max(1, W - stripe_w), (1,)).item()
+                start_w = random.randint(0, max(0, W - stripe_w - 1))
                 end_w = min(start_w + stripe_w, W)
                 masked_patches[i, :, :, start_w:end_w] = -1
 

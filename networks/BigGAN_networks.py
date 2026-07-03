@@ -392,11 +392,11 @@ class Discriminator(nn.Module):
             h = torch.sum(self.activation(h), [2, 3])
         else:
             h = self.activation(h)
-            h_lens = torch.div(x_lens * h.size(-1), (x.size(-1) + 1e-8), rounding_mode='trunc')
+            h_lens = torch.div(x_lens * h.size(-1), x.size(-1), rounding_mode='trunc')
             mask = _len2mask(h_lens.int(), h.size(-1), torch.float32).to(x.device).detach()
             mask = mask.view(mask.size(0), 1, 1, mask.size(1))
             h = torch.sum(h * mask, [2, 3])
-            h = h / y_lens.unsqueeze(dim=-1)
+            h = h / torch.clamp(y_lens, min=1).unsqueeze(dim=-1)
 
         # Get initial class-unconditional output
         out = self.linear(h)
@@ -461,9 +461,9 @@ class NLayerDiscriminator(nn.Module):
     def forward(self, x, x_lens, y_lens):
         """Standard forward."""
         h = self.model(x)
-        h_lens = torch.div(x_lens * h.size(-1), (x.size(-1) + 1e-8), rounding_mode='trunc')
+        h_lens = torch.div(x_lens * h.size(-1), x.size(-1), rounding_mode='trunc')
         mask = _len2mask(h_lens.int(), h.size(-1), torch.float32).to(x.device).detach()
         mask = mask.view(mask.size(0), 1, 1, mask.size(1))
         h = torch.sum(h * mask, [2, 3])
-        h = h / y_lens.unsqueeze(dim=-1)
+        h = h / torch.clamp(y_lens, min=1).unsqueeze(dim=-1)
         return h

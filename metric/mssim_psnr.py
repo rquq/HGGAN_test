@@ -10,13 +10,26 @@ def PSNR(x_image, y_image, max_value=1.0):
     return metrics.peak_signal_noise_ratio(x, y, data_range=max_value)
 
 
+_sig_has_channel_axis = None
+
+
 def MSSIM(x_image, y_image, max_value=1.0):
+    global _sig_has_channel_axis
     x = np.asarray(x_image, np.float32)
     y = np.asarray(y_image, np.float32)
+    if _sig_has_channel_axis is None:
+        import inspect
+        sig = inspect.signature(metrics.structural_similarity)
+        _sig_has_channel_axis = 'channel_axis' in sig.parameters
+    kwargs = {}
+    if _sig_has_channel_axis:
+        kwargs['channel_axis'] = -1 if x.ndim > 2 else None
+    else:
+        kwargs['multichannel'] = (x.ndim > 2)
     return metrics.structural_similarity(x, y,
                                          win_size=None, # default win_size is 7
                                          data_range=max_value,
-                                         multichannel=(x.ndim>2))
+                                         **kwargs)
 
 
 def calculate_mssim_psnr(data_loader, generator):
@@ -31,10 +44,10 @@ def calculate_mssim_psnr(data_loader, generator):
             #                 gen_img[0, :, :gen_img_len].cpu().numpy(),
             #                 'src_img', 'gen_img')
             if gen_img_len != src_img_len:
-                print("gen_img_len %d != src_img_len %d"%(gen_img_len, src_img_len))
-                show_image_pair(src_img[0, :, :src_img_len].cpu().numpy(),
-                                gen_img[0, :, :gen_img_len].cpu().numpy(),
-                                'src_img', 'gen_img')
+                print("Warning: gen_img_len %d != src_img_len %d. Adjusting widths to match." % (gen_img_len, src_img_len))
+                min_len = min(src_img_len, gen_img_len)
+                src_img_len = min_len
+                gen_img_len = min_len
             src_img = (src_img[:, :, :src_img_len].permute(1, 2, 0).cpu().numpy() + 1) / 2
             gen_img = (gen_img[:, :, :gen_img_len].permute(1, 2, 0).cpu().numpy() + 1) / 2
             psnr.append(PSNR(src_img, gen_img, max_value=1.0))

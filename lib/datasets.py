@@ -54,7 +54,7 @@ class Hdf5Dataset(Dataset):
         wid = self.wids[idx]
         data['lb'], data['wid'] = lb, wid
 
-        data['org_img'] = self.org_transforms(Image.fromarray(deepcopy(img), mode='L'))
+        data['org_img'] = self.org_transforms(Image.fromarray(img, mode='L'))
 
         # style image
         if self.process_style:
@@ -62,15 +62,15 @@ class Hdf5Dataset(Dataset):
             new_w = CharWidth * len(text)
             dim = (new_w, ImgHeight)
             if new_w < w:
-                style_img = cv2.resize(deepcopy(img), dim, interpolation=cv2.INTER_AREA)
+                style_img = cv2.resize(img, dim, interpolation=cv2.INTER_AREA)
             else:
-                style_img = cv2.resize(deepcopy(img), dim, interpolation=cv2.INTER_LINEAR)
+                style_img = cv2.resize(img, dim, interpolation=cv2.INTER_LINEAR)
             style_img = Image.fromarray(style_img, mode='L')
 
         else:
-            style_img = Image.fromarray(deepcopy(img), mode='L')
+            style_img = Image.fromarray(img, mode='L')
 
-        data['style_img'] = self.org_transforms(deepcopy(style_img))
+        data['style_img'] = self.org_transforms(style_img)
 
         if self.transforms is not None:
             data['aug_img'] = self.transforms(style_img)
@@ -149,11 +149,10 @@ class Hdf5Dataset(Dataset):
         batch = Hdf5Dataset.collect_fn(batch)
 
         style_img_lens = batch['style_img_lens']
-        idx = np.argsort(style_img_lens.cpu().numpy())[::-1]
+        _, idx = torch.sort(style_img_lens, descending=True)
 
         for key, val in batch.items():
-            batch[key] = torch.stack([val[i] for i in idx]).detach()
-            # print('%15s'%key, batch[key].size(), batch[key].dim())
+            batch[key] = val[idx]
         return batch
 
     @staticmethod
@@ -161,10 +160,10 @@ class Hdf5Dataset(Dataset):
         batch = Hdf5Dataset.collect_fn(batch)
 
         style_img_lens = batch['aug_img_lens']
-        idx = np.argsort(style_img_lens.cpu().numpy())[::-1]
+        _, idx = torch.sort(style_img_lens, descending=True)
 
         for key, val in batch.items():
-            batch[key] = torch.stack([val[i] for i in idx]).detach()
+            batch[key] = val[idx]
         return batch
 
     @staticmethod
@@ -357,7 +356,9 @@ def get_alphabet_from_corpus(corpus_path):
 
 
 def get_max_image_width(dset):
+    if hasattr(dset, 'img_lens') and dset.img_lens is not None:
+        return int(dset.img_lens.max())
     max_image_width = 0
-    for img, _, _ in dset:
-        max_image_width = max(max_image_width, img.size(-1))
+    for data in dset:
+        max_image_width = max(max_image_width, data['org_img'].size(-1))
     return max_image_width

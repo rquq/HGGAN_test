@@ -5,15 +5,16 @@ from .cmmd.distance import mmd
 
 def preprocess_images_gpu(imgs, lens, size, device):
     batch_size = imgs.size(0)
-    preprocessed = []
     
+    # Check min on batch level to avoid batch_size CPU-GPU syncs
+    if (imgs.min() < 0).item():
+        imgs = (imgs + 1) / 2
+    imgs = torch.clamp(imgs, 0, 1)
+    
+    preprocessed = []
     for i in range(batch_size):
         img = imgs[i]
         length = lens[i].item()
-        
-        if img.min() < 0:
-            img = (img + 1) / 2
-        img = torch.clamp(img, 0, 1)
         
         if img.shape[0] == 1:
             img = img.repeat(3, 1, 1)
@@ -44,7 +45,9 @@ def compute_real_embeddings(data_loader, embedding_model, n_batches=None, device
     size = embedding_model.input_image_size
     real_embs_list = []
     
-    for batch in tqdm(data_loader, total=n_batches, desc='CMMD Real Embeddings'):
+    for idx, batch in enumerate(tqdm(data_loader, total=n_batches, desc='CMMD Real Embeddings')):
+        if idx >= n_batches:
+            break
         imgs = batch['org_imgs'].to(device)
         lens = batch['org_img_lens']
         
@@ -69,7 +72,9 @@ def calculate_cmmd_score(data_loader, generator, n_rand_repeat, device, n_batche
         
     print("Extracting generated image embeddings for CMMD...")
     fake_embs_list = []
-    for batch in tqdm(generator, total=n_batches * n_rand_repeat, desc='CMMD Fake Embeddings'):
+    for idx, batch in enumerate(tqdm(generator, total=n_batches * n_rand_repeat, desc='CMMD Fake Embeddings')):
+        if idx >= n_batches * n_rand_repeat:
+            break
         imgs = batch['org_imgs'].to(device)
         lens = batch['org_img_lens']
         
