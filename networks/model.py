@@ -741,6 +741,45 @@ class GlobalLocalAdversarialModel(AdversarialModel):
         # ── WandB init (master process only) ──────────────────────────────
         _is_master = self.local_rank < 1
         if _is_master and hasattr(self.opt, 'wandb'):
+            # Get branchname and dates dynamically
+            import subprocess
+            from datetime import datetime
+            branchname = None
+            try:
+                branchname = subprocess.check_output(['git', 'rev-parse', '--abbrev-ref', 'HEAD'], stderr=subprocess.DEVNULL, timeout=2).decode().strip()
+            except Exception:
+                pass
+            if not branchname or branchname == 'HEAD':
+                try:
+                    curr_dir = os.path.abspath(os.getcwd())
+                    for _ in range(5):
+                        head_path = os.path.join(curr_dir, '.git', 'HEAD')
+                        if os.path.exists(head_path):
+                            with open(head_path, 'r') as f:
+                                content = f.read().strip()
+                            if content.startswith('ref:'):
+                                branchname = content.split('/')[-1]
+                            else:
+                                branchname = content[:7]
+                            break
+                        curr_dir = os.path.dirname(curr_dir)
+                except Exception:
+                    pass
+            folder_branch = None
+            try:
+                parts = os.path.abspath(__file__).split(os.sep)
+                if len(parts) >= 3:
+                    folder_branch = parts[-3]
+            except Exception:
+                pass
+            if branchname in [None, 'main', 'master', 'HEAD']:
+                if folder_branch in ['main', 'dev', 'random_crop_recog', 'classic_optimized', 'HiGANplus', 'higanplus']:
+                    branchname = folder_branch
+            if not branchname:
+                branchname = 'dev'
+            
+            run_name = f"{branchname}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+
             wandb_key = os.environ.get('WANDB_API_KEY')
             if not wandb_key:
                 for path in ['wandb_key.txt', '../wandb_key.txt', '../../wandb_key.txt', '../../../wandb_key.txt']:
@@ -758,7 +797,7 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                 wandb.login(key=wandb_key)
             wandb.init(
                 project=self.opt.wandb.project,
-                name=self.opt.wandb.name or (os.path.basename(self.log_root) if self.log_root else 'run'),
+                name=run_name,
                 config=vars(self.opt) if hasattr(self.opt, '__dict__') else dict(self.opt),
                 resume=self.opt.wandb.resume,
             )
