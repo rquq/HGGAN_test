@@ -76,7 +76,7 @@ class CXLoss(nn.Module):
 
     def center_by_T(self, featureI, featureT):
         # Calculate mean channel vector for feature map.
-        meanT = featureT.mean(0, keepdim=True).mean(2, keepdim=True).mean(3, keepdim=True)
+        meanT = featureT.mean(dim=(0, 2, 3), keepdim=True)
         return featureI - meanT, featureT - meanT
 
     def l2_normalize_channelwise(self, features):
@@ -84,14 +84,6 @@ class CXLoss(nn.Module):
         norms = features.norm(p=2, dim=1, keepdim=True)
         features = features.div(norms)
         return features
-
-    def patch_decomposition(self, features):
-        N, C, H, W = features.shape
-        assert N == 1
-        P = H * W
-        # NCHW --> 1x1xCXHW --> HWxCx1x1
-        patches = features.view(1, 1, C, P).permute((3, 2, 0, 1))
-        return patches
 
     def calc_relative_distances(self, raw_dist, axis=1):
         epsilon = 1e-5
@@ -120,29 +112,26 @@ class CXLoss(nn.Module):
         featureI = self.l2_normalize_channelwise(featureI)
         featureT = self.l2_normalize_channelwise(featureT)
 
-        dist = []
-        N = featureT.size()[0]
-        for i in range(N):
-            # NCHW
-            featureT_i = featureT[i, :, :, :].unsqueeze(0)
-            # NCHW
-            featureI_i = featureI[i, :, :, :].unsqueeze(0)
-            featureT_patch = self.patch_decomposition(featureT_i)
-            # Calculate cosine similarity
-            dist_i = F.conv2d(featureI_i, featureT_patch)
-            dist.append(dist_i)
+        N, C, H_T, W_T = featureT.shape
+        _, _, H_I, W_I = featureI.shape
 
-        # NCHW
-        dist = torch.cat(dist, dim=0)
+        featI_flat = featureI.view(N, C, H_I * W_I)
+        featT_flat = featureT.view(N, C, H_T * W_T)
+
+        # batched matrix multiplication: (N, P_T, C) x (N, C, P_I) -> (N, P_T, P_I)
+        dist = torch.bmm(featT_flat.transpose(1, 2), featI_flat)
 
         raw_dist = (1. - dist) / 2.
 
-        relative_dist = self.calc_relative_distances(raw_dist)
+        relative_dist = self.calc_relative_distances(raw_dist, axis=1)
 
-        CX = self.calc_CX(relative_dist)
-        CX = torch.mean(CX.max(dim=3)[0].max(dim=2)[0], dim=1)
-        CX = torch.mean(-torch.log(CX + 1e-5))
-        return CX
+        CX = self.calc_CX(relative_dist, axis=1)
+        
+        # Take max over spatial dimensions of Inference feature map (dim=2, which is P_I)
+        CX_max = CX.max(dim=2)[0]
+        CX_mean = torch.mean(CX_max, dim=1)
+        CX_loss = torch.mean(-torch.log(CX_mean + 1e-5))
+        return CX_loss
 
 
 

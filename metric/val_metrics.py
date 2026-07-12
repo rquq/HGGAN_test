@@ -1,59 +1,135 @@
-#!/usr/bin/env python3
-"""Calculates the Frechet Inception Distance (FID) and The Kernel Inception Distance (KID) to evalulate GANs
-The FID and KID is calculated by assuming that X_1 and X_2 are the activations of
-the pool_3 layer of the inception net for generated samples and real world
-samples respectively.
-Code apapted from https://github.com/bioinf-jku/TTUR and  https://github.com/mbinkowski/MMD-GAN
-"""
-
-import numpy as np
+import sys
+import os
 import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import numpy as np
+from PIL import Image
+from tqdm import tqdm
 from scipy import linalg
 from torch.nn.functional import adaptive_avg_pool2d
-from sklearn.metrics.pairwise import polynomial_kernel
-from lib.utils import show_image_pair
-import os.path, sys, tarfile
 from scipy.stats import entropy
+from sklearn.metrics.pairwise import polynomial_kernel
+from torch.utils.data import Dataset
+
+# Local imports
+from metric.inception import InceptionV3 as ReferenceInceptionV3, fid_inception_v3, _inception_v3
+from metric.hwd import HWDScore
+from metric.cmmd import calculate_cmmd_score, compute_real_embeddings, ClipEmbeddingModel
+from metric.mssim_psnr import calculate_mssim_psnr
 from networks.utils import pad_image_lengths
 
-try:
-    from tqdm import tqdm
-except ImportError:
-    # If not tqdm is not available, provide a mock version of it
-    def tqdm(x): return x
+# We need to wrap or subclass InceptionV3 to support masking and returning logits for HGGAN.
+class HGGANInceptionV3(ReferenceInceptionV3):
+    def __init__(self, output_blocks=[3], resize_input=True, normalize_input=True, requires_grad=False, use_fid_inception=True):
+        self.hggan_resize_input = resize_input
+        super().__init__(output_blocks, resize_input=False, normalize_input=normalize_input, requires_grad=requires_grad, use_fid_inception=use_fid_inception)
+        # Standard InceptionV3 has AdaptiveAvgPool2d(1, 1) in block 3.
+        # For HGGAN, we need AvgPool2d(8, 8) to keep width dimension.
+        if 3 in self.output_blocks:
+            block3_list = list(self.blocks[-1].children())
+            block3_list[-1] = nn.AvgPool2d(8, 8)
+            self.blocks[-1] = nn.Sequential(*block3_list)
+        
+        # We need self.last_fc for Inception Score calculation
+        if use_fid_inception:
+            inception_full = fid_inception_v3()
+        else:
+            inception_full = _inception_v3(pretrained=True)
+        self.last_fc = inception_full.fc
+        for param in self.last_fc.parameters():
+            param.requires_grad = requires_grad
 
-from metric.inception import InceptionV3
+    def _len2mask(self, length, max_len, dtype=torch.float32):
+        assert len(length.shape) == 1, 'Length shape should be 1 dimensional.'
+        max_len = max_len or length.max().item()
+        mask = torch.arange(max_len, device=length.device,
+                            dtype=length.dtype).expand(len(length), max_len) < length.unsqueeze(1)
+        if dtype is not None:
+            mask = torch.as_tensor(mask, dtype=dtype, device=length.device)
+        return mask
+
+    def forward(self, inp, inp_len=None):
+        x = inp
+        if self.hggan_resize_input:
+            x = F.interpolate(x, scale_factor=299 / x.size(2), mode='bilinear', align_corners=True)
+        
+        outp = super().forward(x)
+        last_feat = outp[-1]
+
+        if inp_len is not None:
+            squeezed = last_feat.squeeze(2)
+            inp_mask = self._len2mask(inp_len, squeezed.size(-1))
+            feat = squeezed * inp_mask.unsqueeze(1)
+            feat = feat.sum(dim=-1) / (inp_len.unsqueeze(dim=1) + 1e-8)
+            pooled_feat = feat.view(*feat.size(), 1, 1)
+        else:
+            if last_feat.size(2) != 1 or last_feat.size(3) != 1:
+                pooled_feat = F.adaptive_avg_pool2d(last_feat, output_size=(1, 1))
+            else:
+                pooled_feat = last_feat
+
+        logits = self.last_fc(pooled_feat.view(pooled_feat.size(0), -1)).softmax(dim=-1)
+        return pooled_feat, logits
+
+# Export HGGANInceptionV3 as InceptionV3
+InceptionV3 = HGGANInceptionV3
+
+class ImageListDataset(Dataset):
+    def __init__(self, imgs, authors):
+        self.imgs = imgs
+        self.authors = authors
+        self.transform = None
+        self.path = ''
+        
+    def __len__(self):
+        return len(self.imgs)
+    
+    def __getitem__(self, idx):
+        img = self.imgs[idx]
+        author = self.authors[idx]
+        if self.transform:
+            img = self.transform(img)
+        return img, author, 0
+
+def tensor_to_pil(img_tensor, length):
+    img_np = img_tensor.detach().cpu().numpy()
+    if img_np.min() < 0:
+        img_np = (img_np + 1) / 2
+    img_np = np.clip(img_np * 255.0, 0, 255).astype(np.uint8)
+    if img_np.shape[0] == 1:
+        img_np = np.repeat(img_np, 3, axis=0)
+    img_np = img_np[:, :, :length]
+    img_np = np.transpose(img_np, (1, 2, 0))
+    return Image.fromarray(img_np)
+
+def batch_tensor_to_pil_list(imgs_tensor, lengths_tensor):
+    imgs_np = imgs_tensor.detach().cpu().numpy()
+    lengths = lengths_tensor.detach().cpu().numpy()
+    if imgs_np.min() < 0:
+        imgs_np = (imgs_np + 1) / 2
+    imgs_np = np.clip(imgs_np * 255.0, 0, 255).astype(np.uint8)
+    if imgs_np.shape[1] == 1:
+        imgs_np = np.repeat(imgs_np, 3, axis=1)
+    pil_imgs = []
+    for i in range(imgs_np.shape[0]):
+        length = lengths[i]
+        img_np = imgs_np[i, :, :, :length]
+        img_np = np.transpose(img_np, (1, 2, 0))
+        pil_imgs.append(Image.fromarray(img_np))
+    return pil_imgs
 
 
-
+# Activations computation
 def get_activations(data_source, n_batches, model, dims, device, crop=False):
-    """Calculates the activations of the pool_3 layer for all images.
-    Params:
-    -- data_source  : List of image files paths
-    -- model       : Instance of inception model
-    -- batch_size  : Batch size of images for the model to process at once.
-                     Make sure that the number of samples is a multiple of
-                     the batch size, otherwise some samples are ignored. This
-                     behavior is retained to match the original FID score
-                     implementation.
-    -- dims        : Dimensionality of features returned by Inception
-    -- cuda        : If set to True, use GPU
-    -- verbose     : If set to True and parameter out_step is given, the number
-                     of calculated batches is reported.
-    Returns:
-    -- A numpy array of dimension (num images, dims) that contains the
-       activations of the given tensor when feeding inception with the
-       query tensor.
-    """
     model.eval()
     pred_arr, pred_logits = [], []
     for idx, batch in enumerate(tqdm(data_source, total=n_batches)):
         if idx >= n_batches:
             break
-        imgs, org_img_lens = batch['org_imgs'].to(device), batch['org_img_lens'].to(device)
+        imgs, org_img_lens = batch['org_imgs'].to(device, non_blocking=True), batch['org_img_lens'].to(device, non_blocking=True)
         img_lens = pad_image_lengths(org_img_lens, scale=imgs.size(-2))
         imgs = (imgs + 1) / 2
-        # print('imgs min:{} max:{}'.format(imgs.min().item(), imgs.max().item()))
 
         if imgs.size(1) == 1:
             imgs = imgs.repeat(1, 3, 1, 1)
@@ -65,12 +141,6 @@ def get_activations(data_source, n_batches, model, dims, device, crop=False):
                 pred, logits = model(imgs[:, :, :, :imgs.size(-2) * 2],
                                     4 * torch.ones((imgs.size(0),)).to(device))
 
-        # show_image_pair(imgs[0, 0, :, :org_img_lens[0]].cpu().numpy(),
-        #                 imgs[0, 0, :, :img_lens[0]].cpu().numpy(),
-        #                 org_img_lens[0].item(), img_lens[0].item())
-
-        # If model output is not scalar, apply global spatial average pooling.
-        # This happens if you choose a dimensionality not equal 2048.
         if pred.size(2) != 1 or pred.size(3) != 1:
             pred = adaptive_avg_pool2d(pred, output_size=(1, 1))
 
@@ -82,39 +152,16 @@ def get_activations(data_source, n_batches, model, dims, device, crop=False):
     assert pred_arr.shape[-1] == dims
     return pred_arr, pred_logits
 
-
 def calculate_frechet_distance(mu1, sigma1, mu2, sigma2, eps=1e-6):
-    """Numpy implementation of the Frechet Distance.
-    The Frechet distance between two multivariate Gaussians X_1 ~ N(mu_1, C_1)
-    and X_2 ~ N(mu_2, C_2) is
-            d^2 = ||mu_1 - mu_2||^2 + Tr(C_1 + C_2 - 2*sqrt(C_1*C_2)).
-    Stable version by Dougal J. Sutherland.
-    Params:
-    -- mu1   : Numpy array containing the activations of a layer of the
-               inception net (like returned by the function 'get_predictions')
-               for generated samples.
-    -- mu2   : The sample mean over activations, precalculated on an
-               representative data set.
-    -- sigma1: The covariance matrix over activations for generated samples.
-    -- sigma2: The covariance matrix over activations, precalculated on an
-               representative data set.
-    Returns:
-    --   : The Frechet Distance.
-    """
     mu1 = np.atleast_1d(mu1)
     mu2 = np.atleast_1d(mu2)
-
     sigma1 = np.atleast_2d(sigma1)
     sigma2 = np.atleast_2d(sigma2)
 
-    assert mu1.shape == mu2.shape, \
-        'Training and test mean vectors have different lengths'
-    assert sigma1.shape == sigma2.shape, \
-        'Training and test covariances have different dimensions'
+    assert mu1.shape == mu2.shape, 'Training and test mean vectors have different lengths'
+    assert sigma1.shape == sigma2.shape, 'Training and test covariances have different dimensions'
 
     diff = mu1 - mu2
-
-    # Product might be almost singular
     covmean, _ = linalg.sqrtm(sigma1.dot(sigma2), disp=False)
 
     if not np.isfinite(covmean).all():
@@ -124,7 +171,6 @@ def calculate_frechet_distance(mu1, sigma1, mu2, sigma2, eps=1e-6):
         offset = np.eye(sigma1.shape[0]) * eps
         covmean = linalg.sqrtm((sigma1 + offset).dot(sigma2 + offset))
 
-    # Numerical error might give slight imaginary component
     if np.iscomplexobj(covmean):
         if not np.allclose(np.diagonal(covmean).imag, 0, atol=1e-3):
             m = np.max(np.abs(covmean.imag))
@@ -132,24 +178,13 @@ def calculate_frechet_distance(mu1, sigma1, mu2, sigma2, eps=1e-6):
         covmean = covmean.real
 
     tr_covmean = np.trace(covmean)
-
-    return (diff.dot(diff) + np.trace(sigma1) +
-            np.trace(sigma2) - 2 * tr_covmean)
-
+    return (diff.dot(diff) + np.trace(sigma1) + np.trace(sigma2) - 2 * tr_covmean)
 
 def calculate_activation_statistics(*args, **kwargs):
-    """Calculation of the statistics used by the FID.
-    Returns:
-    -- mu    : The mean over samples of the activations of the pool_3 layer of
-               the inception model.
-    -- sigma : The covariance matrix of the activations of the pool_3 layer of
-               the inception model.
-    """
     act, logits = get_activations(*args, **kwargs)
     mu = np.mean(act, axis=0)
     sigma = np.cov(act, rowvar=False)
     return act, mu, sigma, logits
-
 
 def polynomial_mmd_averages(codes_g, codes_r, n_subsets=50, subset_size=1000,
                             ret_var=True, output=sys.stdout, **kernel_args):
@@ -160,19 +195,14 @@ def polynomial_mmd_averages(codes_g, codes_r, n_subsets=50, subset_size=1000,
     choice = np.random.choice
 
     if subset_size > len(codes_g):
-        print(('Warning: subset_size is bigger than len(codes_g). [sub:{}  code_g:{}]'.format(subset_size, len(codes_g))))
         subset_size = len(codes_g)
     if subset_size > len(codes_r):
-        print(('Warning: subset_size is bigger than len(codes_r). [sub:{}  code_g:{}]'.format(subset_size, len(codes_r))))
         subset_size = len(codes_r)
 
     with tqdm(range(n_subsets), desc='MMD', file=output) as bar:
         for i in bar:
             g = codes_g[choice(len(codes_g), subset_size, replace=False)]
             r = codes_r[choice(len(codes_r), subset_size, replace=False)]
-            # print(subset_size)
-            # print(g.shape)
-            # print(r.shape)
             o = polynomial_mmd(g, r, **kernel_args, var_at_m=m, ret_var=ret_var)
             if ret_var:
                 mmds[i], vars[i] = o
@@ -181,33 +211,22 @@ def polynomial_mmd_averages(codes_g, codes_r, n_subsets=50, subset_size=1000,
             bar.set_postfix({'mean': mmds[:i+1].mean()})
     return (mmds, vars) if ret_var else mmds
 
-
 def polynomial_mmd(codes_g, codes_r, degree=3, gamma=None, coef0=1,
                    var_at_m=None, ret_var=True):
-    # use  k(x, y) = (gamma <x, y> + coef0)^degree
-    # default gamma is 1 / dim
     X = codes_g
     Y = codes_r
-
     K_XX = polynomial_kernel(X, degree=degree, gamma=gamma, coef0=coef0)
     K_YY = polynomial_kernel(Y, degree=degree, gamma=gamma, coef0=coef0)
     K_XY = polynomial_kernel(X, Y, degree=degree, gamma=gamma, coef0=coef0)
-
-    return _mmd2_and_variance(K_XX, K_XY, K_YY,
-                              var_at_m=var_at_m, ret_var=ret_var)
-
+    return _mmd2_and_variance(K_XX, K_XY, K_YY, var_at_m=var_at_m, ret_var=ret_var)
 
 def _sqn(arr):
     flat = np.ravel(arr)
     return flat.dot(flat)
 
-
 def _mmd2_and_variance(K_XX, K_XY, K_YY, unit_diagonal=False,
                        mmd_est='unbiased', block_size=1024,
                        var_at_m=None, ret_var=True):
-    # based on
-    # https://github.com/dougalsutherland/opt-mmd/blob/master/two_sample/mmd.py
-    # but changed to not compute the full kernel matrix at once
     m = K_XX.shape[0]
     assert K_XX.shape == (m, m)
     assert K_XY.shape == (m, m)
@@ -215,8 +234,6 @@ def _mmd2_and_variance(K_XX, K_XY, K_YY, unit_diagonal=False,
     if var_at_m is None:
         var_at_m = m
 
-    # Get the various sums of kernels that we'll use
-    # Kts drop the diagonal, but we don't need to compute them explicitly
     if unit_diagonal:
         diag_X = diag_Y = 1
         sum_diag_X = sum_diag_Y = m
@@ -224,10 +241,8 @@ def _mmd2_and_variance(K_XX, K_XY, K_YY, unit_diagonal=False,
     else:
         diag_X = np.diagonal(K_XX)
         diag_Y = np.diagonal(K_YY)
-
         sum_diag_X = diag_X.sum()
         sum_diag_Y = diag_Y.sum()
-
         sum_diag2_X = _sqn(diag_X)
         sum_diag2_Y = _sqn(diag_Y)
 
@@ -287,7 +302,6 @@ def _mmd2_and_variance(K_XX, K_XY, K_YY, unit_diagonal=False,
 
     return mmd2, var_est
 
-
 def calculate_inception_score(logits, splits=1):
     split_scores = []
     N = logits.shape[0]
@@ -303,12 +317,7 @@ def calculate_inception_score(logits, splits=1):
 
     return np.mean(split_scores)
 
-
 def calculate_fid_kid_is(cfg, data_loader, generator, n_rand_repeat, device, crop=False, real_stats=None, n_batches=None, inceptionV3_model=None):
-    '''
-    ATTENTION: the backgroud value of input images must be -1, and the foreground values should be less than 1.
-    real_stats: tuple of (act1, m1, s1, logits1)
-    '''
     eval_fid = getattr(cfg, 'validate_fid', True)
     eval_kid = getattr(cfg, 'validate_kid', True)
     eval_is = getattr(cfg, 'validate_is', True)
@@ -326,7 +335,6 @@ def calculate_fid_kid_is(cfg, data_loader, generator, n_rand_repeat, device, cro
         n_batches = len(data_loader)
     
     with torch.no_grad():
-
         act2, m2, s2, logits2 = calculate_activation_statistics(generator, n_batches * n_rand_repeat, inceptionV3_model,
                                                                 cfg.dims, device, crop)
         if real_stats is None:
@@ -358,3 +366,47 @@ def calculate_fid_kid_is(cfg, data_loader, generator, n_rand_repeat, device, cro
         res['kid'] = kid
 
     return res
+
+# Handwriting Distance (HWD) Wrapper
+def calculate_hwd_score(data_loader, generator, n_rand_repeat, device, n_batches=None, real_dataset=None):
+    if n_batches is None:
+        n_batches = len(data_loader)
+        
+    fake_imgs_list = []
+    fake_authors_list = []
+    
+    if real_dataset is None:
+        real_imgs_list = []
+        real_authors_list = []
+        print("Extracting images for HWD calculation...")
+        for idx, batch in enumerate(tqdm(data_loader, total=n_batches, desc='Real Images')):
+            if idx >= n_batches:
+                break
+            imgs = batch['org_imgs']
+            lens = batch['org_img_lens']
+            wids = batch.get('wids', torch.arange(imgs.size(0)))
+            
+            pil_imgs = batch_tensor_to_pil_list(imgs, lens)
+            real_imgs_list.extend(pil_imgs)
+            for i in range(imgs.size(0)):
+                real_authors_list.append(str(wids[i].item()))
+        real_dataset = ImageListDataset(real_imgs_list, real_authors_list)
+            
+    for idx, batch in enumerate(tqdm(generator, total=n_batches * n_rand_repeat, desc='Fake Images')):
+        if idx >= n_batches * n_rand_repeat:
+            break
+        imgs = batch['org_imgs']
+        lens = batch['org_img_lens']
+        wids = batch.get('wids', torch.arange(imgs.size(0)))
+        
+        pil_imgs = batch_tensor_to_pil_list(imgs, lens)
+        fake_imgs_list.extend(pil_imgs)
+        for i in range(imgs.size(0)):
+            fake_authors_list.append(str(wids[i].item()))
+            
+    fake_dataset = ImageListDataset(fake_imgs_list, fake_authors_list)
+    
+    print("Computing HWD Score...")
+    hwd_scorer = HWDScore()
+    score = hwd_scorer(fake_dataset, real_dataset)
+    return score
