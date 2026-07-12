@@ -12,7 +12,7 @@ from torch.nn import CTCLoss, CrossEntropyLoss
 import torch.distributed as dist
 import torch.nn.functional as F
 from torch.utils.tensorboard import SummaryWriter
-from metric.fid_kid_is import calculate_fid_kid_is
+from metric.val_metrics import calculate_fid_kid_is
 from metric.mssim_psnr import calculate_mssim_psnr
 from networks.utils import _info, set_requires_grad, get_scheduler, idx_to_words, rescale_images, rescale_images2, \
                             words_to_images, ctc_greedy_decoder, extract_all_patches
@@ -346,7 +346,7 @@ class AdversarialModel(BaseModel):
                                              style_guided, n_rand_repeat)
             return generator
 
-        from metric.hwd_score import calculate_hwd_score
+        from metric.val_metrics import calculate_hwd_score
 
         if test_stage:
             res = calculate_fid_kid_is(self.opt.valid, eval_dloader, get_generator(), n_rand_repeat, self.device)
@@ -375,9 +375,9 @@ class AdversarialModel(BaseModel):
             should_run_cmmd = test_stage or (current_epoch is None) or (current_epoch % every_n == 0)
             
             if should_run_cmmd:
-                from metric.cmmd_score import calculate_cmmd_score, compute_real_embeddings
+                from metric.val_metrics import calculate_cmmd_score, compute_real_embeddings
                 if not hasattr(self, 'cmmd_embedding_model') or self.cmmd_embedding_model is None:
-                    from metric.cmmd.embedding import ClipEmbeddingModel
+                    from metric.val_metrics import ClipEmbeddingModel
                     self.cmmd_embedding_model = ClipEmbeddingModel()
                 if not hasattr(self, 'real_cmmd_embeddings') or self.real_cmmd_embeddings is None:
                     import os
