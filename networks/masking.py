@@ -96,8 +96,7 @@ def apply_combined_stripe_mask(imgs, img_lens, mask_ratio_range=(0.04, 0.10),
 def apply_light_mixed_patch_mask(patches, mask_ratio_range=(0.02, 0.05), stripe_size_range=(1, 2)):
     """
     Apply extremely light mixed vertical and horizontal stripe masking to 32x32 local patches.
-    This is used to refine local patches in the Patch Discriminator pipeline, helping the model
-    learn line-level and stroke-level alignment details (like 'g' and 'y' descenders).
+    Optimized to run entirely in PyTorch using vectorized tensor operations.
 
     Args:
         patches: [N, C, H, W] patch tensor (typically H=W=32)
@@ -111,30 +110,23 @@ def apply_light_mixed_patch_mask(patches, mask_ratio_range=(0.02, 0.05), stripe_
         return patches
 
     N, C, H, W = patches.shape
-    masked_patches = patches.clone()
+    device = patches.device
 
-    for i in range(N):
-        # 1. Horizontal stripe (row masking) - helps model learn descenders/vertical placement
-        if random.random() < 0.7:  # 70% chance to apply
-            mask_ratio_h = random.uniform(mask_ratio_range[0], mask_ratio_range[1])
-            num_pixels_h = int(H * mask_ratio_h)
-            stripe_h = random.randint(stripe_size_range[0], stripe_size_range[1])
-            num_stripes_h = max(1, num_pixels_h // stripe_h)
-            for _ in range(num_stripes_h):
-                start_h = random.randint(0, max(0, H - stripe_h - 1))
-                end_h = min(start_h + stripe_h, H)
-                # Background in normalized image space is represented by -1
-                masked_patches[i, :, start_h:end_h, :] = -1
+    # 1. Horizontal stripe (row masking) - helps model learn descenders/vertical placement
+    apply_h = torch.rand((N, 1, 1, 1), device=device) < 0.7
+    heights = torch.randint(stripe_size_range[0], stripe_size_range[1] + 1, (N, 1, 1, 1), device=device)
+    starts_h = (torch.rand((N, 1, 1, 1), device=device) * (H - heights)).long()
+    row_idx = torch.arange(H, device=device).view(1, 1, H, 1)
+    h_mask = apply_h & (row_idx >= starts_h) & (row_idx < starts_h + heights)
 
-        # 2. Vertical stripe (column masking) - helps model learn spacing/character connects
-        if random.random() < 0.7:  # 70% chance to apply
-            mask_ratio_w = random.uniform(mask_ratio_range[0], mask_ratio_range[1])
-            num_pixels_w = int(W * mask_ratio_w)
-            stripe_w = random.randint(stripe_size_range[0], stripe_size_range[1])
-            num_stripes_w = max(1, num_pixels_w // stripe_w)
-            for _ in range(num_stripes_w):
-                start_w = random.randint(0, max(0, W - stripe_w - 1))
-                end_w = min(start_w + stripe_w, W)
-                masked_patches[i, :, :, start_w:end_w] = -1
+    # 2. Vertical stripe (column masking) - helps model learn spacing/character connects
+    apply_w = torch.rand((N, 1, 1, 1), device=device) < 0.7
+    widths = torch.randint(stripe_size_range[0], stripe_size_range[1] + 1, (N, 1, 1, 1), device=device)
+    starts_w = (torch.rand((N, 1, 1, 1), device=device) * (W - widths)).long()
+    col_idx = torch.arange(W, device=device).view(1, 1, 1, W)
+    w_mask = apply_w & (col_idx >= starts_w) & (col_idx < starts_w + widths)
+
+    combined_mask = h_mask | w_mask
+    masked_patches = torch.where(combined_mask, torch.tensor(-1.0, device=device, dtype=patches.dtype), patches)
 
     return masked_patches

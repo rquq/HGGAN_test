@@ -917,7 +917,7 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                 #############################
                 # Optimizing Discriminator
                 #############################
-                self.optimizers.D.zero_grad()
+                self.optimizers.D.zero_grad(set_to_none=True)
                 set_requires_grad([self.models.G, self.models.E, self.models.R, self.models.W, self.models.B], False)
                 set_requires_grad([self.models.D, self.models.P], True)
                 # self.models.B.frozen_bn()
@@ -960,9 +960,9 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                                   torch.mean(F.relu(1.0 + d_recn))) / 3
 
                 # Patch Discriminator forwards
-                p_fake_patches = extract_all_patches(fake_imgs, fake_img_lens).detach()
-                p_style_patches = extract_all_patches(style_imgs, style_img_lens).detach()
-                p_recn_patches = extract_all_patches(recn_imgs, recn_img_lens).detach()
+                p_fake_patches = extract_all_patches(fake_imgs.detach(), fake_img_lens)
+                p_style_patches = extract_all_patches(style_imgs.detach(), style_img_lens)
+                p_recn_patches = extract_all_patches(recn_imgs.detach(), recn_img_lens)
 
                 masking_mode = getattr(self.opt.training, 'masking_mode', 'none')
                 if masking_mode != 'none':
@@ -1004,7 +1004,7 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                 # Optimizing Generator
                 #############################
                 if iter_count % self.opt.training.num_critic_train == 0:
-                    self.optimizers.G.zero_grad()
+                    self.optimizers.G.zero_grad(set_to_none=True)
                     set_requires_grad([self.models.D, self.models.P, self.models.R, self.models.W, self.models.B], False)
                     set_requires_grad([self.models.G, self.models.E], True)
                     # self.models.B.frozen_bn()
@@ -1103,8 +1103,8 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                     fake_wid_loss = self.classify_loss(recn_wid_logits, real_wids.repeat(2))
 
                     ###  Contextual Loss and Gram Loss for non-aligned data  ###
-                    ctx_loss = torch.FloatTensor([0.]).to(self.device)
-                    gram_loss = torch.FloatTensor([0.]).to(self.device)
+                    ctx_loss = torch.tensor(0.0, device=self.device)
+                    gram_loss = torch.tensor(0.0, device=self.device)
                     for real_img_feat, fake_img_feat \
                             in zip(real_img_feats, fake_imgs_feats):
                         fake_feat = fake_img_feat.chunk(2, dim=0)
@@ -1117,7 +1117,7 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                         gram_loss += self.gram_loss(fake_feat[0], real_img_feat)
                         gram_loss += self.gram_loss(fake_feat[1], real_img_feat)
 
-                    kl_loss = KLloss(mu, logvar) if self.vae_mode else torch.FloatTensor([0.]).to(self.device)
+                    kl_loss = KLloss(mu, logvar) if self.vae_mode else torch.tensor(0.0, device=self.device)
 
                     grad_fake_adv = torch.autograd.grad(adv_loss, fake_imgs, create_graph=False, retain_graph=True)[0]
                     grad_fake_OCR = torch.autograd.grad(fake_ctc_loss_rand, fake_ctc_rand, create_graph=False, retain_graph=True)[0]
@@ -1331,7 +1331,7 @@ class RecognizeModel(BaseModel):
                 #############################
                 # OptimizingRecognizer
                 #############################
-                self.optimizers.R.zero_grad()
+                self.optimizers.R.zero_grad(set_to_none=True)
                 ### Compute CTC loss for real samples###
                 real_ctc = self.models.R(real_imgs, real_img_lens)
                 real_ctc_lens = real_img_lens // ctc_len_scale
@@ -1498,7 +1498,7 @@ class WriterIdentifyModel(BaseModel):
                 #############################
                 # OptimizingRecognizer
                 #############################
-                self.optimizers.W.zero_grad()
+                self.optimizers.W.zero_grad(set_to_none=True)
                 ### Compute CTC loss for real samples###
                 wid_logits = self.models.W(real_imgs, real_img_lens, self.models.B)
                 wid_loss = self.wid_loss(wid_logits, real_wids)
