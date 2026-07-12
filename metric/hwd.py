@@ -288,7 +288,17 @@ class VGG16Backbone(BaseBackbone):
         model = models.vgg16(num_classes=10400)
 
         if self.url is not None:
-            checkpoint = torch.load(self.url, map_location="cpu")
+            if self.url.startswith("http"):
+                # Auto-download and cache the checkpoint locally
+                _cache_dir = Path(__file__).resolve().parent.parent / "pretrained" / "HWD"
+                _cache_dir.mkdir(parents=True, exist_ok=True)
+                _local_path = _cache_dir / "VGG16_class_10400.pth"
+                if not _local_path.exists():
+                    print(f"Downloading HWD VGG16 checkpoint to {_local_path}...")
+                    torch.hub.download_url_to_file(self.url, str(_local_path))
+                checkpoint = torch.load(str(_local_path), map_location="cpu")
+            else:
+                checkpoint = torch.load(self.url, map_location="cpu")
             model.load_state_dict(checkpoint)
 
         modules = list(model.features.children())
@@ -452,7 +462,7 @@ class FolderDataset(BaseDataset):
         self.author_ids = sorted(set(self.labels))
 
 
-VGG16_10400_URL = "../../pretrained/HWD/VGG16_class_10400.pth"
+VGG16_10400_URL = "https://github.com/aimagelab/font_square/releases/download/VGG-16/VGG16_class_10400.pth"
 
 
 class HWDScore(BaseScore):
