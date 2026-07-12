@@ -29,7 +29,7 @@ training:
   sample_iter_val: 200
   print_iter_val: 20
   start_save_epoch_val: 0
-  eval_epoch_val: 1
+  eval_epoch_val: 0.01
   save_epoch_val: 1
   # val_iter: 6500
   sample_dir: 'imgs'
@@ -47,7 +47,7 @@ training:
   lambda_gram: 2.0
   pretrained_w: './pretrained/wid_iam_new.pth'
   pretrained_r: './pretrained/ocr_iam_new.pth'
-  pretrained_ckpt: ''
+  pretrained_ckpt: './pretrained/last(1).pth'
 
 
 valid:
