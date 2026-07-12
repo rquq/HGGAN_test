@@ -11,7 +11,7 @@ from torch.utils.data.dataloader import DataLoader
 from torch.nn import CTCLoss, CrossEntropyLoss
 import torch.distributed as dist
 import torch.nn.functional as F
-from metric.fid_kid_is import calculate_fid_kid_is
+from metric.val_metrics import calculate_fid_kid_is
 from metric.mssim_psnr import calculate_mssim_psnr
 from networks.utils import _info, set_requires_grad, get_scheduler, idx_to_words, rescale_images, rescale_images2, \
                             words_to_images, ctc_greedy_decoder, extract_all_patches
@@ -344,7 +344,7 @@ class AdversarialModel(BaseModel):
             cpu_batch = {}
             for k, v in batch.items():
                 if isinstance(v, torch.Tensor):
-                    cpu_batch[k] = v.cpu()
+                    cpu_batch[k] = v.cpu().pin_memory()
                 else:
                     cpu_batch[k] = v
             return cpu_batch
@@ -356,7 +356,7 @@ class AdversarialModel(BaseModel):
             return generator_list
 
         if not hasattr(self, 'valid_real_stats') or self.valid_real_stats is None:
-            from metric.fid_kid_is import calculate_activation_statistics, InceptionV3
+            from metric.val_metrics import calculate_activation_statistics, InceptionV3
             self.print("Precalculating validation set statistics...")
             block_idx = InceptionV3.BLOCK_INDEX_BY_DIM[2048]
             if self.inception_model is None:
@@ -365,7 +365,7 @@ class AdversarialModel(BaseModel):
                                                                    self.inception_model, self.opt.valid.dims, 
                                                                    self.device, crop=not test_stage)
                                                                    
-        from metric.hwd_score import calculate_hwd_score
+        from metric.val_metrics import calculate_hwd_score
 
         if test_stage:
             res = calculate_fid_kid_is(self.opt.valid, eval_dloader, get_cached_generator(), n_rand_repeat, 
@@ -390,16 +390,16 @@ class AdversarialModel(BaseModel):
             # OPTIMIZATION: Cache real HWD dataset/features to avoid reprocessing real images every epoch.
             if not hasattr(self, 'valid_real_hwd_dataset') or self.valid_real_hwd_dataset is None:
                 self.print("Precalculating real image features for HWD...")
-                from metric.hwd_score import ImageListDataset, tensor_to_pil
+                from metric.val_metrics import ImageListDataset, batch_tensor_to_pil_list
                 real_imgs_list = []
                 real_authors_list = []
                 for idx, batch in enumerate(tqdm(eval_dloader, desc='HWD Real Images')):
                     imgs = batch['org_imgs']
                     lens = batch['org_img_lens']
                     wids = batch.get('wids', torch.arange(imgs.size(0)))
+                    pil_imgs = batch_tensor_to_pil_list(imgs, lens)
+                    real_imgs_list.extend(pil_imgs)
                     for i in range(imgs.size(0)):
-                        pil_img = tensor_to_pil(imgs[i], lens[i].item())
-                        real_imgs_list.append(pil_img)
                         real_authors_list.append(str(wids[i].item()))
                 self.valid_real_hwd_dataset = ImageListDataset(real_imgs_list, real_authors_list)
 
@@ -415,9 +415,9 @@ class AdversarialModel(BaseModel):
                 should_run_cmmd = (current_epoch - epoch_start) % every_n == 0
                 
             if should_run_cmmd:
-                from metric.cmmd_score import calculate_cmmd_score, compute_real_embeddings
+                from metric.val_metrics import calculate_cmmd_score, compute_real_embeddings
                 if not hasattr(self, 'cmmd_embedding_model') or self.cmmd_embedding_model is None:
-                    from metric.cmmd.embedding import ClipEmbeddingModel
+                    from metric.val_metrics import ClipEmbeddingModel
                     self.cmmd_embedding_model = ClipEmbeddingModel()
                 if not hasattr(self, 'real_cmmd_embeddings') or self.real_cmmd_embeddings is None:
                     import os
@@ -470,7 +470,7 @@ class AdversarialModel(BaseModel):
 
         with torch.no_grad():
             for i, batch in tqdm(enumerate(dloader), total=n_iters):
-                real_imgs, real_img_lens = batch['style_imgs'].to(self.device), batch['style_img_lens'].to(self.device)
+                real_imgs, real_img_lens = batch['style_imgs'].to(self.device, non_blocking=True), batch['style_img_lens'].to(self.device, non_blocking=True)
                 logits = recognizer(real_imgs, real_img_lens)
                 logits = torch.nn.functional.softmax(logits, dim=2).detach()
 
@@ -502,6 +502,8 @@ class AdversarialModel(BaseModel):
             test_writer_backbone = StyleBackbone(**self.opt.StyBackbone).to(self.device)
             test_writer_backbone.load_state_dict(w_dict['StyleBackbone'], strict=False)
             self.print(f'load pretrained test_writer_identifier: {self.opt.valid.pretrained_test_w}')
+            writer_identifier = test_writer
+            writer_backbone = test_writer_backbone
         else:
             # OPTIMIZATION: Use the already loaded WriterIdentifier and StyleBackbone
             # from self.models instead of creating a new copy to avoid redundant VRAM allocation and OOM.
@@ -522,14 +524,14 @@ class AdversarialModel(BaseModel):
             for i, (batch_real, batch_fake) \
                 in tqdm(enumerate(zip(real_dloader, generator)), total=n_iters):
                 # predicting pesudo labels
-                real_wid_logits = writer_identifier(batch_real['style_imgs'].to(self.device),
-                                                batch_real['style_img_lens'].to(self.device),
+                real_wid_logits = writer_identifier(batch_real['style_imgs'].to(self.device, non_blocking=True),
+                                                batch_real['style_img_lens'].to(self.device, non_blocking=True),
                                                 writer_backbone)
                 _, real_preds = torch.max(real_wid_logits.data, dim=1)
 
                 # predicting pesudo labels
-                fake_wid_logits = writer_identifier(batch_fake['style_imgs'].to(self.device),
-                                                batch_fake['style_img_lens'].to(self.device),
+                fake_wid_logits = writer_identifier(batch_fake['style_imgs'].to(self.device, non_blocking=True),
+                                                batch_fake['style_img_lens'].to(self.device, non_blocking=True),
                                                 writer_backbone)
                 _, fake_preds = torch.max(fake_wid_logits.data, dim=1)
                 acc_counts += real_preds.eq(fake_preds.to(self.device)).sum().item()
@@ -905,11 +907,11 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                 # Prepare inputs & Network Forward
                 #############################
                 self.set_mode('train')
-                real_imgs, real_img_lens, real_wids = batch['style_imgs'].to(device), \
-                                                      batch['style_img_lens'].to(device), \
-                                                      batch['wids'].to(device)
-                real_aug_imgs, real_aug_img_lens = batch['aug_imgs'].to(device), batch['aug_img_lens'].to(device)
-                real_lbs, real_lb_lens = batch['lbs'].to(device), batch['lb_lens'].to(device)
+                real_imgs, real_img_lens, real_wids = batch['style_imgs'].to(device, non_blocking=True), \
+                                                      batch['style_img_lens'].to(device, non_blocking=True), \
+                                                      batch['wids'].to(device, non_blocking=True)
+                real_aug_imgs, real_aug_img_lens = batch['aug_imgs'].to(device, non_blocking=True), batch['aug_img_lens'].to(device, non_blocking=True)
+                real_lbs, real_lb_lens = batch['lbs'].to(device, non_blocking=True), batch['lb_lens'].to(device, non_blocking=True)
                 max_label_len = real_lbs.size(-1)
 
                 #############################
