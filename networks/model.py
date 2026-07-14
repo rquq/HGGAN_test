@@ -197,6 +197,8 @@ class AdversarialModel(BaseModel):
                                    max_length=self.opt.training.max_word_len)
         self.max_valid_image_width = self.opt.char_width * self.opt.training.max_word_len
         self.vae_mode = self.opt.training.vae_mode
+        if getattr(self.opt.EncModel, 'use_vq', False):
+            self.vae_mode = False
         self.collect_fn = get_collect_fn(self.opt.training.sort_input, sort_style=True)
         self.inception_model = None
         self.valid_real_stats = None
@@ -348,7 +350,7 @@ class AdversarialModel(BaseModel):
                     if style_guided:
                         enc_z = self.models.E(style_imgs.to(device), style_img_lens.to(device), self.models.B)
                     else:
-                        enc_z = torch.randn(style_lb_lens.size(0), 32, self.models.G.style_dim).to(device)
+                        enc_z = torch.randn(style_lb_lens.size(0), self.models.G.style_dim, self.models.G.style_dim).to(device)
                         E_module = self.models.E.module if hasattr(self.models.E, 'module') else self.models.E
                         if getattr(E_module, 'use_vq', False):
                             enc_z = E_module.codebook.quantize(enc_z)
@@ -629,7 +631,7 @@ class AdversarialModel(BaseModel):
 
                 # style0 = torch.zeros((1, self.opt.GenModel.style_dim)) + 1e-1
                 # style1 = torch.ones_like(style0) - 1e-1
-                style0 = torch.randn((1, 32, self.opt.EncModel.style_dim))
+                style0 = torch.randn((1, self.opt.EncModel.style_dim, self.opt.EncModel.style_dim))
                 style1 = torch.randn(style0.size())
 
                 styles = [torch.lerp(style0, style1, i / (interp_num - 1)) for i in range(interp_num)]
@@ -679,8 +681,9 @@ class AdversarialModel(BaseModel):
                 nrow = batch['style_imgs'].size(0)
                 fake_lbs = fake_lbs.repeat(nrow, 1).to(self.device)
                 fake_lb_lens = fake_lb_lens.repeat(nrow,).to(self.device)
-                enc_styles = self.models.E(real_imgs, real_img_lens, self.models.B).unsqueeze(1).\
-                                repeat(1, ncol, 1, 1).view(nrow * ncol, 32, -1)
+                enc_styles = self.models.E(real_imgs, real_img_lens, self.models.B)
+                S, D = enc_styles.size(1), enc_styles.size(2)
+                enc_styles = enc_styles.unsqueeze(1).repeat(1, ncol, 1, 1).view(nrow * ncol, S, D)
 
                 gen_imgs = self.models.G(enc_styles, fake_lbs, fake_lb_lens)
                 gen_imgs, gen_img_lens = rescale_images2(gen_imgs, fake_lb_lens * self.opt.char_width, fake_lb_lens,
@@ -710,7 +713,7 @@ class AdversarialModel(BaseModel):
 
         with torch.no_grad():
             nrow, ncol = self.opt.test.nrow, 2
-            rand_z = prepare_z_dist(nrow, self.opt.EncModel.style_dim, self.device)
+            rand_z = prepare_z_dist(nrow, self.opt.EncModel.style_dim, self.device, num_tokens=self.opt.EncModel.style_dim)
             while True:
                 text = input('input text: ')
                 if len(text) == 0:
@@ -724,7 +727,7 @@ class AdversarialModel(BaseModel):
                 fake_lb_lens = fake_lb_lens.repeat(nrow, ).to(self.device)
 
                 rand_z.sample_()
-                rand_styles = rand_z.unsqueeze(1).repeat(1, ncol, 1, 1).view(nrow * ncol, 32, -1)
+                rand_styles = rand_z.unsqueeze(1).repeat(1, ncol, 1, 1).view(nrow * ncol, rand_z.size(1), -1)
                 E_module = self.models.E.module if hasattr(self.models.E, 'module') else self.models.E
                 if getattr(E_module, 'use_vq', False):
                     rand_styles = E_module.codebook.quantize(rand_styles)
@@ -903,11 +906,11 @@ class GlobalLocalAdversarialModel(AdversarialModel):
 
         opt = self.opt
         self.z = prepare_z_dist(opt.training.batch_size, opt.EncModel.style_dim, self.device,
-                                seed=self.opt.seed)
+                                seed=self.opt.seed, num_tokens=opt.EncModel.style_dim)
         self.y = prepare_y_dist(opt.training.batch_size, len(self.lexicon), self.device, seed=self.opt.seed)
 
         self.eval_z = prepare_z_dist(opt.training.eval_batch_size, opt.EncModel.style_dim, self.device,
-                                     seed=self.opt.seed)
+                                     seed=self.opt.seed, num_tokens=opt.EncModel.style_dim)
         self.eval_y = prepare_y_dist(opt.training.eval_batch_size, len(self.lexicon), self.device,
                                      seed=self.opt.seed)
 

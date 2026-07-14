@@ -35,9 +35,9 @@ class BlockSpecificStyleProjection(nn.Module):
         self.num_blocks = num_blocks
         self.style_chunk_size = style_chunk_size
         
-        # Attention queries for each block to dynamically pool the 32 tokens
+        # Attention queries for each block to dynamically pool the style tokens
         self.pool_queries = nn.ParameterList([
-            nn.Parameter(torch.randn(1, 32)) for _ in range(num_blocks)
+            nn.Parameter(torch.randn(1, 1, style_dim) * 0.02) for _ in range(num_blocks)
         ])
         
         # Block-specific projection layers using which_linear for Spectral Normalization stability
@@ -52,20 +52,23 @@ class BlockSpecificStyleProjection(nn.Module):
     def forward(self, z):
         """
         Args:
-            z: (B, 32, style_dim) - Style sequence from encoder
+            z: (B, S, D) - Style sequence from encoder (S style tokens of dimension D=style_dim)
         Returns:
             ys: list of style vectors of shape (B, style_chunk_size) modulating each GBlock
         """
         B, S, D = z.shape
         ys = []
         for i in range(self.num_blocks):
-            # Compute attention weights over the sequence of 32 tokens: shape (1, 32)
-            attn_weights = torch.softmax(self.pool_queries[i], dim=1) # (1, 32)
+            # pool_queries[i] has shape (1, 1, D)
+            # z.transpose(-2, -1) has shape (B, D, S)
+            # Query-Key dot product yields (B, 1, S) compatibility scores
+            scores = torch.matmul(self.pool_queries[i], z.transpose(-2, -1)) / (D ** 0.5)
+            attn_weights = torch.softmax(scores, dim=-1) # (B, 1, S)
             
-            # Weighted average: (B, 32, D) * (1, 32, 1) -> (B, D)
-            z_pooled = torch.sum(z * attn_weights.unsqueeze(-1), dim=1) 
+            # Weighted average: (B, 1, S) x (B, S, D) -> (B, 1, D) -> (B, D)
+            z_pooled = torch.matmul(attn_weights, z).squeeze(1)
             
-            # Project to the CCBN modulation dimension (32)
+            # Project to the CCBN modulation dimension
             y_block = self.projections[i](z_pooled)
             ys.append(y_block)
             
@@ -162,7 +165,7 @@ class Generator(nn.Module):
                                         self.arch['in_channels'][0] * (self.bottom_width * self.bottom_height))
         self.style_content_mix = StyleContentMamba(self.embed_dim, self.style_dim, vocab_size=self.n_classes)
         
-        self.bssp = BlockSpecificStyleProjection(self.z_chunk_size, num_blocks=len(self.arch['in_channels']), which_linear=self.which_linear)
+        self.bssp = BlockSpecificStyleProjection(style_dim=self.style_dim, num_blocks=len(self.arch['in_channels']), style_chunk_size=self.z_chunk_size, which_linear=self.which_linear)
 
         # self.blocks is a doubly-nested list of modules, the outer loop intended
         # to be over blocks at a given resolution (resblocks and/or self-attention)

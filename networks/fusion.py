@@ -33,7 +33,7 @@ class StyleContentCrossAttention(nn.Module):
         
         # Learned character-to-style token routing layers
         self.char_routing_emb = nn.Embedding(vocab_size, routing_dim)
-        self.style_routing_emb = nn.Parameter(torch.randn(n_style_tokens, routing_dim) * 0.02)
+        self.style_routing_proj = nn.Linear(d_model, routing_dim)
 
     def forward(self, content_seq, style_seq, char_ids=None):
         """
@@ -59,8 +59,10 @@ class StyleContentCrossAttention(nn.Module):
             char_ids_clipped = torch.clamp(char_ids, 0, self.vocab_size - 1)
             # Lookup character routing query: (B, L, routing_dim)
             char_q = self.char_routing_emb(char_ids_clipped)
+            # Project style_seq to routing dimension: (B, S, routing_dim)
+            style_routing = self.style_routing_proj(style_seq)
             # Compute learned compatibility score with style routing keys: (B, L, S)
-            routing_prior = torch.matmul(char_q, self.style_routing_emb.transpose(0, 1))
+            routing_prior = torch.matmul(char_q, style_routing.transpose(-2, -1))
             # Add routing bias to attention weights
             scores = scores + routing_prior.unsqueeze(1)
             
@@ -98,7 +100,7 @@ class AllographicModulation(nn.Module):
         )
         # Learned character-to-style token routing layers
         self.char_routing_emb = nn.Embedding(vocab_size, routing_dim)
-        self.style_routing_emb = nn.Parameter(torch.randn(n_style_tokens, routing_dim) * 0.02)
+        self.style_routing_proj = nn.Linear(d_model, routing_dim)
         
     def forward(self, content_seq, style_seq, char_ids=None):
         """
@@ -122,7 +124,8 @@ class AllographicModulation(nn.Module):
         if char_ids is not None:
             char_ids_clipped = torch.clamp(char_ids, 0, self.vocab_size - 1)
             char_q = self.char_routing_emb(char_ids_clipped) # (B, L, routing_dim)
-            routing_prior = torch.matmul(char_q, self.style_routing_emb.transpose(0, 1)) # (B, L, S)
+            style_routing = self.style_routing_proj(style_seq) # (B, S, routing_dim)
+            routing_prior = torch.matmul(char_q, style_routing.transpose(-2, -1)) # (B, L, S)
             scores = scores + routing_prior
             
         attn_weights = torch.softmax(scores, dim=-1) # (B, L, S)
