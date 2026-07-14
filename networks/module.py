@@ -38,7 +38,7 @@ class Codebook3D(nn.Module):
         ) # [B * L, N]
         
         min_encoding_indices = torch.argmin(d, dim=1) # [B * L]
-        z_q = self.embedding(min_encoding_indices).view(z.shape) # [B, L, D]
+        z_q = weight[min_encoding_indices].view(z.shape) # [B, L, D] (Corrected to use normalized weight)
         
         if not self.training:
             return z_q, min_encoding_indices
@@ -50,6 +50,23 @@ class Codebook3D(nn.Module):
         z_q = z_norm + (z_q - z_norm).detach()
         
         return z_q, min_encoding_indices, loss
+
+    def quantize(self, z):
+        """Quantize random noise or style tensors consistently with the codebook scale."""
+        # z: [B, L, D]
+        z_norm = F.normalize(z, p=2, dim=-1)
+        z_flattened = z_norm.view(-1, self.latent_dim)
+        weight = self.embedding.weight
+        weight = F.normalize(weight, p=2, dim=-1)
+        
+        d = (
+            torch.sum(z_flattened**2, dim=1, keepdim=True)
+            + torch.sum(weight**2, dim=1)
+            - 2 * (torch.matmul(z_flattened, weight.t()))
+        )
+        min_encoding_indices = torch.argmin(d, dim=1)
+        z_q = weight[min_encoding_indices].view(z.shape)
+        return z_q
 
 
 class HeavyCNNAttention(nn.Module):

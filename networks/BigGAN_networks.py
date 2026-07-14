@@ -160,7 +160,7 @@ class Generator(nn.Module):
 
         self.filter_linear = self.which_linear(self.embed_dim,
                                         self.arch['in_channels'][0] * (self.bottom_width * self.bottom_height))
-        self.style_content_mix = StyleContentMamba(self.embed_dim, self.style_dim)
+        self.style_content_mix = StyleContentMamba(self.embed_dim, self.style_dim, vocab_size=self.n_classes)
         
         self.bssp = BlockSpecificStyleProjection(self.z_chunk_size, num_blocks=len(self.arch['in_channels']), which_linear=self.which_linear)
 

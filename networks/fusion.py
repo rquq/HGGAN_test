@@ -145,7 +145,7 @@ class StyleContentMamba(nn.Module):
     and then applies cross-attention, a local stroke boundary gate, and a highly responsive
     character-style dynamic modulation block to synthesize hyper-realistic glyph details.
     """
-    def __init__(self, d_model, style_dim, d_state=16, d_conv=4, expand=2):
+    def __init__(self, d_model, style_dim, d_state=16, d_conv=4, expand=2, vocab_size=256):
         super().__init__()
         self.d_model = d_model
         
@@ -173,13 +173,13 @@ class StyleContentMamba(nn.Module):
         )
         
         # 4. Dynamic Cross-Attention for Allograph Learning
-        self.cross_attn = StyleContentCrossAttention(d_model, nhead=4)
+        self.cross_attn = StyleContentCrossAttention(d_model, nhead=4, vocab_size=vocab_size, n_style_tokens=style_dim)
         
         # 5. Normalization and Stability
         self.norm = RMSNorm(d_model)
         
         # 6. Character-Conditioned Allographic Modulation
-        self.allograph_mod = AllographicModulation(d_model)
+        self.allograph_mod = AllographicModulation(d_model, vocab_size=vocab_size, n_style_tokens=style_dim)
         
         # 7. Global Style Modulation (maintained as a residual global bias)
         self.global_style_mod = nn.Sequential(
@@ -233,9 +233,9 @@ class StyleContentMamba(nn.Module):
 
 
 class MixMamba(nn.Module):
-    def __init__(self, d_model, style_dim):
+    def __init__(self, d_model, style_dim, vocab_size=256):
         super().__init__()
-        self.fusion = StyleContentMamba(d_model, style_dim)
+        self.fusion = StyleContentMamba(d_model, style_dim, vocab_size=vocab_size)
         
     def forward(self, content_seq, style_seq, char_ids=None):
         return self.fusion(content_seq, style_seq, char_ids=char_ids)
