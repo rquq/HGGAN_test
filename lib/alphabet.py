@@ -15,6 +15,11 @@ Alphabets = {
 }
 
 
+def get_alphabet_size(alphabet_key):
+    """Return the number of character classes (including blank) for a given alphabet key."""
+    return len(Alphabets[alphabet_key])
+
+
 class strLabelConverter(object):
     """Convert between str and label.
     NOTE:
@@ -25,12 +30,16 @@ class strLabelConverter(object):
     """
 
     def __init__(self, alphabet_key, ignore_case=False):
-        alphabet = Alphabets[alphabet_key]
-        # print(alphabet)
+        if isinstance(alphabet_key, str) and alphabet_key in Alphabets:
+            alphabet = Alphabets[alphabet_key]
+        else:
+            # Allow passing a raw alphabet string directly for custom languages
+            alphabet = alphabet_key
         self._ignore_case = ignore_case
         if self._ignore_case:
             alphabet = alphabet.lower()
         self.alphabet = alphabet
+        self.n_class = len(alphabet)
 
         self.dict = {}
         for i, char in enumerate(alphabet):
@@ -47,7 +56,7 @@ class strLabelConverter(object):
         """
         if isinstance(text, str):
             text = [
-                self.dict[char.lower() if self._ignore_case else char]
+                self.dict.get(char.lower() if self._ignore_case else char, 0)
                 for char in text
             ]
             return text
@@ -56,10 +65,9 @@ class strLabelConverter(object):
         result = []
         results = []
         for item in text:
-            # item = item.decode('utf-8', 'strict')
             length.append(len(item))
             for char in item:
-                index = self.dict[char]
+                index = self.dict.get(char, 0)
                 result.append(index)
             results.append(result)
             result = []
@@ -96,14 +104,16 @@ class strLabelConverter(object):
         if length.numel() == 1:
             length = length[0]
             if raw:
-                return ''.join([self.alphabet[i] for i in t])
+                return ''.join([self.alphabet[i] for i in t if 0 <= i < len(self.alphabet)])
             else:
                 char_list = []
                 if t.dim() == 2:
                     t = t[0]
                 for i in range(length):
                     if t[i] != 0 and (not (i > 0 and t[i - 1] == t[i])):
-                        char_list.append(self.alphabet[t[i]])
+                        idx = t[i].item() if hasattr(t[i], 'item') else int(t[i])
+                        if 0 <= idx < len(self.alphabet):
+                            char_list.append(self.alphabet[idx])
                 return ''.join(char_list)
         else:
             # batch mode
@@ -120,7 +130,14 @@ class strLabelConverter(object):
 
 def get_true_alphabet(name):
     tag = '_'.join(name.split('_')[:2])
-    return Alphabets[tag]
+    if tag in Alphabets:
+        return Alphabets[tag]
+    # Fallback: try just the first token
+    first = name.split('_')[0]
+    for key in Alphabets:
+        if key.startswith(first):
+            return Alphabets[key]
+    return Alphabets.get('all', '')
 
 
 def get_lexicon(path, true_alphabet, max_length=20, ignore_case=True):
@@ -144,7 +161,11 @@ def get_lexicon(path, true_alphabet, max_length=20, ignore_case=True):
 
 
 def word_capitalize(word):
-    word = list(word)
-    word[0] = unicodedata.normalize('NFKD', word[0].upper()).encode('ascii', 'ignore').decode("utf-8")
-    word = ''.join(word)
-    return word
+    """Capitalize the first character of a word in a Unicode-safe way.
+    
+    Works correctly with any script (Latin, Cyrillic, Arabic, CJK, etc.).
+    For scripts without case distinctions the word is returned unchanged.
+    """
+    if not word:
+        return word
+    return word[0].upper() + word[1:]

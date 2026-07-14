@@ -8,6 +8,50 @@ from networks.utils import _len2mask, init_weights
 import torch.nn.functional as F
 
 
+class Codebook3D(nn.Module):
+    def __init__(self, num_codebook_vectors=256, latent_dim=32, beta=0.25):
+        super(Codebook3D, self).__init__()
+        self.num_codebook_vectors = num_codebook_vectors
+        self.latent_dim = latent_dim
+        self.beta = beta
+        self.embedding = nn.Embedding(self.num_codebook_vectors, latent_dim)
+        # Uniform initialization
+        self.embedding.weight.data.uniform_(-1.0 / self.num_codebook_vectors, 1.0 / self.num_codebook_vectors)
+
+    def forward(self, z):
+        # z: [B, L, D]
+        # L2 normalize
+        z_norm = F.normalize(z, p=2, dim=-1)
+        
+        # Flatten input
+        z_flattened = z_norm.view(-1, self.latent_dim) # [B * L, D]
+        
+        # Normalize codebook weights
+        weight = self.embedding.weight
+        weight = F.normalize(weight, p=2, dim=-1) # [N, D]
+        
+        # Calculate distances
+        d = (
+            torch.sum(z_flattened**2, dim=1, keepdim=True)
+            + torch.sum(weight**2, dim=1)
+            - 2 * (torch.matmul(z_flattened, weight.t()))
+        ) # [B * L, N]
+        
+        min_encoding_indices = torch.argmin(d, dim=1) # [B * L]
+        z_q = self.embedding(min_encoding_indices).view(z.shape) # [B, L, D]
+        
+        if not self.training:
+            return z_q, min_encoding_indices
+            
+        # Commitment loss and codebook loss
+        loss = self.beta * torch.mean((z_q.detach() - z_norm) ** 2) + torch.mean((z_q - z_norm.detach()) ** 2)
+        
+        # Straight Through Estimator
+        z_q = z_norm + (z_q - z_norm).detach()
+        
+        return z_q, min_encoding_indices, loss
+
+
 class HeavyCNNAttention(nn.Module):
     def __init__(self, in_dim):
         super().__init__()
@@ -134,9 +178,13 @@ class StyleBackbone(nn.Module):
 
 
 class StyleEncoder(nn.Module):
-    def __init__(self, style_dim=32, in_dim=256, init='N02'):
+    def __init__(self, style_dim=32, in_dim=256, init='N02', use_vq=False, num_codebook_vectors=256, vq_beta=0.25):
         super(StyleEncoder, self).__init__()
         self.style_dim = style_dim
+        self.use_vq = use_vq
+        
+        if self.use_vq:
+            self.codebook = Codebook3D(num_codebook_vectors=num_codebook_vectors, latent_dim=style_dim, beta=vq_beta)
 
         ######################################
         # Construct StyleEncoder
@@ -154,54 +202,60 @@ class StyleEncoder(nn.Module):
         # ADD: Heavy CNN to capture global word geometry (slant, spacing, ratio)
         self.sequence_model = HeavyCNNAttention(in_dim)
         
-        # Local-Global Multi-scale feature projection (channel sum = 2 * (64 + 128 + 256) = 896 due to mean + max concatenation)
-        self.local_proj = nn.Sequential(
-            nn.Conv1d(896, in_dim, kernel_size=1),
-            nn.GroupNorm(8, in_dim),
-            nn.SiLU()
-        )
+        # Projection layers for multi-scale CNN backbone features — built lazily on
+        # first forward pass so channel dims adapt to any backbone configuration.
+        self.proj_layers = None
+        self._in_dim = in_dim
         
-        # Projection layer to fuse concatenated average and max pooled sequential style features
-        self.style_proj = nn.Linear(in_dim * 2, in_dim)
+        # Learned style query tokens (style_dim tokens, each of size in_dim)
+        self.num_style_tokens = style_dim  # one query per style-dim slot
+        self.style_queries = nn.Parameter(torch.randn(1, self.num_style_tokens, in_dim) * 0.02)
+        self.style_cross_attn = nn.MultiheadAttention(embed_dim=in_dim, num_heads=4, batch_first=True)
         
         if init != 'none':
             init_weights(self, init)
+
+    def _build_proj_layers(self, all_feats):
+        """Build projection Conv2d layers matching the actual backbone feature channels."""
+        layers = []
+        for f in all_feats:
+            layers.append(nn.Conv2d(f.size(1), self._in_dim, kernel_size=1))
+        self.proj_layers = nn.ModuleList(layers).to(all_feats[0].device)
+        # Apply same init as rest of the module
+        for layer in self.proj_layers:
+            nn.init.normal_(layer.weight, 0.0, 0.02)
+            if layer.bias is not None:
+                nn.init.zeros_(layer.bias)
 
     def forward(self, img, img_len, cnn_backbone=None, ret_feats=False, vae_mode=False):
         # Always request intermediate features to capture local details
         feat, all_feats = cnn_backbone(img, ret_feats=True)
         
+        # Lazy-build projection layers on first call
+        if self.proj_layers is None:
+            self._build_proj_layers(all_feats)
+        
         # 1. Global context from main feature using Heavy CNN
         feat_m = self.sequence_model(feat) # feat is (B, C, W), feat_m is (B, C, W)
         
-        # 2. Extract and Fuse multi-scale local details (layer 9, 13, 16)
-        local_features = []
-        for f in all_feats:
-            # f is (B, C_f, H_f, W_f)
-            # Retain both general contextual trends (mean pooling) and key structural stroke bounds (max pooling)
-            f_mean = torch.mean(f, dim=2) # (B, C_f, W_f)
-            f_max = torch.max(f, dim=2)[0] # (B, C_f, W_f)
+        # 2. Project and pool each intermediate feature map dynamically
+        spatial_tokens = [feat_m.transpose(1, 2)] # Start with global sequence (B, W, in_dim)
+        for proj_layer, f in zip(self.proj_layers, all_feats):
+            f_proj = proj_layer(f) # (B, in_dim, H_f, W_f)
+            # Pool height to 4 to condense vertical dimension while retaining full horizontal resolution
+            f_pooled = F.adaptive_avg_pool2d(f_proj, (4, f.size(-1)))
+            f_flat = f_pooled.flatten(2).transpose(1, 2) # (B, 4 * W_f, in_dim)
+            spatial_tokens.append(f_flat)
             
-            # Concatenate pooled features to preserve spatial curvature allographs
-            f_pooled = torch.cat([f_mean, f_max], dim=1) # (B, C_f * 2, W_f)
-            
-            # Interpolate width to match main feature width
-            f_resized = F.interpolate(f_pooled, size=feat_m.size(-1), mode='linear', align_corners=False)
-            local_features.append(f_resized)
-            
-        local_fused = torch.cat(local_features, dim=1) # (B, 896, W)
-        local_mapped = self.local_proj(local_fused) # (B, in_dim, W)
+        # Concatenate all spatial/global tokens
+        style_keys = torch.cat(spatial_tokens, dim=1) # (B, total_tokens, in_dim)
         
-        # Stabilized Local-Global Fusion
-        feat_final = feat_m + local_mapped
+        # 3. Query style sequence dynamically using learned style query tokens
+        B = img.size(0)
+        style_queries = self.style_queries.expand(B, -1, -1) # (B, num_style_tokens, in_dim)
         
-        # Output 32 style tokens using both average and max pooling to optimize local/global representation
-        style_avg = torch.nn.functional.adaptive_avg_pool1d(feat_final, 32) # (B, C, 32)
-        style_max = torch.nn.functional.adaptive_max_pool1d(feat_final, 32) # (B, C, 32)
-        
-        style_seq = torch.cat([style_avg, style_max], dim=1) # (B, C * 2, 32)
-        style_seq = style_seq.transpose(1, 2) # (B, 32, C * 2)
-        style_seq = self.style_proj(style_seq) # (B, 32, C)
+        # Cross-attention: queries look at the spatial style keys
+        style_seq, _ = self.style_cross_attn(query=style_queries, key=style_keys, value=style_keys)
         
         style = self.linear_style(style_seq)
         style_tokens_mu = self.mu(style) # (B, 32, style_dim)
@@ -211,6 +265,30 @@ class StyleEncoder(nn.Module):
             std = torch.exp(0.5 * logvar)
             eps = torch.randn_like(std)
             style_tokens_sampled = eps * std + style_tokens_mu
+        
+        if self.use_vq:
+            if self.training:
+                if vae_mode:
+                    z_q, min_encoding_indices, vq_loss = self.codebook(style_tokens_sampled)
+                    style_tokens_sampled = z_q
+                else:
+                    z_q, min_encoding_indices, vq_loss = self.codebook(style_tokens_mu)
+                    style_tokens_mu = z_q
+                
+                # Accumulate vq_loss
+                if not hasattr(self, 'last_vq_loss'):
+                    self.last_vq_loss = vq_loss
+                else:
+                    self.last_vq_loss = self.last_vq_loss + vq_loss
+            else:
+                if vae_mode:
+                    z_q, min_encoding_indices = self.codebook(style_tokens_sampled)
+                    style_tokens_sampled = z_q
+                else:
+                    z_q, min_encoding_indices = self.codebook(style_tokens_mu)
+                    style_tokens_mu = z_q
+
+        if vae_mode:
             style_tokens = (style_tokens_sampled, style_tokens_mu, logvar)
         else:
             style_tokens = style_tokens_mu
@@ -250,14 +328,15 @@ class WriterIdentifier(nn.Module):
         else:
             return wid_logits
 
-    def return_feat(self, img, img_len):
-        feat = self.cnn_backbone(img)
-        img_len = img_len // self.reduce_len_scale
-        out_w = self.cnn_wid(feat).squeeze(-2)
-        img_len_mask = _len2mask(img_len, out_w.size(-1)).unsqueeze(1).float().detach()
-        wid_feat = (out_w * img_len_mask).sum(dim=-1) / (img_len.unsqueeze(1).float() + 1e-8)
-        for j in range(2):
-            wid_feat = self.linear_wid[j](wid_feat)
+    def return_feat(self, img, img_len, cnn_backbone):
+        """Return intermediate writer features (before classification head)."""
+        feat, _ = cnn_backbone(img, ret_feats=False)
+        img_len = torch.div(img_len, cnn_backbone.reduce_len_scale, rounding_mode='trunc')
+        img_len_mask = _len2mask(img_len, feat.size(-1)).unsqueeze(1).float().detach()
+        wid_feat = (feat * img_len_mask).sum(dim=-1) / (img_len.unsqueeze(1).float() + 1e-8)
+        # Pass through all linear layers except the last classification one
+        for layer in self.linear_wid[:-1]:
+            wid_feat = layer(wid_feat)
         return wid_feat
 
 

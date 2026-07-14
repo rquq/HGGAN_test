@@ -8,12 +8,14 @@ class StyleContentCrossAttention(nn.Module):
     Direct Query-Key-Value Cross-Attention using pure, compatible PyTorch.
     Ensures complete T4 compatibility without requiring PyTorch 2.0+ SDPA.
     Allows content character tokens to directly query and align with style sequence features.
+    Updated with learned dynamic allograph routing prior.
     """
-    def __init__(self, d_model, nhead=4, dropout=0.1):
+    def __init__(self, d_model, nhead=4, dropout=0.1, routing_dim=16, vocab_size=256, n_style_tokens=32):
         super().__init__()
         self.d_model = d_model
         self.nhead = nhead
         self.head_dim = d_model // nhead
+        self.vocab_size = vocab_size
         
         self.q_proj = nn.Linear(d_model, d_model)
         self.k_proj = nn.Linear(d_model, d_model)
@@ -28,12 +30,17 @@ class StyleContentCrossAttention(nn.Module):
             nn.Linear(d_model * 2, d_model)
         )
         self.norm2 = nn.LayerNorm(d_model)
+        
+        # Learned character-to-style token routing layers
+        self.char_routing_emb = nn.Embedding(vocab_size, routing_dim)
+        self.style_routing_emb = nn.Parameter(torch.randn(n_style_tokens, routing_dim) * 0.02)
 
-    def forward(self, content_seq, style_seq):
+    def forward(self, content_seq, style_seq, char_ids=None):
         """
         Args:
             content_seq: (B, L, D) sequence of content embeddings
             style_seq: (B, S_len, D) sequence of style embeddings
+            char_ids: (B, L) raw character labels to guide vertical styling
         """
         B, L, D = content_seq.shape
         S = style_seq.shape[1]
@@ -46,6 +53,17 @@ class StyleContentCrossAttention(nn.Module):
         # Pure, version-friendly scaled dot-product attention
         scale = 1.0 / (self.head_dim ** 0.5)
         scores = torch.matmul(q * scale, k.transpose(-2, -1)) # (B, nh, L, S)
+        
+        # Add character-conditioned learned prior to guide attention mapping
+        if char_ids is not None:
+            char_ids_clipped = torch.clamp(char_ids, 0, self.vocab_size - 1)
+            # Lookup character routing query: (B, L, routing_dim)
+            char_q = self.char_routing_emb(char_ids_clipped)
+            # Compute learned compatibility score with style routing keys: (B, L, S)
+            routing_prior = torch.matmul(char_q, self.style_routing_emb.transpose(0, 1))
+            # Add routing bias to attention weights
+            scores = scores + routing_prior.unsqueeze(1)
+            
         attn_weights = torch.softmax(scores, dim=-1)
         attn_weights = self.dropout(attn_weights)
         attn_out = torch.matmul(attn_weights, v) # (B, nh, L, head_dim)
@@ -57,15 +75,18 @@ class StyleContentCrossAttention(nn.Module):
         x = self.norm1(content_seq + attn_out)
         ffn_out = self.ffn(x)
         return self.norm2(x + ffn_out)
-
+ 
+ 
 class AllographicModulation(nn.Module):
     """
     Dynamic character-conditioned allograph modulation (AdaIN style).
     Allows each content character token to dynamically pool style tokens that best match
     its spatial/glyph properties, predicting character-specific scale and shift.
+    Updated with learned character-to-style token routing.
     """
-    def __init__(self, d_model):
+    def __init__(self, d_model, routing_dim=16, vocab_size=256, n_style_tokens=32):
         super().__init__()
+        self.vocab_size = vocab_size
         self.q_proj = nn.Linear(d_model, d_model)
         self.k_proj = nn.Linear(d_model, d_model)
         self.v_proj = nn.Linear(d_model, d_model)
@@ -75,12 +96,16 @@ class AllographicModulation(nn.Module):
             nn.SiLU(),
             nn.Linear(d_model, d_model * 2)
         )
+        # Learned character-to-style token routing layers
+        self.char_routing_emb = nn.Embedding(vocab_size, routing_dim)
+        self.style_routing_emb = nn.Parameter(torch.randn(n_style_tokens, routing_dim) * 0.02)
         
-    def forward(self, content_seq, style_seq):
+    def forward(self, content_seq, style_seq, char_ids=None):
         """
         Args:
             content_seq: (B, L, D) refined content sequence
             style_seq: (B, S, D) style sequence features
+            char_ids: (B, L) raw character labels to guide vertical styling
         """
         B, L, D = content_seq.shape
         S = style_seq.shape[1]
@@ -92,6 +117,14 @@ class AllographicModulation(nn.Module):
         
         # Scaled dot-product attention
         scores = torch.matmul(q, k.transpose(-2, -1)) / (D ** 0.5) # (B, L, S)
+        
+        # Add character-conditioned learned routing prior
+        if char_ids is not None:
+            char_ids_clipped = torch.clamp(char_ids, 0, self.vocab_size - 1)
+            char_q = self.char_routing_emb(char_ids_clipped) # (B, L, routing_dim)
+            routing_prior = torch.matmul(char_q, self.style_routing_emb.transpose(0, 1)) # (B, L, S)
+            scores = scores + routing_prior
+            
         attn_weights = torch.softmax(scores, dim=-1) # (B, L, S)
         
         # Character-specific style features: (B, L, S) * (B, S, D) -> (B, L, D)
@@ -155,11 +188,12 @@ class StyleContentMamba(nn.Module):
             nn.Linear(d_model, d_model * 2)
         )
 
-    def forward(self, content_seq, style_seq):
+    def forward(self, content_seq, style_seq, char_ids=None):
         """
         Args:
             content_seq: (B, L, D) sequence of content embeddings
             style_seq: (B, 32, style_dim) sequence of style tokens
+            char_ids: (B, L) raw character labels
         """
         B, L, D = content_seq.shape
         S_len = style_seq.shape[1]
@@ -185,10 +219,10 @@ class StyleContentMamba(nn.Module):
         content_local = content_fused + (local_feat * gate_val).transpose(1, 2)
         
         # --- STAGE 5: Allograph Refinement via Dynamic Cross-Attention ---
-        content_final = self.cross_attn(content_local, s_feat)
+        content_final = self.cross_attn(content_local, s_feat, char_ids=char_ids)
         
         # --- STAGE 6: Allographic Modulation (Dynamic Character-Conditioned) ---
-        content_modulated = self.allograph_mod(content_final, s_feat)
+        content_modulated = self.allograph_mod(content_final, s_feat, char_ids=char_ids)
         
         # --- STAGE 7: Global Style Modulation Residual ---
         style_vec = style_seq.sum(dim=1) / style_seq.size(1) # (B, style_dim)
@@ -203,5 +237,5 @@ class MixMamba(nn.Module):
         super().__init__()
         self.fusion = StyleContentMamba(d_model, style_dim)
         
-    def forward(self, content_seq, style_seq):
-        return self.fusion(content_seq, style_seq)
+    def forward(self, content_seq, style_seq, char_ids=None):
+        return self.fusion(content_seq, style_seq, char_ids=char_ids)

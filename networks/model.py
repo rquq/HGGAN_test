@@ -25,6 +25,27 @@ from networks.loss import recn_l1_loss, CXLoss, KLloss, contrastive_style_loss
 from networks.masking import apply_vertical_stripe_mask, apply_horizontal_stripe_mask, apply_combined_stripe_mask, apply_light_mixed_patch_mask
 
 
+class EMA(object):
+    def __init__(self, beta):
+        super().__init__()
+        self.beta = beta
+        self.step = 0
+
+    def update_model_average(self, ma_model, current_model, beta):
+        curr_model_unwrapped = getattr(current_model, 'module', current_model)
+        for current_params, ma_params in zip(curr_model_unwrapped.parameters(), ma_model.parameters()):
+            old_weight, up_weight = ma_params.data, current_params.data
+            ma_params.data = old_weight * beta + (1 - beta) * up_weight
+
+    def step_ema(self, ema_model, model, step_start_ema=0):
+        if self.step < step_start_ema:
+            curr_model_unwrapped = getattr(model, 'module', model)
+            ema_model.load_state_dict(curr_model_unwrapped.state_dict())
+            return
+        beta = min(self.beta, (1 + self.step) / (10 + self.step))
+        self.update_model_average(ema_model, model, beta)
+
+
 def seed_worker(worker_id):
     worker_seed = torch.initial_seed() % 2**32
     np.random.seed(worker_seed)
@@ -83,7 +104,12 @@ class BaseModel(object):
             return
         ckpt = {}
         for model in self.models.values():
-            ckpt[type(model).__name__] = model.state_dict()
+            m_unwrapped = getattr(model, 'module', model)
+            ckpt[type(model).__name__] = m_unwrapped.state_dict()
+
+        if hasattr(self, 'models_ema') and self.models_ema:
+            for name, model_ema in self.models_ema.items():
+                ckpt[name + '_EMA'] = model_ema.state_dict()
 
         for key, optim in self.optimizers.items():
             ckpt['OPT.' + key] = optim.state_dict()
@@ -111,10 +137,26 @@ class BaseModel(object):
 
         models = self.models.values() if len(modules) == 0 else modules
         for model in models:
+            m_unwrapped = getattr(model, 'module', model)
             try:
-                model.load_state_dict(ckpt.pop(type(model).__name__))
+                m_unwrapped.load_state_dict(ckpt.pop(type(model).__name__))
             except Exception as e:
                 self.print(f'Load {type(model).__name__} failed: {e}')
+
+        if hasattr(self, 'models_ema') and self.models_ema:
+            for name, model_ema in self.models_ema.items():
+                ema_key = name + '_EMA'
+                if ema_key in ckpt:
+                    try:
+                        model_ema.load_state_dict(ckpt.pop(ema_key))
+                        self.print(f'Loaded EMA weights for {name}')
+                    except Exception as e:
+                        self.print(f'Load {ema_key} failed: {e}')
+                else:
+                    if name in self.models:
+                        m_unwrapped = getattr(self.models[name], 'module', self.models[name])
+                        model_ema.load_state_dict(m_unwrapped.state_dict())
+                        self.print(f'Initialized EMA weights for {name} from active model')
 
         for key in self.optimizers.keys():
             try:
@@ -224,7 +266,7 @@ class AdversarialModel(BaseModel):
             fake_real_imgs = self.models.G(self.eval_z, real_lbs, real_lb_lens)
 
             self.eval_y.sample_()
-            sampled_words = idx_to_words(self.eval_y, self.lexicon,
+            sampled_words = idx_to_words(self.eval_y, self.lexicon, 0,
                                          self.opt.training.capitalize_ratio,
                                          self.opt.training.blank_ratio)
             sampled_words[-2] = sampled_words[-1]
@@ -233,7 +275,10 @@ class AdversarialModel(BaseModel):
             fake_imgs = self.models.G(self.eval_z, fake_lbs, fake_lb_lens)
             style_imgs = self.models.G(enc_z, fake_lbs, fake_lb_lens)
 
-            max_img_len = max([real_imgs.size(-1), fake_real_imgs.size(-1), fake_imgs.size(-1)])
+            tensors_to_pad = [real_imgs, fake_real_imgs, fake_imgs, style_imgs]
+            if recn_imgs is not None:
+                tensors_to_pad.append(recn_imgs)
+            max_img_len = max([t.size(-1) for t in tensors_to_pad])
             img_shape = [real_imgs.size(2), max_img_len, real_imgs.size(1)]
 
             real_imgs = F.pad(real_imgs, [0, max_img_len - real_imgs.size(-1), 0, 0], value=-1.)
@@ -287,7 +332,7 @@ class AdversarialModel(BaseModel):
                     if use_rand_corpus:
                         word_idx_sampler.sample_()
                         sampled_words = idx_to_words(word_idx_sampler[:style_imgs.size(0)],
-                                                     self.lexicon, self.opt.training.capitalize_ratio,
+                                                     self.lexicon, 0, self.opt.training.capitalize_ratio,
                                                      blank_ratio=0)
                         content_lbs, content_lb_lens = self.label_converter.encode(sampled_words)
                     else:
@@ -313,144 +358,161 @@ class AdversarialModel(BaseModel):
 
     def validate(self, style_guided=True, test_stage=False, *args, **kwargs):
         self.set_mode('eval')
-        # OPTIMIZATION: Cache validation DataLoader to avoid worker startup/shutdown overhead
-        if not hasattr(self, 'eval_dloader') or self.eval_dloader is None:
-            self.eval_dloader = DataLoader(
-                get_dataset(self.opt.valid.dset_name, self.opt.valid.dset_split, process_style=True),
-                collate_fn=self.collect_fn,
-                batch_size=self.opt.valid.batch_size,
-                shuffle=False,
-                num_workers=4,
-                pin_memory=(self.device.type == 'cuda'),
-                worker_init_fn=seed_worker
-            )
-        eval_dloader = self.eval_dloader
+        
+        use_ema = getattr(self, 'use_ema', False)
+        if use_ema:
+            active_G = self.models.G
+            active_E = self.models.E
+            active_B = self.models.B
+            self.models.G = self.models_ema.G
+            self.models.E = self.models_ema.E
+            self.models.B = self.models_ema.B
 
-        if 'E' not in self.models:
-            style_guided = False
-            n_rand_repeat = 1
-        else:
-            n_rand_repeat = 1 if style_guided and not self.opt.valid.use_rand_corpus \
-                              else self.opt.valid.n_rand_repeat
-
-        def get_generator():
-            generator = self.image_generator(eval_dloader, self.opt.valid.use_rand_corpus,
-                                             style_guided, n_rand_repeat)
-            return generator
-
-        # OPTIMIZATION: Pre-generate and cache fake image batches on CPU to avoid running the generator 6 times.
-        # This speeds up validation by up to 6x.
-        def batch_to_cpu(batch):
-            cpu_batch = {}
-            for k, v in batch.items():
-                if isinstance(v, torch.Tensor):
-                    cpu_batch[k] = v.cpu().pin_memory()
-                else:
-                    cpu_batch[k] = v
-            return cpu_batch
-
-        self.print("Generating and caching validation fake images...")
-        generator_list = [batch_to_cpu(b) for b in get_generator()]
-
-        def get_cached_generator():
-            return generator_list
-
-        if not hasattr(self, 'valid_real_stats') or self.valid_real_stats is None:
-            from metric.val_metrics import calculate_activation_statistics, InceptionV3
-            self.print("Precalculating validation set statistics...")
-            block_idx = InceptionV3.BLOCK_INDEX_BY_DIM[2048]
-            if self.inception_model is None:
-                self.inception_model = InceptionV3([block_idx]).to(self.device).eval()
-            self.valid_real_stats = calculate_activation_statistics(eval_dloader, len(eval_dloader), 
-                                                                   self.inception_model, self.opt.valid.dims, 
-                                                                   self.device, crop=not test_stage)
-                                                                   
-        from metric.val_metrics import calculate_hwd_score
-
-        if test_stage:
-            res = calculate_fid_kid_is(self.opt.valid, eval_dloader, get_cached_generator(), n_rand_repeat, 
-                                     self.device, real_stats=self.valid_real_stats, inceptionV3_model=self.inception_model)
-        else:
-            res = calculate_fid_kid_is(self.opt.valid, eval_dloader, get_cached_generator(), n_rand_repeat, 
-                                     self.device, crop=True, real_stats=self.valid_real_stats, inceptionV3_model=self.inception_model)
-
-        if test_stage:
-            if not self.opt.valid.use_rand_corpus:
-                psnr_mssim = calculate_mssim_psnr(eval_dloader, get_cached_generator())
-                res['psnr'] = psnr_mssim['psnr']
-                res['mssim'] = psnr_mssim['mssim']
-            if style_guided:
-                wier = self.validate_wid(get_cached_generator(), real_dloader=eval_dloader, split=self.opt.valid.dset_split)
-                res['wier'] = wier
-
-        if getattr(self.opt.valid, 'validate_ocr', True):
-            res['cer'], res['wer'] = self.validate_ocr(get_cached_generator(), n_iters=len(eval_dloader) * n_rand_repeat)
-
-        if getattr(self.opt.valid, 'validate_hwd', True):
-            # OPTIMIZATION: Cache real HWD dataset/features to avoid reprocessing real images every epoch.
-            if not hasattr(self, 'valid_real_hwd_dataset') or self.valid_real_hwd_dataset is None:
-                self.print("Precalculating real image features for HWD...")
-                from metric.val_metrics import ImageListDataset, batch_tensor_to_pil_list
-                real_imgs_list = []
-                real_authors_list = []
-                for idx, batch in enumerate(tqdm(eval_dloader, desc='HWD Real Images')):
-                    imgs = batch['org_imgs']
-                    lens = batch['org_img_lens']
-                    wids = batch.get('wids', torch.arange(imgs.size(0)))
-                    pil_imgs = batch_tensor_to_pil_list(imgs, lens)
-                    real_imgs_list.extend(pil_imgs)
-                    for i in range(imgs.size(0)):
-                        real_authors_list.append(str(wids[i].item()))
-                self.valid_real_hwd_dataset = ImageListDataset(real_imgs_list, real_authors_list)
-
-            hwd_val = calculate_hwd_score(eval_dloader, get_cached_generator(), n_rand_repeat, self.device, real_dataset=self.valid_real_hwd_dataset)
-            res['hwd'] = hwd_val
-
-        if getattr(self.opt.valid, 'validate_cmmd', True):
-            current_epoch = kwargs.get('current_epoch', None)
-            every_n = getattr(self.opt.valid, 'validate_cmmd_every_n_epochs', 3)
-            should_run_cmmd = test_stage or (current_epoch is None)
-            if not should_run_cmmd:
-                epoch_start = getattr(self, 'epoch_start', 1)
-                should_run_cmmd = (current_epoch - epoch_start) % every_n == 0
-                
-            if should_run_cmmd:
-                from metric.val_metrics import calculate_cmmd_score, compute_real_embeddings
-                if not hasattr(self, 'cmmd_embedding_model') or self.cmmd_embedding_model is None:
-                    from metric.val_metrics import ClipEmbeddingModel
-                    self.cmmd_embedding_model = ClipEmbeddingModel()
-                if not hasattr(self, 'real_cmmd_embeddings') or self.real_cmmd_embeddings is None:
-                    import os
-                    import numpy as np
-                    cache_dir = "./pretrained"
-                    cache_path = os.path.join(cache_dir, f"real_cmmd_{self.opt.valid.dset_name}_{self.opt.valid.dset_split}.npy")
-                    if os.path.exists(cache_path):
-                        self.print(f"Loading cached real CMMD embeddings from {cache_path}...")
-                        self.real_cmmd_embeddings = np.load(cache_path)
-                    else:
-                        self.print("Precalculating real image embeddings for CMMD...")
-                        self.real_cmmd_embeddings = compute_real_embeddings(
-                            eval_dloader, self.cmmd_embedding_model, device=self.device
-                        )
-                        try:
-                            os.makedirs(cache_dir, exist_ok=True)
-                            np.save(cache_path, self.real_cmmd_embeddings)
-                            self.print(f"Saved real CMMD embeddings to cache: {cache_path}")
-                        except Exception as e:
-                            self.print(f"Could not save real CMMD embeddings cache: {e}")
-                cmmd_val = calculate_cmmd_score(
-                    eval_dloader, 
-                    get_cached_generator(), 
-                    n_rand_repeat, 
-                    self.device,
-                    real_embeddings=self.real_cmmd_embeddings,
-                    embedding_model=self.cmmd_embedding_model
+        try:
+            # OPTIMIZATION: Cache validation DataLoader to avoid worker startup/shutdown overhead
+            if not hasattr(self, 'eval_dloader') or self.eval_dloader is None:
+                self.eval_dloader = DataLoader(
+                    get_dataset(self.opt.valid.dset_name, self.opt.valid.dset_split, process_style=True),
+                    collate_fn=self.collect_fn,
+                    batch_size=self.opt.valid.batch_size,
+                    shuffle=False,
+                    num_workers=4,
+                    pin_memory=(self.device.type == 'cuda'),
+                    worker_init_fn=seed_worker
                 )
-                res['cmmd'] = cmmd_val
+            eval_dloader = self.eval_dloader
 
-        import gc
-        gc.collect()
-        torch.cuda.empty_cache()
+            if 'E' not in self.models:
+                style_guided = False
+                n_rand_repeat = 1
+            else:
+                n_rand_repeat = 1 if style_guided and not self.opt.valid.use_rand_corpus \
+                                  else self.opt.valid.n_rand_repeat
+
+            def get_generator():
+                generator = self.image_generator(eval_dloader, self.opt.valid.use_rand_corpus,
+                                                 style_guided, n_rand_repeat)
+                return generator
+
+            # OPTIMIZATION: Pre-generate and cache fake image batches on CPU to avoid running the generator 6 times.
+            # This speeds up validation by up to 6x.
+            def batch_to_cpu(batch):
+                cpu_batch = {}
+                for k, v in batch.items():
+                    if isinstance(v, torch.Tensor):
+                        cpu_batch[k] = v.cpu().pin_memory()
+                    else:
+                        cpu_batch[k] = v
+                return cpu_batch
+
+            self.print("Generating and caching validation fake images...")
+            generator_list = [batch_to_cpu(b) for b in get_generator()]
+
+            def get_cached_generator():
+                return generator_list
+
+            if not hasattr(self, 'valid_real_stats') or self.valid_real_stats is None:
+                from metric.val_metrics import calculate_activation_statistics, InceptionV3
+                self.print("Precalculating validation set statistics...")
+                block_idx = InceptionV3.BLOCK_INDEX_BY_DIM[2048]
+                if self.inception_model is None:
+                    self.inception_model = InceptionV3([block_idx]).to(self.device).eval()
+                self.valid_real_stats = calculate_activation_statistics(eval_dloader, len(eval_dloader), 
+                                                                       self.inception_model, self.opt.valid.dims, 
+                                                                       self.device, crop=not test_stage)
+                                                                       
+            from metric.val_metrics import calculate_hwd_score
+
+            if test_stage:
+                res = calculate_fid_kid_is(self.opt.valid, eval_dloader, get_cached_generator(), n_rand_repeat, 
+                                         self.device, real_stats=self.valid_real_stats, inceptionV3_model=self.inception_model)
+            else:
+                res = calculate_fid_kid_is(self.opt.valid, eval_dloader, get_cached_generator(), n_rand_repeat, 
+                                         self.device, crop=True, real_stats=self.valid_real_stats, inceptionV3_model=self.inception_model)
+
+            if test_stage:
+                if not self.opt.valid.use_rand_corpus:
+                    psnr_mssim = calculate_mssim_psnr(eval_dloader, get_cached_generator())
+                    res['psnr'] = psnr_mssim['psnr']
+                    res['mssim'] = psnr_mssim['mssim']
+                if style_guided:
+                    wier = self.validate_wid(get_cached_generator(), real_dloader=eval_dloader, split=self.opt.valid.dset_split)
+                    res['wier'] = wier
+
+            if getattr(self.opt.valid, 'validate_ocr', True):
+                res['cer'], res['wer'] = self.validate_ocr(get_cached_generator(), n_iters=len(eval_dloader) * n_rand_repeat)
+
+            if getattr(self.opt.valid, 'validate_hwd', True):
+                # OPTIMIZATION: Cache real HWD dataset/features to avoid reprocessing real images every epoch.
+                if not hasattr(self, 'valid_real_hwd_dataset') or self.valid_real_hwd_dataset is None:
+                    self.print("Precalculating real image features for HWD...")
+                    from metric.val_metrics import ImageListDataset, batch_tensor_to_pil_list
+                    real_imgs_list = []
+                    real_authors_list = []
+                    for idx, batch in enumerate(tqdm(eval_dloader, desc='HWD Real Images')):
+                        imgs = batch['org_imgs']
+                        lens = batch['org_img_lens']
+                        wids = batch.get('wids', torch.arange(imgs.size(0)))
+                        pil_imgs = batch_tensor_to_pil_list(imgs, lens)
+                        real_imgs_list.extend(pil_imgs)
+                        for i in range(imgs.size(0)):
+                            real_authors_list.append(str(wids[i].item()))
+                    self.valid_real_hwd_dataset = ImageListDataset(real_imgs_list, real_authors_list)
+
+                hwd_val = calculate_hwd_score(eval_dloader, get_cached_generator(), n_rand_repeat, self.device, real_dataset=self.valid_real_hwd_dataset)
+                res['hwd'] = hwd_val
+
+            if getattr(self.opt.valid, 'validate_cmmd', True):
+                current_epoch = kwargs.get('current_epoch', None)
+                every_n = getattr(self.opt.valid, 'validate_cmmd_every_n_epochs', 3)
+                should_run_cmmd = test_stage or (current_epoch is None)
+                if not should_run_cmmd:
+                    epoch_start = getattr(self, 'epoch_start', 1)
+                    should_run_cmmd = (current_epoch - epoch_start) % every_n == 0
+                    
+                if should_run_cmmd:
+                    from metric.val_metrics import calculate_cmmd_score, compute_real_embeddings
+                    if not hasattr(self, 'cmmd_embedding_model') or self.cmmd_embedding_model is None:
+                        from metric.val_metrics import ClipEmbeddingModel
+                        self.cmmd_embedding_model = ClipEmbeddingModel()
+                    if not hasattr(self, 'real_cmmd_embeddings') or self.real_cmmd_embeddings is None:
+                        import os
+                        import numpy as np
+                        cache_dir = "./pretrained"
+                        cache_path = os.path.join(cache_dir, f"real_cmmd_{self.opt.valid.dset_name}_{self.opt.valid.dset_split}.npy")
+                        if os.path.exists(cache_path):
+                            self.print(f"Loading cached real CMMD embeddings from {cache_path}...")
+                            self.real_cmmd_embeddings = np.load(cache_path)
+                        else:
+                            self.print("Precalculating real image embeddings for CMMD...")
+                            self.real_cmmd_embeddings = compute_real_embeddings(
+                                eval_dloader, self.cmmd_embedding_model, device=self.device
+                            )
+                            try:
+                                os.makedirs(cache_dir, exist_ok=True)
+                                np.save(cache_path, self.real_cmmd_embeddings)
+                                self.print(f"Saved real CMMD embeddings to cache: {cache_path}")
+                            except Exception as e:
+                                self.print(f"Could not save real CMMD embeddings cache: {e}")
+                    cmmd_val = calculate_cmmd_score(
+                        eval_dloader, 
+                        get_cached_generator(), 
+                        n_rand_repeat, 
+                        self.device,
+                        real_embeddings=self.real_cmmd_embeddings,
+                        embedding_model=self.cmmd_embedding_model
+                    )
+                    res['cmmd'] = cmmd_val
+
+            import gc
+            gc.collect()
+            torch.cuda.empty_cache()
+        finally:
+            if use_ema:
+                self.models.G = active_G
+                self.models.E = active_E
+                self.models.B = active_B
+
         return res
 
     def validate_ocr(self, dloader, n_iters):
@@ -842,6 +904,20 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                                betas=(opt.training.adam_b1, opt.training.adam_b2)),
         )
 
+        # Initialize EMA models
+        self.use_ema = getattr(opt.training, 'update_ema', False)
+        if self.use_ema:
+            import copy
+            self.ema_beta = getattr(opt.training, 'ema_beta', 0.999)
+            self.print(f"EMA is enabled with beta={self.ema_beta}. Initializing EMA models...")
+            self.models_ema.G = copy.deepcopy(self.models.G)
+            self.models_ema.E = copy.deepcopy(self.models.E)
+            self.models_ema.B = copy.deepcopy(self.models.B)
+            self.models_ema.G.requires_grad_(False)
+            self.models_ema.E.requires_grad_(False)
+            self.models_ema.B.requires_grad_(False)
+            self.ema_tracker = EMA(self.ema_beta)
+
         epoch_done = 1
         if os.path.exists(self.opt.training.pretrained_ckpt):
             epoch_done = self.load(self.opt.training.pretrained_ckpt, self.device) + 1
@@ -886,7 +962,7 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                                                     'style_contrastive_loss',
                                                     'fake_wid_loss', 'ctx_loss',
                                                     'kl_loss', 'gram_loss', 'gp_ctc', 'gp_info',
-                                                    'gp_wid', 'gp_recn'])
+                                                    'gp_wid', 'gp_recn', 'vq_loss'])
         device = self.device
 
         if self.local_rank > -1:
@@ -1024,6 +1100,11 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                     self.z.sample_()
                     fake_imgs = self.models.G(self.z, fake_lbs, fake_lb_lens)
 
+                    # Reset VQ loss
+                    E_module = self.models.E.module if hasattr(self.models.E, 'module') else self.models.E
+                    if getattr(E_module, 'use_vq', False):
+                        E_module.last_vq_loss = 0.0
+
                     # Keep style encoder inputs clean as masking is applied strictly to local patches
                     masking_mode = getattr(self.opt.training, 'masking_mode', 'none')
                     if self.vae_mode:
@@ -1146,6 +1227,14 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                              self.opt.training.lambda_ctx * ctx_loss + \
                              self.opt.training.lambda_gram * gram_loss + \
                              self.opt.training.lambda_kl * kl_loss
+                    
+                    E_module = self.models.E.module if hasattr(self.models.E, 'module') else self.models.E
+                    if getattr(E_module, 'use_vq', False) and hasattr(E_module, 'last_vq_loss'):
+                        g_loss = g_loss + E_module.last_vq_loss
+                        self.averager_meters.update('vq_loss', E_module.last_vq_loss.item())
+                    else:
+                        self.averager_meters.update('vq_loss', 0.0)
+
                     g_loss.backward()
                     self.averager_meters.update('adv_loss', adv_loss.item())
                     self.averager_meters.update('adv_loss_patch', adv_loss_patch.item())
@@ -1158,6 +1247,11 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                     self.averager_meters.update('gram_loss', gram_loss.item())
                     self.averager_meters.update('kl_loss', kl_loss.item())
                     self.optimizers.G.step()
+                    if self.use_ema:
+                        self.ema_tracker.step_ema(self.models_ema.G, self.models.G)
+                        self.ema_tracker.step_ema(self.models_ema.E, self.models.E)
+                        self.ema_tracker.step_ema(self.models_ema.B, self.models.B)
+                        self.ema_tracker.step += 1
 
                 if iter_count % self.opt.training.print_iter_val == 0:
                     meter_vals = self.averager_meters.eval_all()

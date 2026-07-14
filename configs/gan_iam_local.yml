@@ -39,6 +39,8 @@ training:
   lambda_kl: 0.0001
   lambda_ctx: 2.0
   lambda_gram: 2.0
+  update_ema: true
+  ema_beta: 0.999
   pretrained_w: './pretrained/wid_iam_new.pth'
   pretrained_r: './pretrained/ocr_iam_new.pth'
   pretrained_ckpt: ''
@@ -173,6 +175,9 @@ EncModel:
   style_dim: 32
   in_dim: 256
   init: 'none'
+  use_vq: true
+  num_codebook_vectors: 256
+  vq_beta: 0.25
 
 
 WidModel:
