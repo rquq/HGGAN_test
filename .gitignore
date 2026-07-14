@@ -1,4 +1,6 @@
-# Python
+# =======================================================
+# 1. Python & Environments
+# =======================================================
 __pycache__/
 *.py[cod]
 *$py.class
@@ -9,7 +11,9 @@ venv/
 .env
 .venv
 
-# ML / Training
+# =======================================================
+# 3. Training Logs & Caches
+# =======================================================
 runs/
 wandb/
 lightning_logs/
@@ -18,23 +22,40 @@ checkpoint/
 checkpoints/
 .cache/
 
-# Data and Samples
+# Kill Hugging Face cache completely
+pretrained/hf_cache/
+pretrained/hf_cache/*
+pretrained/hf_cache/**
+
+# =======================================================
+# 4. Data, Datasets, and Samples
+# =======================================================
 data/iam/
 data/image_samples/
 backup/
+
+# Ignore heavy dataset archives
+*.csv
+*.tsv
+*.zip
+*.tar.gz
+*.tgz
+
+# =======================================================
+# 5. IDEs, Notebooks & OS
+# =======================================================
+# The ** ensures it ignores these folders even if they are deep inside subfolders
+**/.ipynb_checkpoints/
+**/.vscode/
+**/.idea/
 
 # Distribution / builds
 dist/
 build/
 *.egg-info/
 
-# Jupyter
-.ipynb_checkpoints
-
-# OS
+# OS Specific
 .DS_Store
 Thumbs.db
-
-# IDEs
-.vscode/
-.idea/
+.directory
+*~
