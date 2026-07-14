@@ -211,7 +211,6 @@ class AdversarialModel(BaseModel):
     def train(self):
         raise NotImplementedError()
 
-    @save_rng_state
     def sample_images(self, iteration_done=0):
         self.set_mode('eval')
 
@@ -320,7 +319,6 @@ class AdversarialModel(BaseModel):
 
                     yield fake_batch
 
-    @save_rng_state
     def validate(self, style_guided=True, test_stage=False, *args, **kwargs):
         if self.local_rank >= 1:
             return {}
@@ -411,7 +409,6 @@ class AdversarialModel(BaseModel):
         torch.cuda.empty_cache()
         return res
 
-    @save_rng_state
     def validate_ocr(self, dloader, n_iters):
         self.set_mode('eval')
         recognizer = Recognizer(**self.opt.OcrModel).to(self.device)
@@ -452,7 +449,6 @@ class AdversarialModel(BaseModel):
         print('CER:{:.4f}  WER:{:.4f}'.format(cer, wer))
         return cer, wer
 
-    @save_rng_state
     def validate_wid(self, generator, real_dloader, split='test'):
         if split == 'test':
             assert os.path.exists(self.opt.valid.pretrained_test_w)

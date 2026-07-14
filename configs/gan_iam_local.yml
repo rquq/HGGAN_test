@@ -29,7 +29,7 @@ training:
   sample_iter_val: 200
   print_iter_val: 20
   start_save_epoch_val: 0
-  eval_epoch_val: 0.01
+  eval_epoch_val: 1
   save_epoch_val: 1
   # val_iter: 6500
   sample_dir: 'imgs'
