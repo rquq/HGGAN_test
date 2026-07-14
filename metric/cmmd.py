@@ -9,9 +9,87 @@ _CUDA_AVAILABLE = torch.cuda.is_available()
 _SIGMA = 10
 _SCALE = 1000
 
+def get_clip_model_path_and_cache():
+    import os
+    
+    # Resolve the shared cache directory inside HGGAN_test/pretrained/hf_cache
+    try:
+        metric_dir = os.path.dirname(os.path.abspath(__file__))
+        branch_root = os.path.dirname(metric_dir)
+        project_root = os.path.dirname(branch_root)
+        cache_dir = os.path.join(project_root, "pretrained", "hf_cache")
+        save_dir = os.path.join(project_root, "pretrained", "clip-vit-large-patch14-336")
+    except Exception:
+        cache_dir = "./pretrained/hf_cache"
+        save_dir = "./pretrained/clip-vit-large-patch14-336"
+
+    # 1. Check if running on Kaggle and search for an attached dataset/model with CLIP
+    kaggle_input = "/kaggle/input"
+    if os.path.exists(kaggle_input):
+        for root, dirs, files in os.walk(kaggle_input):
+            if "config.json" in files:
+                has_weights = any(f.endswith(".bin") or f.endswith(".safetensors") for f in files)
+                if has_weights and ("clip-vit-large-patch14-336" in root.lower() or "clip" in root.lower()):
+                    return root, cache_dir, save_dir, True
+
+    # 2. Check if already present in the shared clean save_dir
+    if os.path.exists(save_dir) and os.path.exists(os.path.join(save_dir, "config.json")):
+        files = os.listdir(save_dir)
+        has_weights = any(f.endswith(".bin") or f.endswith(".safetensors") for f in files)
+        if has_weights:
+            return save_dir, cache_dir, save_dir, True
+
+    # 3. Check if already present in the shared project cache_dir
+    if os.path.exists(cache_dir):
+        for root, dirs, files in os.walk(cache_dir):
+            if "config.json" in files:
+                has_weights = any(f.endswith(".bin") or f.endswith(".safetensors") for f in files)
+                if has_weights:
+                    return root, cache_dir, save_dir, True
+                    
+    return "openai/clip-vit-large-patch14-336", cache_dir, save_dir, False
+
+
 class ClipEmbeddingModel:
     def __init__(self):
-        self._model = CLIPVisionModelWithProjection.from_pretrained(_CLIP_MODEL_NAME).eval()
+        import os
+        model_path, cache_dir, save_dir, is_local = get_clip_model_path_and_cache()
+        
+        if is_local:
+            try:
+                self._model = CLIPVisionModelWithProjection.from_pretrained(
+                    model_path, local_files_only=True
+                ).eval()
+            except Exception:
+                self._model = CLIPVisionModelWithProjection.from_pretrained(
+                    "openai/clip-vit-large-patch14-336", cache_dir=cache_dir, local_files_only=False
+                ).eval()
+                # Save to output for future offline use
+                try:
+                    os.makedirs(save_dir, exist_ok=True)
+                    self._model.save_pretrained(save_dir)
+                    print(f"Saved CLIP model to outputs: {save_dir}")
+                except Exception as e:
+                    print(f"Warning: Could not save CLIP model to outputs: {e}")
+        else:
+            try:
+                self._model = CLIPVisionModelWithProjection.from_pretrained(
+                    "openai/clip-vit-large-patch14-336", cache_dir=cache_dir, local_files_only=True
+                ).eval()
+            except Exception:
+                self._model = CLIPVisionModelWithProjection.from_pretrained(
+                    "openai/clip-vit-large-patch14-336", cache_dir=cache_dir, local_files_only=False
+                ).eval()
+                
+            # If successfully downloaded/loaded from Hub, save a clean copy to output save_dir
+            if not os.path.exists(save_dir) or not os.path.exists(os.path.join(save_dir, "config.json")):
+                try:
+                    os.makedirs(save_dir, exist_ok=True)
+                    self._model.save_pretrained(save_dir)
+                    print(f"Saved CLIP model to outputs: {save_dir}")
+                except Exception as e:
+                    print(f"Warning: Could not save CLIP model to outputs: {e}")
+                
         if _CUDA_AVAILABLE:
             self._model = self._model.cuda()
         self.input_image_size = 336
