@@ -8,67 +8,6 @@ from networks.utils import _len2mask, init_weights
 import torch.nn.functional as F
 
 
-class Codebook3D(nn.Module):
-    def __init__(self, num_codebook_vectors=256, latent_dim=32, beta=0.25):
-        super(Codebook3D, self).__init__()
-        self.num_codebook_vectors = num_codebook_vectors
-        self.latent_dim = latent_dim
-        self.beta = beta
-        self.embedding = nn.Embedding(self.num_codebook_vectors, latent_dim)
-        # Uniform initialization
-        self.embedding.weight.data.uniform_(-1.0 / self.num_codebook_vectors, 1.0 / self.num_codebook_vectors)
-
-    def forward(self, z):
-        # z: [B, L, D]
-        # L2 normalize
-        z_norm = F.normalize(z, p=2, dim=-1)
-        
-        # Flatten input
-        z_flattened = z_norm.view(-1, self.latent_dim) # [B * L, D]
-        
-        # Normalize codebook weights
-        weight = self.embedding.weight
-        weight = F.normalize(weight, p=2, dim=-1) # [N, D]
-        
-        # Calculate distances
-        d = (
-            torch.sum(z_flattened**2, dim=1, keepdim=True)
-            + torch.sum(weight**2, dim=1)
-            - 2 * (torch.matmul(z_flattened, weight.t()))
-        ) # [B * L, N]
-        
-        min_encoding_indices = torch.argmin(d, dim=1) # [B * L]
-        z_q = weight[min_encoding_indices].view(z.shape) # [B, L, D] (Corrected to use normalized weight)
-        
-        if not self.training:
-            return z_q, min_encoding_indices
-            
-        # Commitment loss and codebook loss
-        loss = self.beta * torch.mean((z_q.detach() - z_norm) ** 2) + torch.mean((z_q - z_norm.detach()) ** 2)
-        
-        # Straight Through Estimator
-        z_q = z_norm + (z_q - z_norm).detach()
-        
-        return z_q, min_encoding_indices, loss
-
-    def quantize(self, z):
-        """Quantize random noise or style tensors consistently with the codebook scale."""
-        # z: [B, L, D]
-        z_norm = F.normalize(z, p=2, dim=-1)
-        z_flattened = z_norm.view(-1, self.latent_dim)
-        weight = self.embedding.weight
-        weight = F.normalize(weight, p=2, dim=-1)
-        
-        d = (
-            torch.sum(z_flattened**2, dim=1, keepdim=True)
-            + torch.sum(weight**2, dim=1)
-            - 2 * (torch.matmul(z_flattened, weight.t()))
-        )
-        min_encoding_indices = torch.argmin(d, dim=1)
-        z_q = weight[min_encoding_indices].view(z.shape)
-        return z_q
-
-
 class HeavyCNNAttention(nn.Module):
     def __init__(self, in_dim):
         super().__init__()
@@ -195,13 +134,9 @@ class StyleBackbone(nn.Module):
 
 
 class StyleEncoder(nn.Module):
-    def __init__(self, style_dim=32, in_dim=256, init='N02', use_vq=False, num_codebook_vectors=256, vq_beta=0.25):
+    def __init__(self, style_dim=32, in_dim=256, init='N02', **kwargs):
         super(StyleEncoder, self).__init__()
         self.style_dim = style_dim
-        self.use_vq = use_vq
-        
-        if self.use_vq:
-            self.codebook = Codebook3D(num_codebook_vectors=num_codebook_vectors, latent_dim=style_dim, beta=vq_beta)
 
         ######################################
         # Construct StyleEncoder
@@ -282,28 +217,7 @@ class StyleEncoder(nn.Module):
             std = torch.exp(0.5 * logvar)
             eps = torch.randn_like(std)
             style_tokens_sampled = eps * std + style_tokens_mu
-        
-        if self.use_vq:
-            if self.training:
-                if vae_mode:
-                    z_q, min_encoding_indices, vq_loss = self.codebook(style_tokens_sampled)
-                    style_tokens_sampled = z_q
-                else:
-                    z_q, min_encoding_indices, vq_loss = self.codebook(style_tokens_mu)
-                    style_tokens_mu = z_q
-                
-                # Accumulate vq_loss
-                if not hasattr(self, 'last_vq_loss'):
-                    self.last_vq_loss = vq_loss
-                else:
-                    self.last_vq_loss = self.last_vq_loss + vq_loss
-            else:
-                if vae_mode:
-                    z_q, min_encoding_indices = self.codebook(style_tokens_sampled)
-                    style_tokens_sampled = z_q
-                else:
-                    z_q, min_encoding_indices = self.codebook(style_tokens_mu)
-                    style_tokens_mu = z_q
+
 
         if vae_mode:
             style_tokens = (style_tokens_sampled, style_tokens_mu, logvar)

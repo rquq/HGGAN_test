@@ -139,7 +139,7 @@ class BaseModel(object):
         for model in models:
             m_unwrapped = getattr(model, 'module', model)
             try:
-                m_unwrapped.load_state_dict(ckpt.pop(type(model).__name__))
+                m_unwrapped.load_state_dict(ckpt.pop(type(model).__name__), strict=False)
             except Exception as e:
                 self.print(f'Load {type(model).__name__} failed: {e}')
 
@@ -148,7 +148,7 @@ class BaseModel(object):
                 ema_key = name + '_EMA'
                 if ema_key in ckpt:
                     try:
-                        model_ema.load_state_dict(ckpt.pop(ema_key))
+                        model_ema.load_state_dict(ckpt.pop(ema_key), strict=False)
                         self.print(f'Loaded EMA weights for {name}')
                     except Exception as e:
                         self.print(f'Load {ema_key} failed: {e}')
@@ -197,8 +197,6 @@ class AdversarialModel(BaseModel):
                                    max_length=self.opt.training.max_word_len)
         self.max_valid_image_width = self.opt.char_width * self.opt.training.max_word_len
         self.vae_mode = self.opt.training.vae_mode
-        if getattr(self.opt.EncModel, 'use_vq', False):
-            self.vae_mode = False
         self.collect_fn = get_collect_fn(self.opt.training.sort_input, sort_style=True)
         self.inception_model = None
         self.valid_real_stats = None
@@ -261,9 +259,6 @@ class AdversarialModel(BaseModel):
         with torch.no_grad():
             self.eval_z.sample_()
             eval_z_in = self.eval_z
-            E_module = self.models.E.module if hasattr(self.models.E, 'module') else self.models.E
-            if getattr(E_module, 'use_vq', False):
-                eval_z_in = E_module.codebook.quantize(self.eval_z)
 
             recn_imgs = None
             if 'E' in self.models:
@@ -351,9 +346,6 @@ class AdversarialModel(BaseModel):
                         enc_z = self.models.E(style_imgs.to(device), style_img_lens.to(device), self.models.B)
                     else:
                         enc_z = torch.randn(style_lb_lens.size(0), self.models.G.style_dim, self.models.G.style_dim).to(device)
-                        E_module = self.models.E.module if hasattr(self.models.E, 'module') else self.models.E
-                        if getattr(E_module, 'use_vq', False):
-                            enc_z = E_module.codebook.quantize(enc_z)
 
                     fake_batch['style_imgs'] = self.models.G(enc_z, content_lbs, content_lb_lens)
                     fake_batch['style_img_lens'] = fake_batch['lb_lens'] * self.opt.char_width
@@ -637,9 +629,7 @@ class AdversarialModel(BaseModel):
                 styles = [torch.lerp(style0, style1, i / (interp_num - 1)) for i in range(interp_num)]
                 styles = torch.cat(styles, dim=0).float().to(self.device)
 
-                E_module = self.models.E.module if hasattr(self.models.E, 'module') else self.models.E
-                if getattr(E_module, 'use_vq', False):
-                    styles = E_module.codebook.quantize(styles)
+                pass
 
                 fake_lbs, fake_lb_lens = fake_lbs.repeat(nrow * ncol, 1).to(self.device),\
                                          fake_lb_lens.repeat(nrow * ncol).to(self.device)
@@ -728,9 +718,7 @@ class AdversarialModel(BaseModel):
 
                 rand_z.sample_()
                 rand_styles = rand_z.unsqueeze(1).repeat(1, ncol, 1, 1).view(nrow * ncol, rand_z.size(1), -1)
-                E_module = self.models.E.module if hasattr(self.models.E, 'module') else self.models.E
-                if getattr(E_module, 'use_vq', False):
-                    rand_styles = E_module.codebook.quantize(rand_styles)
+                pass
                 gen_imgs = self.models.G(rand_styles, fake_lbs, fake_lb_lens)
                 gen_imgs = (1 - gen_imgs).squeeze().cpu().numpy() * 127
                 plt.figure()
@@ -980,7 +968,7 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                                                     'style_contrastive_loss',
                                                     'fake_wid_loss', 'ctx_loss',
                                                     'kl_loss', 'gram_loss', 'gp_ctc', 'gp_info',
-                                                    'gp_wid', 'gp_recn', 'vq_loss'])
+                                                    'gp_wid', 'gp_recn'])
         device = self.device
 
         if self.local_rank > -1:
@@ -1025,10 +1013,7 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                     fake_lbs, fake_lb_lens = fake_lbs.to(device).detach(), fake_lb_lens.to(device).detach()
 
                     self.z.sample_()
-                    E_module = self.models.E.module if hasattr(self.models.E, 'module') else self.models.E
                     z_in = self.z
-                    if getattr(E_module, 'use_vq', False):
-                        z_in = E_module.codebook.quantize(self.z)
                     fake_imgs = self.models.G(z_in, fake_lbs, fake_lb_lens)
 
                     if self.vae_mode:
@@ -1121,16 +1106,8 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                     fake_lbs, fake_lb_lens = fake_lbs.to(device).detach(), fake_lb_lens.to(device).detach()
 
                     self.z.sample_()
-                    E_module = self.models.E.module if hasattr(self.models.E, 'module') else self.models.E
                     z_in = self.z
-                    if getattr(E_module, 'use_vq', False):
-                        z_in = E_module.codebook.quantize(self.z)
                     fake_imgs = self.models.G(z_in, fake_lbs, fake_lb_lens)
-
-                    # Reset VQ loss
-                    E_module = self.models.E.module if hasattr(self.models.E, 'module') else self.models.E
-                    if getattr(E_module, 'use_vq', False):
-                        E_module.last_vq_loss = 0.0
 
                     # Keep style encoder inputs clean as masking is applied strictly to local patches
                     masking_mode = getattr(self.opt.training, 'masking_mode', 'none')
@@ -1236,6 +1213,7 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                     std_grad_adv = torch.std(grad_fake_adv)
                     gp_ctc = torch.div(std_grad_adv, torch.std(grad_fake_OCR) + 1e-8).detach() + 1
                     gp_ctc.clamp_max_(100)
+                    gp_ctc = gp_ctc * getattr(self.opt.training, 'lambda_ctc', 1.0)
                     gp_info = torch.div(std_grad_adv, torch.std(grad_fake_info) + 1e-8).detach() + 1
                     gp_wid = torch.div(std_grad_adv, torch.std(grad_fake_wid) + 1e-8).detach() + 1
                     gp_wid.clamp_max_(10)
@@ -1255,13 +1233,6 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                              self.opt.training.lambda_gram * gram_loss + \
                              self.opt.training.lambda_kl * kl_loss
                     
-                    E_module = self.models.E.module if hasattr(self.models.E, 'module') else self.models.E
-                    if getattr(E_module, 'use_vq', False) and hasattr(E_module, 'last_vq_loss'):
-                        g_loss = g_loss + E_module.last_vq_loss
-                        self.averager_meters.update('vq_loss', E_module.last_vq_loss.item())
-                    else:
-                        self.averager_meters.update('vq_loss', 0.0)
-
                     g_loss.backward()
                     self.averager_meters.update('adv_loss', adv_loss.item())
                     self.averager_meters.update('adv_loss_patch', adv_loss_patch.item())
@@ -1285,7 +1256,7 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                     self.averager_meters.reset_all()
                     info = "[%3d|%3d]-[%4d|%4d] G:%.4f G-p:%.4f D-fake:%.4f D-real:%.4f " \
                            "D-fake-p:%.4f D-real-p:%.4f CTC-fake:%.4f Wid-fake:%.4f " \
-                           "Recn-z:%.4f Cont-z:%.4f Recn-c:%.4f Ctx:%.4f Gram:%.4f Kl:%.4f Vq:%.4f" \
+                           "Recn-z:%.4f Cont-z:%.4f Recn-c:%.4f Ctx:%.4f Gram:%.4f Kl:%.4f" \
                            % (epoch, self.opt.training.epochs,
                               iter_count % len(self.train_loader), len(self.train_loader),
                               meter_vals['adv_loss'], meter_vals['adv_loss_patch'],
@@ -1293,7 +1264,7 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                               meter_vals['fake_disc_loss_patch'], meter_vals['real_disc_loss_patch'],
                               meter_vals['fake_ctc_loss'], meter_vals['fake_wid_loss'], meter_vals['info_loss'],
                               meter_vals['style_contrastive_loss'], meter_vals['recn_loss'], meter_vals['ctx_loss'],
-                              meter_vals['gram_loss'], meter_vals['kl_loss'], meter_vals['vq_loss'])
+                              meter_vals['gram_loss'], meter_vals['kl_loss'])
                     self.print(info) if self.local_rank < 1 else None
 
                     if _is_master:

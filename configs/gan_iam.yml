@@ -175,9 +175,6 @@ EncModel:
   style_dim: 32
   in_dim: 256
   init: 'none'
-  use_vq: false
-  num_codebook_vectors: 256
-  vq_beta: 0.25
 
 
 WidModel:
