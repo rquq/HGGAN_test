@@ -26,6 +26,9 @@ checkpoints/
 pretrained/hf_cache/
 pretrained/hf_cache/*
 pretrained/hf_cache/**
+pretrained/HWD/
+pretrained/HWD/*
+pretrained/HWD/**
 
 # =======================================================
 # 4. Data, Datasets, and Samples
