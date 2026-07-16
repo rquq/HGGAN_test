@@ -3,7 +3,6 @@ import torch
 from torch import nn
 import functools
 from networks.block import Conv2dBlock, ActFirstResBlock, DeepBLSTM, DeepGRU, DeepLSTM, Identity
-from networks.mamba import MambaAttention
 from networks.utils import _len2mask, init_weights
 import torch.nn.functional as F
 
@@ -133,6 +132,50 @@ class StyleBackbone(nn.Module):
         return out, feats
 
 
+def get_1d_sinusoidal_embeddings(length, dim, device):
+    import numpy as np
+    pe = torch.zeros(length, dim, device=device)
+    div_term = torch.exp(torch.arange(0, dim, 2, device=device).float() * -(np.log(10000.0) / dim))
+    pos = torch.arange(0, length, device=device).float().unsqueeze(1)
+    pe[:, 0::2] = torch.sin(pos * div_term)
+    if dim % 2 == 0:
+        pe[:, 1::2] = torch.cos(pos * div_term)
+    else:
+        pe[:, 1::2] = torch.cos(pos * div_term[:dim//2])
+    return pe
+
+
+def get_2d_sinusoidal_embeddings(height, width, dim, device):
+    import numpy as np
+    pe = torch.zeros(height, width, dim, device=device)
+    d_h = dim // 2
+    d_w = dim - d_h
+    
+    # Height embeddings
+    div_term_h = torch.exp(torch.arange(0, d_h, 2, device=device).float() * -(np.log(10000.0) / d_h))
+    pos_h = torch.arange(0, height, device=device).float().unsqueeze(1)
+    pe_h = torch.zeros(height, d_h, device=device)
+    pe_h[:, 0::2] = torch.sin(pos_h * div_term_h)
+    if d_h % 2 == 0:
+        pe_h[:, 1::2] = torch.cos(pos_h * div_term_h)
+    else:
+        pe_h[:, 1::2] = torch.cos(pos_h * div_term_h[:d_h//2])
+        
+    # Width embeddings
+    div_term_w = torch.exp(torch.arange(0, d_w, 2, device=device).float() * -(np.log(10000.0) / d_w))
+    pos_w = torch.arange(0, width, device=device).float().unsqueeze(1)
+    pe_w = torch.zeros(width, d_w, device=device)
+    pe_w[:, 0::2] = torch.sin(pos_w * div_term_w)
+    if d_w % 2 == 0:
+        pe_w[:, 1::2] = torch.cos(pos_w * div_term_w)
+    else:
+        pe_w[:, 1::2] = torch.cos(pos_w * div_term_w[:d_w//2])
+        
+    pe[:, :, :d_h] = pe_h.unsqueeze(1).expand(-1, width, -1)
+    pe[:, :, d_h:] = pe_w.unsqueeze(0).expand(height, -1, -1)
+    return pe
+
+
 class StyleEncoder(nn.Module):
     def __init__(self, style_dim=32, in_dim=256, init='N02', **kwargs):
         super(StyleEncoder, self).__init__()
@@ -190,12 +233,22 @@ class StyleEncoder(nn.Module):
         # 1. Global context from main feature using Heavy CNN
         feat_m = self.sequence_model(feat) # feat is (B, C, W), feat_m is (B, C, W)
         
+        # Transpose and add 1D sinusoidal positional embedding
+        feat_m_trans = feat_m.transpose(1, 2) # (B, W, in_dim)
+        pe_1d = get_1d_sinusoidal_embeddings(feat_m_trans.size(1), self._in_dim, feat_m_trans.device)
+        feat_m_trans = feat_m_trans + pe_1d.unsqueeze(0)
+        
         # 2. Project and pool each intermediate feature map dynamically
-        spatial_tokens = [feat_m.transpose(1, 2)] # Start with global sequence (B, W, in_dim)
+        spatial_tokens = [feat_m_trans] # Start with global sequence (B, W, in_dim)
         for proj_layer, f in zip(self.proj_layers, all_feats):
             f_proj = proj_layer(f) # (B, in_dim, H_f, W_f)
             # Pool height to 4 to condense vertical dimension while retaining full horizontal resolution
-            f_pooled = F.adaptive_avg_pool2d(f_proj, (4, f.size(-1)))
+            f_pooled = F.adaptive_avg_pool2d(f_proj, (4, f.size(-1))) # (B, in_dim, 4, W_f)
+            # Add 2D sinusoidal positional embedding
+            H_p, W_p = f_pooled.size(2), f_pooled.size(3)
+            pe_2d = get_2d_sinusoidal_embeddings(H_p, W_p, self._in_dim, f_pooled.device)
+            f_pooled = f_pooled + pe_2d.permute(2, 0, 1).unsqueeze(0)
+            
             f_flat = f_pooled.flatten(2).transpose(1, 2) # (B, 4 * W_f, in_dim)
             spatial_tokens.append(f_flat)
             
@@ -205,6 +258,9 @@ class StyleEncoder(nn.Module):
         # 3. Query style sequence dynamically using learned style query tokens
         B = img.size(0)
         style_queries = self.style_queries.expand(B, -1, -1) # (B, num_style_tokens, in_dim)
+        # Add 1D sinusoidal positional embedding to queries to distinguish query slots chronologically
+        pe_queries = get_1d_sinusoidal_embeddings(self.num_style_tokens, self._in_dim, style_queries.device)
+        style_queries = style_queries + pe_queries.unsqueeze(0)
         
         # Cross-attention: queries look at the spatial style keys
         style_seq, _ = self.style_cross_attn(query=style_queries, key=style_keys, value=style_keys)

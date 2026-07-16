@@ -218,7 +218,7 @@ class Generator(nn.Module):
         y = self.text_embedding(y).float().to(y.device)
         # z = torch.cat((z.unsqueeze(1).repeat(1, y.shape[1], 1), y), 2)
         # Use Mamba to mix style and content
-        y_mixed = self.style_content_mix(y, z, char_ids=char_ids)
+        y_mixed = self.style_content_mix(y, z, char_ids=char_ids, y_lens=y_lens)
         h = self.filter_linear(y_mixed)
 
         # Reshape - when y is not a single class value but rather an array of classes, the reshape is needed to create
