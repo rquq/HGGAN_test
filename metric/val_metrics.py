@@ -103,37 +103,118 @@ def tensor_to_pil(img_tensor, length):
     img_np = np.transpose(img_np, (1, 2, 0))
     return Image.fromarray(img_np)
 
+def batch_tensor_to_pil_list(imgs_tensor, lengths_tensor):
+    imgs_np = imgs_tensor.detach().cpu().numpy()
+    lengths = lengths_tensor.detach().cpu().numpy()
+    if imgs_np.min() < 0:
+        imgs_np = (imgs_np + 1) / 2
+    imgs_np = np.clip(imgs_np * 255.0, 0, 255).astype(np.uint8)
+    if imgs_np.shape[1] == 1:
+        imgs_np = np.repeat(imgs_np, 3, axis=1)
+    pil_imgs = []
+    for i in range(imgs_np.shape[0]):
+        length = lengths[i]
+        img_np = imgs_np[i, :, :, :length]
+        img_np = np.transpose(img_np, (1, 2, 0))
+        pil_imgs.append(Image.fromarray(img_np))
+    return pil_imgs
+
+
 # Activations computation
-def get_activations(data_source, n_batches, model, dims, device, crop=False):
+def get_activations(data_source, n_batches, model, dims, device, crop=False, eval_is=True):
     model.eval()
     pred_arr, pred_logits = [], []
     for idx, batch in enumerate(tqdm(data_source, total=n_batches)):
         if idx >= n_batches:
             break
-        imgs, org_img_lens = batch['org_imgs'].to(device), batch['org_img_lens'].to(device)
-        img_lens = pad_image_lengths(org_img_lens, scale=imgs.size(-2))
-        imgs = (imgs + 1) / 2
+        if isinstance(batch, dict):
+            imgs = batch['org_imgs'].to(device, non_blocking=True)
+            org_img_lens = batch['org_img_lens'].to(device, non_blocking=True)
+        else:
+            imgs, org_img_lens = batch[:2]
+            imgs, org_img_lens = imgs.to(device, non_blocking=True), org_img_lens.to(device, non_blocking=True)
 
-        if imgs.size(1) == 1:
-            imgs = imgs.repeat(1, 3, 1, 1)
+        # ----------------------------------------------------
+        # 1. SpiS-GAN Preprocessing for FID/KID Activations
+        # ----------------------------------------------------
+        if eval_is:
+            imgs_is = imgs.clone()
+            org_img_lens_is = org_img_lens.clone()
+
+        # Replace background value of -1 with 1.0 starting from org_img_lens
+        batch_size, _, height, width = imgs.size()
+        imgs_fid = imgs.clone()
+        for i in range(batch_size):
+            len_i = int(org_img_lens[i].item())
+            if len_i < width:
+                padding_region = imgs_fid[i, :, :, len_i:]
+                if torch.all(padding_region == -1):
+                    imgs_fid[i, :, :, len_i:] = 1.0
+
+        # Normalize to [0, 1]
+        imgs_fid = (imgs_fid + 1) / 2
+
+        # Repeat grayscale channels
+        if imgs_fid.size(1) == 1:
+            imgs_fid = imgs_fid.repeat(1, 3, 1, 1)
+
+        # Pad or crop width to 4 * height
+        target_width = 4 * height
+        if width != target_width:
+            if width < target_width:
+                pad_width = target_width - width
+                imgs_fid = torch.nn.functional.pad(imgs_fid, [0, pad_width, 0, 0], value=1.0)
+            elif width > target_width:
+                imgs_fid = imgs_fid[:, :, :, :target_width]
+
+        # Resize to (299, 299) and normalize to [-1, 1] (matching SpiS-GAN)
+        imgs_fid = torch.nn.functional.interpolate(
+            imgs_fid, size=(299, 299), mode='bilinear', align_corners=False
+        )
+        imgs_fid = 2 * imgs_fid - 1
+
+        # Run through model for FID/KID features
+        orig_resize = getattr(model, 'resize_input', True)
+        orig_normalize = getattr(model, 'normalize_input', True)
+        model.resize_input = False
+        model.normalize_input = False
 
         with torch.no_grad():
-            if not crop:
-                pred, logits = model(imgs, img_lens // imgs.size(-2))
-            else:
-                pred, logits = model(imgs[:, :, :, :imgs.size(-2) * 2],
-                                    4 * torch.ones((imgs.size(0),)).to(device))
+            pred, _ = model(imgs_fid)
+
+        model.resize_input = orig_resize
+        model.normalize_input = orig_normalize
 
         if pred.size(2) != 1 or pred.size(3) != 1:
             pred = adaptive_avg_pool2d(pred, output_size=(1, 1))
 
         pred_arr.append(pred.cpu().data.numpy().reshape(pred.size(0), -1))
-        pred_logits.append(logits.cpu().data.numpy())
+
+        # ----------------------------------------------------
+        # 2. Original HiGAN+ Preprocessing for IS Logits
+        # ----------------------------------------------------
+        if eval_is:
+            img_lens_is = pad_image_lengths(org_img_lens_is, scale=height)
+            imgs_is = (imgs_is + 1) / 2
+            if imgs_is.size(1) == 1:
+                imgs_is = imgs_is.repeat(1, 3, 1, 1)
+
+            with torch.no_grad():
+                if not crop:
+                    _, logits = model(imgs_is, img_lens_is // height)
+                else:
+                    _, logits = model(imgs_is[:, :, :, :height * 2],
+                                      4 * torch.ones((imgs_is.size(0),)).to(device))
+            pred_logits.append(logits.cpu().data.numpy())
 
     pred_arr = np.concatenate(pred_arr, axis=0)
-    pred_logits = np.concatenate(pred_logits, axis=0)
     assert pred_arr.shape[-1] == dims
-    return pred_arr, pred_logits
+
+    if eval_is:
+        pred_logits = np.concatenate(pred_logits, axis=0)
+        return pred_arr, pred_logits
+    else:
+        return pred_arr, None
 
 def calculate_frechet_distance(mu1, sigma1, mu2, sigma2, eps=1e-6):
     mu1 = np.atleast_1d(mu1)
@@ -164,7 +245,9 @@ def calculate_frechet_distance(mu1, sigma1, mu2, sigma2, eps=1e-6):
     return (diff.dot(diff) + np.trace(sigma1) + np.trace(sigma2) - 2 * tr_covmean)
 
 def calculate_activation_statistics(*args, **kwargs):
-    act, logits = get_activations(*args, **kwargs)
+    # Retrieve eval_is from kwargs or defaults
+    eval_is = kwargs.pop('eval_is', True)
+    act, logits = get_activations(*args, **kwargs, eval_is=eval_is)
     mu = np.mean(act, axis=0)
     sigma = np.cov(act, rowvar=False)
     return act, mu, sigma, logits
@@ -319,9 +402,10 @@ def calculate_fid_kid_is(cfg, data_loader, generator, n_rand_repeat, device, cro
     
     with torch.no_grad():
         act2, m2, s2, logits2 = calculate_activation_statistics(generator, n_batches * n_rand_repeat, inceptionV3_model,
-                                                                cfg.dims, device, crop)
+                                                                cfg.dims, device, crop, eval_is=eval_is)
         if real_stats is None:
-            act1, m1, s1, logits1 = calculate_activation_statistics(data_loader, n_batches, inceptionV3_model, cfg.dims, device, crop)
+            act1, m1, s1, logits1 = calculate_activation_statistics(data_loader, n_batches, inceptionV3_model,
+                                                                    cfg.dims, device, crop, eval_is=eval_is)
         else:
             act1, m1, s1, logits1 = real_stats
 
@@ -369,9 +453,9 @@ def calculate_hwd_score(data_loader, generator, n_rand_repeat, device, n_batches
             lens = batch['org_img_lens']
             wids = batch.get('wids', torch.arange(imgs.size(0)))
             
+            pil_imgs = batch_tensor_to_pil_list(imgs, lens)
+            real_imgs_list.extend(pil_imgs)
             for i in range(imgs.size(0)):
-                pil_img = tensor_to_pil(imgs[i], lens[i].item())
-                real_imgs_list.append(pil_img)
                 real_authors_list.append(str(wids[i].item()))
         real_dataset = ImageListDataset(real_imgs_list, real_authors_list)
             
@@ -382,9 +466,9 @@ def calculate_hwd_score(data_loader, generator, n_rand_repeat, device, n_batches
         lens = batch['org_img_lens']
         wids = batch.get('wids', torch.arange(imgs.size(0)))
         
+        pil_imgs = batch_tensor_to_pil_list(imgs, lens)
+        fake_imgs_list.extend(pil_imgs)
         for i in range(imgs.size(0)):
-            pil_img = tensor_to_pil(imgs[i], lens[i].item())
-            fake_imgs_list.append(pil_img)
             fake_authors_list.append(str(wids[i].item()))
             
     fake_dataset = ImageListDataset(fake_imgs_list, fake_authors_list)

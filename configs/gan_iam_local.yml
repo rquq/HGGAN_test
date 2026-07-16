@@ -57,7 +57,7 @@ valid:
   validate_ocr: false
   validate_fid: true
   validate_kid: true
-  validate_is: true
+  validate_is: false
   validate_hwd: true
   validate_cmmd: true
   validate_cmmd_every_n_epochs: 3
