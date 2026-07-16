@@ -53,6 +53,15 @@ def get_clip_model_path_and_cache():
 class ClipEmbeddingModel:
     def __init__(self):
         import os
+        hf_token = os.environ.get("HF_TOKEN")
+        if hf_token:
+            os.environ["HF_TOKEN"] = hf_token
+            try:
+                import huggingface_hub
+                huggingface_hub.login(token=hf_token, write_permission=False)
+            except Exception:
+                pass
+
         model_path, cache_dir, save_dir, is_local = get_clip_model_path_and_cache()
         
         if is_local:
@@ -62,7 +71,7 @@ class ClipEmbeddingModel:
                 ).eval()
             except Exception:
                 self._model = CLIPVisionModelWithProjection.from_pretrained(
-                    "openai/clip-vit-large-patch14-336", cache_dir=cache_dir, local_files_only=False
+                    "openai/clip-vit-large-patch14-336", cache_dir=cache_dir, local_files_only=False, token=hf_token
                 ).eval()
                 # Save to output for future offline use
                 try:
@@ -78,7 +87,7 @@ class ClipEmbeddingModel:
                 ).eval()
             except Exception:
                 self._model = CLIPVisionModelWithProjection.from_pretrained(
-                    "openai/clip-vit-large-patch14-336", cache_dir=cache_dir, local_files_only=False
+                    "openai/clip-vit-large-patch14-336", cache_dir=cache_dir, local_files_only=False, token=hf_token
                 ).eval()
                 
             # If successfully downloaded/loaded from Hub, save a clean copy to output save_dir

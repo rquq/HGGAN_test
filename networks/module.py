@@ -210,6 +210,10 @@ class StyleEncoder(nn.Module):
         if init != 'none':
             init_weights(self, init)
 
+        # Initialize log-variance weights to 0.0 and bias to -10.0 to start training almost deterministically
+        nn.init.constant_(self.logvar.weight, 0.)
+        nn.init.constant_(self.logvar.bias, -10.)
+
     def _build_proj_layers(self, all_feats):
         """Build projection Conv2d layers matching the actual backbone feature channels."""
         layers = []
@@ -270,6 +274,8 @@ class StyleEncoder(nn.Module):
 
         if vae_mode:
             logvar = self.logvar(style)
+            # Clamp logvar to prevent exponential exploding values and training instability
+            logvar = torch.clamp(logvar, min=-14.0, max=4.0)
             std = torch.exp(0.5 * logvar)
             eps = torch.randn_like(std)
             style_tokens_sampled = eps * std + style_tokens_mu
