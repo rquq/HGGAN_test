@@ -219,8 +219,7 @@ class AdversarialModel(BaseModel):
             num_workers=4,
             drop_last=True,
             pin_memory=(self.device.type == 'cuda'),
-            worker_init_fn=seed_worker,
-            persistent_workers=True
+            worker_init_fn=seed_worker
         )
 
         self.tst_loader = DataLoader(
@@ -381,8 +380,7 @@ class AdversarialModel(BaseModel):
                     shuffle=False,
                     num_workers=4,
                     pin_memory=(self.device.type == 'cuda'),
-                    worker_init_fn=seed_worker,
-                    persistent_workers=True
+                    worker_init_fn=seed_worker
                 )
             eval_dloader = self.eval_dloader
 
@@ -962,15 +960,6 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                     broadcast_buffers=False
                 )
 
-        # Compile models with torch.compile if supported
-        if hasattr(torch, 'compile') and getattr(self.opt.training, 'compile_model', True):
-            self.print("Compiling models with torch.compile for optimized execution graph...")
-            for key in self.models.keys():
-                try:
-                    self.models[key] = torch.compile(self.models[key])
-                except Exception as e:
-                    self.print(f"Warning: Failed to compile self.models.{key}: {e}")
-
         self.averager_meters = AverageMeterManager(['adv_loss', 'fake_disc_loss',
                                                     'real_disc_loss', 'adv_loss_patch',
                                                     'fake_disc_loss_patch',
@@ -1035,19 +1024,20 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                     style_imgs = self.models.G(enc_z, fake_lbs, fake_lb_lens)
                     recn_imgs = self.models.G(enc_z, real_lbs, real_lb_lens)
 
+                    cat_fake_imgs = torch.cat([fake_imgs, style_imgs, recn_imgs], dim=0)
+                    cat_fake_lb_lens = torch.cat([fake_lb_lens, fake_lb_lens, real_lb_lens], dim=0)
+                    cat_fake_img_lens = cat_fake_lb_lens * self.opt.char_width
+
                 ### Compute discriminative loss for real & fake samples ###
+                # Refactored to avoid torch.cat and save memory
                 fake_img_lens = fake_lb_lens * self.opt.char_width
                 style_img_lens = fake_lb_lens * self.opt.char_width
                 recn_img_lens = real_lb_lens * self.opt.char_width
-
-                # Forward all fake/generated types in a single batch to avoid multiple GPU kernel launches
-                cat_imgs = torch.cat([fake_imgs.detach(), style_imgs.detach(), recn_imgs.detach()], dim=0)
-                cat_img_lens = torch.cat([fake_img_lens, style_img_lens, recn_img_lens], dim=0)
-                cat_lbs = torch.cat([fake_lb_lens, fake_lb_lens, real_lb_lens], dim=0)
-
-                d_all = self.models.D(cat_imgs, cat_img_lens, cat_lbs)
-                d_fake, d_style, d_recn = torch.chunk(d_all, 3, dim=0)
-
+                
+                # Forward each generated type separately to avoid duplication
+                d_fake = self.models.D(fake_imgs.detach(), fake_img_lens, fake_lb_lens)
+                d_style = self.models.D(style_imgs.detach(), style_img_lens, fake_lb_lens)
+                d_recn = self.models.D(recn_imgs.detach(), recn_img_lens, real_lb_lens)
                 fake_disc_loss = (torch.mean(F.relu(1.0 + d_fake)) + 
                                   torch.mean(F.relu(1.0 + d_style)) + 
                                   torch.mean(F.relu(1.0 + d_recn))) / 3
@@ -1057,14 +1047,15 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                 p_style_patches = extract_all_patches(style_imgs.detach(), style_img_lens)
                 p_recn_patches = extract_all_patches(recn_imgs.detach(), recn_img_lens)
 
-                p_all_patches = torch.cat([p_fake_patches, p_style_patches, p_recn_patches], dim=0)
                 masking_mode = getattr(self.opt.training, 'masking_mode', 'none')
                 if masking_mode != 'none':
-                    p_all_patches = apply_light_mixed_patch_mask(p_all_patches)
+                    p_fake_patches = apply_light_mixed_patch_mask(p_fake_patches)
+                    p_style_patches = apply_light_mixed_patch_mask(p_style_patches)
+                    p_recn_patches = apply_light_mixed_patch_mask(p_recn_patches)
 
-                p_all = self.models.P(p_all_patches)
-                p_fake, p_style, p_recn = torch.split(p_all, [p_fake_patches.size(0), p_style_patches.size(0), p_recn_patches.size(0)], dim=0)
-
+                p_fake = self.models.P(p_fake_patches)
+                p_style = self.models.P(p_style_patches)
+                p_recn = self.models.P(p_recn_patches)
                 fake_disc_loss_patch = (torch.mean(F.relu(1.0 + p_fake)) + 
                                         torch.mean(F.relu(1.0 + p_style)) + 
                                         torch.mean(F.relu(1.0 + p_recn))) / 3
@@ -1134,46 +1125,45 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                     ####################################################
                     ### deal with fake samples ###
                     ### Compute Adversarial loss ###
+                    # Refactored to avoid torch.cat and save memory
                     fake_img_lens = fake_lb_lens * self.opt.char_width
                     style_img_lens = fake_lb_lens * self.opt.char_width
                     recn_img_lens = real_lb_lens * self.opt.char_width
 
-                    # Forward all generated types in a single batch to avoid multiple GPU kernel launches
-                    cat_g_imgs = torch.cat([fake_imgs, style_imgs, recn_imgs], dim=0)
-                    cat_g_lens = torch.cat([fake_img_lens, style_img_lens, recn_img_lens], dim=0)
-                    cat_g_lbs = torch.cat([fake_lb_lens, fake_lb_lens, real_lb_lens], dim=0)
-
-                    d_all = self.models.D(cat_g_imgs, cat_g_lens, cat_g_lbs)
-                    d_fake, d_style, d_recn = torch.chunk(d_all, 3, dim=0)
+                    d_fake = self.models.D(fake_imgs, fake_img_lens, fake_lb_lens)
+                    d_style = self.models.D(style_imgs, style_img_lens, fake_lb_lens)
+                    d_recn = self.models.D(recn_imgs, recn_img_lens, real_lb_lens)
                     adv_loss = -(torch.mean(d_fake) + torch.mean(d_style) + torch.mean(d_recn)) / 3
 
                     p_fake_patches = extract_all_patches(fake_imgs, fake_img_lens)
                     p_style_patches = extract_all_patches(style_imgs, style_img_lens)
                     p_recn_patches = extract_all_patches(recn_imgs, recn_img_lens)
-                    
-                    p_all_patches = torch.cat([p_fake_patches, p_style_patches, p_recn_patches], dim=0)
                     if masking_mode != 'none':
-                        p_all_patches = apply_light_mixed_patch_mask(p_all_patches)
+                        p_fake_patches = apply_light_mixed_patch_mask(p_fake_patches)
+                        p_style_patches = apply_light_mixed_patch_mask(p_style_patches)
+                        p_recn_patches = apply_light_mixed_patch_mask(p_recn_patches)
 
-                    p_all = self.models.P(p_all_patches)
-                    p_fake, p_style, p_recn = torch.split(p_all, [p_fake_patches.size(0), p_style_patches.size(0), p_recn_patches.size(0)], dim=0)
+                    p_fake = self.models.P(p_fake_patches)
+                    p_style = self.models.P(p_style_patches)
+                    p_recn = self.models.P(p_recn_patches)
                     adv_loss_patch = -(torch.mean(p_fake) + torch.mean(p_style) + torch.mean(p_recn)) / 3
 
                     ### CTC Auxiliary loss ###
-                    # Forward all 3 generated types together through the recognizer to save time
-                    cat_g_imgs = torch.cat([fake_imgs, style_imgs, recn_imgs], dim=0)
-                    cat_g_lens = torch.cat([fake_img_lens, style_img_lens, recn_img_lens], dim=0)
-                    
-                    r_all = self.models.R(cat_g_imgs, cat_g_lens)
-                    # Splitting logits along the batch dimension (which is dim 1 for sequence-first logits)
-                    fake_ctc_rand, fake_ctc_style, fake_ctc_recn = torch.chunk(r_all, 3, dim=1)
-
+                    # self.models.R.frozen_bn()
+                    fake_img_lens = fake_lb_lens * self.opt.char_width
+                    fake_ctc_rand = self.models.R(fake_imgs, fake_img_lens)
                     fake_ctc_loss_rand = self.ctc_loss(fake_ctc_rand, fake_lbs,
                                                        torch.div(fake_img_lens, ctc_len_scale, rounding_mode='trunc'),
                                                        fake_lb_lens)
+
+                    style_img_lens = fake_lb_lens * self.opt.char_width
+                    fake_ctc_style = self.models.R(style_imgs, style_img_lens)
                     fake_ctc_loss_style = self.ctc_loss(fake_ctc_style, fake_lbs,
                                                         torch.div(style_img_lens, ctc_len_scale, rounding_mode='trunc'),
                                                         fake_lb_lens)
+
+                    recn_img_lens = real_lb_lens * self.opt.char_width
+                    fake_ctc_recn = self.models.R(recn_imgs, recn_img_lens)
                     fake_ctc_loss_recn = self.ctc_loss(fake_ctc_recn, real_lbs,
                                                        torch.div(recn_img_lens, ctc_len_scale, rounding_mode='trunc'),
                                                        real_lb_lens)
@@ -1202,12 +1192,13 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                     gram_loss = torch.tensor(0.0, device=self.device)
                     for real_img_feat, fake_img_feat \
                             in zip(real_img_feats, fake_imgs_feats):
-                        # Vectorize contextual loss by concatenating the real targets and forwarding them in a single batch
-                        real_feat_rep = torch.cat([real_img_feat, real_img_feat], dim=0)
-                        ctx_loss += self.contextual_loss(real_feat_rep, fake_img_feat) * 2
-
-                        # Keep gram loss chunks separate to avoid computation graph cross-correlation changes
                         fake_feat = fake_img_feat.chunk(2, dim=0)
+                        # ctx_loss for style_imgs
+                        ctx_loss += self.contextual_loss(real_img_feat, fake_feat[0])
+                        # ctx_loss for recn_imgs
+                        ctx_loss += self.contextual_loss(real_img_feat, fake_feat[1])
+
+                        # gram_loss
                         gram_loss += self.gram_loss(fake_feat[0], real_img_feat)
                         gram_loss += self.gram_loss(fake_feat[1], real_img_feat)
 
@@ -1385,11 +1376,7 @@ class RecognizeModel(BaseModel):
             get_dataset(self.opt.valid.dset_name, self.opt.valid.dset_split, process_style=True),
             batch_size=opt.valid.batch_size,
             shuffle=False,
-            collate_fn=get_collect_fn(sort_input=True, sort_style=True),
-            num_workers=4,
-            pin_memory=(self.device.type == 'cuda'),
-            worker_init_fn=seed_worker,
-            persistent_workers=True
+            collate_fn=get_collect_fn(sort_input=True, sort_style=True)
         )
 
         self.ctc_loss = CTCLoss(zero_infinity=True, reduction='mean')
@@ -1406,20 +1393,10 @@ class RecognizeModel(BaseModel):
             collate_fn=self.collect_fn,
             num_workers=4,
             pin_memory=(self.device.type == 'cuda'),
-            worker_init_fn=seed_worker,
-            persistent_workers=True
+            worker_init_fn=seed_worker
         )
 
         self.optimizers = Munch(R=torch.optim.Adam(self.models.R.parameters(), lr=self.opt.training.lr))
-
-        # Compile models with torch.compile if supported
-        if hasattr(torch, 'compile') and getattr(self.opt.training, 'compile_model', True):
-            self.print("Compiling models with torch.compile for optimized execution graph...")
-            for key in self.models.keys():
-                try:
-                    self.models[key] = torch.compile(self.models[key])
-                except Exception as e:
-                    self.print(f"Warning: Failed to compile self.models.{key}: {e}")
 
         epoch_done = 1
         if self.opt.training.resume:
@@ -1554,11 +1531,7 @@ class WriterIdentifyModel(BaseModel):
             get_dataset(opt.dataset, opt.valid.dset_split),
             batch_size=opt.valid.batch_size,
             shuffle=False,
-            collate_fn=get_collect_fn(sort_input=False),
-            num_workers=4,
-            pin_memory=(self.device.type == 'cuda'),
-            worker_init_fn=seed_worker,
-            persistent_workers=True
+            collate_fn=get_collect_fn(sort_input=False)
         )
 
         self.wid_loss = CrossEntropyLoss()
@@ -1578,8 +1551,7 @@ class WriterIdentifyModel(BaseModel):
             collate_fn=get_collect_fn(sort_input=True, sort_style=False),
             num_workers=4,
             pin_memory=(self.device.type == 'cuda'),
-            worker_init_fn=seed_worker,
-            persistent_workers=True
+            worker_init_fn=seed_worker
         )
 
         if self.opt.training.frozen_backbone:
@@ -1589,15 +1561,6 @@ class WriterIdentifyModel(BaseModel):
             self.optimizers = Munch(W=torch.optim.Adam(
                                         chain(self.models.W.parameters(), self.models.B.parameters()),
                                     lr=self.opt.training.lr))
-
-        # Compile models with torch.compile if supported
-        if hasattr(torch, 'compile') and getattr(self.opt.training, 'compile_model', True):
-            self.print("Compiling models with torch.compile for optimized execution graph...")
-            for key in self.models.keys():
-                try:
-                    self.models[key] = torch.compile(self.models[key])
-                except Exception as e:
-                    self.print(f"Warning: Failed to compile self.models.{key}: {e}")
 
         epoch_done = 1
         if self.opt.training.resume:
