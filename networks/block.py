@@ -367,7 +367,9 @@ class DeepBLSTM(nn.Module):
     def forward(self, x, x_len):
         """Propogate input forward through the network."""
         self.lstm.flatten_parameters()
-        x_pack = pack_padded_sequence(x, x_len, batch_first=self.batch_first)
+        if isinstance(x_len, torch.Tensor):
+            x_len = x_len.cpu()
+        x_pack = pack_padded_sequence(x, x_len, batch_first=self.batch_first, enforce_sorted=False)
         init_hidden = self.get_init_state(x.size(0), x.device)
         out_pack, _ = self.lstm(x_pack, init_hidden)
         out, out_len = pad_packed_sequence(out_pack, batch_first=self.batch_first)
