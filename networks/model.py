@@ -1162,7 +1162,7 @@ class GlobalLocalAdversarialModel(AdversarialModel):
 
                     # Batch forward all generated types through R to avoid multiple GPU kernel launches
                     cat_fake_ctc = self.models.R(cat_fake_imgs, cat_fake_img_lens)
-                    fake_ctc_rand, fake_ctc_style, fake_ctc_recn = torch.chunk(cat_fake_ctc, 3, dim=0)
+                    fake_ctc_rand, fake_ctc_style, fake_ctc_recn = torch.chunk(cat_fake_ctc, 3, dim=1)
 
                     fake_ctc_loss_rand = self.ctc_loss(fake_ctc_rand, fake_lbs,
                                                        torch.div(fake_img_lens, ctc_len_scale, rounding_mode='trunc'),
