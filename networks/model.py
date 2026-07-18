@@ -1014,18 +1014,18 @@ class GlobalLocalAdversarialModel(AdversarialModel):
 
                     self.z.sample_()
                     z_in = self.z
-                    fake_imgs = self.models.G(z_in, fake_lbs, fake_lb_lens)
 
                     if self.vae_mode:
                         enc_z, _, _ = self.models.E(real_imgs, real_img_lens, self.models.B, vae_mode=True)
                     else:
                         enc_z = self.models.E(real_imgs, real_img_lens, self.models.B, vae_mode=False)
 
-                    style_imgs = self.models.G(enc_z, fake_lbs, fake_lb_lens)
-                    recn_imgs = self.models.G(enc_z, real_lbs, real_lb_lens)
-
-                    cat_fake_imgs = torch.cat([fake_imgs, style_imgs, recn_imgs], dim=0)
+                    # Batch forward all fake/generated types to avoid multiple GPU kernel launches
+                    cat_z = torch.cat([z_in, enc_z, enc_z], dim=0)
                     cat_fake_lb_lens = torch.cat([fake_lb_lens, fake_lb_lens, real_lb_lens], dim=0)
+                    cat_y = torch.cat([fake_lbs, fake_lbs, real_lbs], dim=0)
+                    cat_fake_imgs = self.models.G(cat_z, cat_y, cat_fake_lb_lens)
+                    fake_imgs, style_imgs, recn_imgs = torch.chunk(cat_fake_imgs, 3, dim=0)
                     cat_fake_img_lens = cat_fake_lb_lens * self.opt.char_width
 
                 ### Compute discriminative loss for real & fake samples ###
@@ -1034,28 +1034,27 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                 style_img_lens = fake_lb_lens * self.opt.char_width
                 recn_img_lens = real_lb_lens * self.opt.char_width
                 
-                # Forward each generated type separately to avoid duplication
-                d_fake = self.models.D(fake_imgs.detach(), fake_img_lens, fake_lb_lens)
-                d_style = self.models.D(style_imgs.detach(), style_img_lens, fake_lb_lens)
-                d_recn = self.models.D(recn_imgs.detach(), recn_img_lens, real_lb_lens)
+                # Batch forward all generated types through D to avoid multiple GPU kernel launches
+                d_fake_all = self.models.D(cat_fake_imgs.detach(), cat_fake_img_lens, cat_fake_lb_lens)
+                d_fake, d_style, d_recn = torch.chunk(d_fake_all, 3, dim=0)
                 fake_disc_loss = (torch.mean(F.relu(1.0 + d_fake)) + 
                                   torch.mean(F.relu(1.0 + d_style)) + 
                                   torch.mean(F.relu(1.0 + d_recn))) / 3
 
                 # Patch Discriminator forwards
-                p_fake_patches = extract_all_patches(fake_imgs.detach(), fake_img_lens)
-                p_style_patches = extract_all_patches(style_imgs.detach(), style_img_lens)
-                p_recn_patches = extract_all_patches(recn_imgs.detach(), recn_img_lens)
+                n_patch_row = (cat_fake_imgs.size(-2) - 32) // 8 + 1
+                n_fake = int(torch.sum(torch.div(fake_img_lens - 32, 8, rounding_mode='trunc') + 1).item()) * n_patch_row
+                n_style = int(torch.sum(torch.div(style_img_lens - 32, 8, rounding_mode='trunc') + 1).item()) * n_patch_row
+                n_recn = int(torch.sum(torch.div(recn_img_lens - 32, 8, rounding_mode='trunc') + 1).item()) * n_patch_row
 
+                p_all_patches = extract_all_patches(cat_fake_imgs.detach(), cat_fake_img_lens)
                 masking_mode = getattr(self.opt.training, 'masking_mode', 'none')
                 if masking_mode != 'none':
-                    p_fake_patches = apply_light_mixed_patch_mask(p_fake_patches)
-                    p_style_patches = apply_light_mixed_patch_mask(p_style_patches)
-                    p_recn_patches = apply_light_mixed_patch_mask(p_recn_patches)
+                    p_all_patches = apply_light_mixed_patch_mask(p_all_patches)
 
-                p_fake = self.models.P(p_fake_patches)
-                p_style = self.models.P(p_style_patches)
-                p_recn = self.models.P(p_recn_patches)
+                # Batch forward all patches through P to avoid multiple GPU kernel launches
+                p_all = self.models.P(p_all_patches)
+                p_fake, p_style, p_recn = torch.split(p_all, [n_fake, n_style, n_recn], dim=0)
                 fake_disc_loss_patch = (torch.mean(F.relu(1.0 + p_fake)) + 
                                         torch.mean(F.relu(1.0 + p_style)) + 
                                         torch.mean(F.relu(1.0 + p_recn))) / 3
@@ -1107,7 +1106,6 @@ class GlobalLocalAdversarialModel(AdversarialModel):
 
                     self.z.sample_()
                     z_in = self.z
-                    fake_imgs = self.models.G(z_in, fake_lbs, fake_lb_lens)
 
                     # Keep style encoder inputs clean as masking is applied strictly to local patches
                     masking_mode = getattr(self.opt.training, 'masking_mode', 'none')
@@ -1117,8 +1115,13 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                     else:
                         enc_z, real_img_feats = self.models.E(real_imgs, real_img_lens, self.models.B,
                                                               ret_feats=True, vae_mode=False)
-                    style_imgs = self.models.G(enc_z, fake_lbs, fake_lb_lens)
-                    recn_imgs = self.models.G(enc_z, real_lbs, real_lb_lens)
+
+                    # Batch forward all fake/generated types through G to avoid multiple GPU kernel launches
+                    cat_z = torch.cat([z_in, enc_z, enc_z], dim=0)
+                    cat_fake_lb_lens = torch.cat([fake_lb_lens, fake_lb_lens, real_lb_lens], dim=0)
+                    cat_y = torch.cat([fake_lbs, fake_lbs, real_lbs], dim=0)
+                    cat_fake_imgs = self.models.G(cat_z, cat_y, cat_fake_lb_lens)
+                    fake_imgs, style_imgs, recn_imgs = torch.chunk(cat_fake_imgs, 3, dim=0)
 
                     ###################################################
                     # Calculating G Losses
@@ -1130,40 +1133,44 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                     style_img_lens = fake_lb_lens * self.opt.char_width
                     recn_img_lens = real_lb_lens * self.opt.char_width
 
-                    d_fake = self.models.D(fake_imgs, fake_img_lens, fake_lb_lens)
-                    d_style = self.models.D(style_imgs, style_img_lens, fake_lb_lens)
-                    d_recn = self.models.D(recn_imgs, recn_img_lens, real_lb_lens)
+                    cat_fake_img_lens = cat_fake_lb_lens * self.opt.char_width
+                    # Batch forward all generated types through D to avoid multiple GPU kernel launches
+                    d_fake_all = self.models.D(cat_fake_imgs, cat_fake_img_lens, cat_fake_lb_lens)
+                    d_fake, d_style, d_recn = torch.chunk(d_fake_all, 3, dim=0)
                     adv_loss = -(torch.mean(d_fake) + torch.mean(d_style) + torch.mean(d_recn)) / 3
 
-                    p_fake_patches = extract_all_patches(fake_imgs, fake_img_lens)
-                    p_style_patches = extract_all_patches(style_imgs, style_img_lens)
-                    p_recn_patches = extract_all_patches(recn_imgs, recn_img_lens)
-                    if masking_mode != 'none':
-                        p_fake_patches = apply_light_mixed_patch_mask(p_fake_patches)
-                        p_style_patches = apply_light_mixed_patch_mask(p_style_patches)
-                        p_recn_patches = apply_light_mixed_patch_mask(p_recn_patches)
+                    n_patch_row = (cat_fake_imgs.size(-2) - 32) // 8 + 1
+                    n_fake = int(torch.sum(torch.div(fake_img_lens - 32, 8, rounding_mode='trunc') + 1).item()) * n_patch_row
+                    n_style = int(torch.sum(torch.div(style_img_lens - 32, 8, rounding_mode='trunc') + 1).item()) * n_patch_row
+                    n_recn = int(torch.sum(torch.div(recn_img_lens - 32, 8, rounding_mode='trunc') + 1).item()) * n_patch_row
 
-                    p_fake = self.models.P(p_fake_patches)
-                    p_style = self.models.P(p_style_patches)
-                    p_recn = self.models.P(p_recn_patches)
+                    p_all_patches = extract_all_patches(cat_fake_imgs, cat_fake_img_lens)
+                    if masking_mode != 'none':
+                        p_all_patches = apply_light_mixed_patch_mask(p_all_patches)
+
+                    # Batch forward all patches through P to avoid multiple GPU kernel launches
+                    p_all = self.models.P(p_all_patches)
+                    p_fake, p_style, p_recn = torch.split(p_all, [n_fake, n_style, n_recn], dim=0)
                     adv_loss_patch = -(torch.mean(p_fake) + torch.mean(p_style) + torch.mean(p_recn)) / 3
 
                     ### CTC Auxiliary loss ###
                     # self.models.R.frozen_bn()
                     fake_img_lens = fake_lb_lens * self.opt.char_width
-                    fake_ctc_rand = self.models.R(fake_imgs, fake_img_lens)
+                    style_img_lens = fake_lb_lens * self.opt.char_width
+                    recn_img_lens = real_lb_lens * self.opt.char_width
+
+                    # Batch forward all generated types through R to avoid multiple GPU kernel launches
+                    cat_fake_ctc = self.models.R(cat_fake_imgs, cat_fake_img_lens)
+                    fake_ctc_rand, fake_ctc_style, fake_ctc_recn = torch.chunk(cat_fake_ctc, 3, dim=0)
+
                     fake_ctc_loss_rand = self.ctc_loss(fake_ctc_rand, fake_lbs,
                                                        torch.div(fake_img_lens, ctc_len_scale, rounding_mode='trunc'),
                                                        fake_lb_lens)
 
-                    style_img_lens = fake_lb_lens * self.opt.char_width
-                    fake_ctc_style = self.models.R(style_imgs, style_img_lens)
                     fake_ctc_loss_style = self.ctc_loss(fake_ctc_style, fake_lbs,
                                                         torch.div(style_img_lens, ctc_len_scale, rounding_mode='trunc'),
                                                         fake_lb_lens)
 
-                    recn_img_lens = real_lb_lens * self.opt.char_width
-                    fake_ctc_recn = self.models.R(recn_imgs, recn_img_lens)
                     fake_ctc_loss_recn = self.ctc_loss(fake_ctc_recn, real_lbs,
                                                        torch.div(recn_img_lens, ctc_len_scale, rounding_mode='trunc'),
                                                        real_lb_lens)
