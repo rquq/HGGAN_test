@@ -24,12 +24,6 @@ class HGGANInceptionV3(ReferenceInceptionV3):
     def __init__(self, output_blocks=[3], resize_input=True, normalize_input=True, requires_grad=False, use_fid_inception=True):
         self.hggan_resize_input = resize_input
         super().__init__(output_blocks, resize_input=False, normalize_input=normalize_input, requires_grad=requires_grad, use_fid_inception=use_fid_inception)
-        # Standard InceptionV3 has AdaptiveAvgPool2d(1, 1) in block 3.
-        # For HGGAN, we need AvgPool2d(8, 8) to keep width dimension.
-        if 3 in self.output_blocks:
-            block3_list = list(self.blocks[-1].children())
-            block3_list[-1] = nn.AvgPool2d(8, 8)
-            self.blocks[-1] = nn.Sequential(*block3_list)
         
         # We need self.last_fc for Inception Score calculation
         if use_fid_inception:
@@ -50,24 +44,37 @@ class HGGANInceptionV3(ReferenceInceptionV3):
         return mask
 
     def forward(self, inp, inp_len=None):
+        if inp_len is None:
+            # Standard FID/KID path: use parent's unmodified forward pass (preserves AdaptiveAvgPool2d)
+            outp = super().forward(inp)
+            return outp[-1], None
+
+        # IS path: manual forward pass to get Mixed_7c before AdaptiveAvgPool2d
         x = inp
         if self.hggan_resize_input:
             x = F.interpolate(x, scale_factor=299 / x.size(2), mode='bilinear', align_corners=True)
         
-        outp = super().forward(x)
-        last_feat = outp[-1]
+        if self.normalize_input:
+            x = 2 * x - 1
 
-        if inp_len is not None:
-            squeezed = last_feat.squeeze(2)
-            inp_mask = self._len2mask(inp_len, squeezed.size(-1))
-            feat = squeezed * inp_mask.unsqueeze(1)
-            feat = feat.sum(dim=-1) / (inp_len.unsqueeze(dim=1) + 1e-8)
-            pooled_feat = feat.view(*feat.size(), 1, 1)
-        else:
-            if last_feat.size(2) != 1 or last_feat.size(3) != 1:
-                pooled_feat = F.adaptive_avg_pool2d(last_feat, output_size=(1, 1))
-            else:
-                pooled_feat = last_feat
+        # Run blocks 0, 1, 2
+        for idx in range(3):
+            x = self.blocks[idx](x)
+
+        # Run block 3 up to Mixed_7c (all except final AdaptiveAvgPool2d)
+        block3_layers = list(self.blocks[3].children())[:-1]
+        for layer in block3_layers:
+            x = layer(x)
+
+        # Apply AvgPool2d(8, 8) to reduce height from 8 to 1
+        last_feat = F.avg_pool2d(x, kernel_size=8, stride=8)
+        squeezed = last_feat.squeeze(2)
+
+        # Apply sequence length mask
+        inp_mask = self._len2mask(inp_len, squeezed.size(-1))
+        feat = squeezed * inp_mask.unsqueeze(1)
+        feat = feat.sum(dim=-1) / (inp_len.unsqueeze(dim=1) + 1e-8)
+        pooled_feat = feat.view(*feat.size(), 1, 1)
 
         logits = self.last_fc(pooled_feat.view(pooled_feat.size(0), -1)).softmax(dim=-1)
         return pooled_feat, logits
@@ -204,7 +211,7 @@ def get_activations(data_source, n_batches, model, dims, device, crop=False, eva
                     _, logits = model(imgs_is, img_lens_is // height)
                 else:
                     _, logits = model(imgs_is[:, :, :, :height * 2],
-                                      4 * torch.ones((imgs_is.size(0),)).to(device))
+                                      2 * torch.ones((imgs_is.size(0),)).to(device))
             pred_logits.append(logits.cpu().data.numpy())
 
     pred_arr = np.concatenate(pred_arr, axis=0)
@@ -474,6 +481,6 @@ def calculate_hwd_score(data_loader, generator, n_rand_repeat, device, n_batches
     fake_dataset = ImageListDataset(fake_imgs_list, fake_authors_list)
     
     print("Computing HWD Score...")
-    hwd_scorer = HWDScore()
+    hwd_scorer = HWDScore().to(device)
     score = hwd_scorer(fake_dataset, real_dataset)
     return score
