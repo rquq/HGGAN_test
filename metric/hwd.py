@@ -479,10 +479,12 @@ class HWDScore(BaseScore):
         super().__init__(backbone, distance, transforms)
 
 
-def compute_hwd(src1, src2, batchsize):
+def compute_hwd(src1, src2, batchsize, device=None):
+    if device is None:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
     fake_dataset = FolderDataset(src1)
     real_dataset = FolderDataset(src2)
-    score = HWDScore(batchsize).cuda()
+    score = HWDScore(batchsize).to(device)
     info = {}
     results = []
     assert fake_dataset.author_ids == real_dataset.author_ids

@@ -61,6 +61,7 @@ class BaseModel(object):
         self.log_root = log_root
         self.logger = None
         self.writer = None
+        self.is_resumed_start = False
         alphabet_key = 'rimes_word' if opt.dataset.startswith('rimes') else 'all'
         self.alphabet = Alphabets[alphabet_key]
         self.label_converter = strLabelConverter(alphabet_key)
@@ -141,6 +142,7 @@ class BaseModel(object):
 
         epoch = 0 if 'Epoch' not in ckpt else ckpt['Epoch']
         self.iter_count_loaded = ckpt.get('iter_count', None)
+        self.is_resumed_start = True
         return epoch
 
     def set_mode(self, mode='eval'):
@@ -1117,6 +1119,9 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                 is_save_step = (iter_count + 1) % save_interval_iters == 0
                 
                 should_eval = is_eval_step and (not is_save_step or save_interval_iters == eval_interval_iters)
+                if getattr(self, 'is_resumed_start', False):
+                    should_eval = False
+                    self.is_resumed_start = False
                 
                 if should_eval:
                     self.print('Calculate FID_KID (iter {})'.format(iter_count + 1)) if self.local_rank < 1 else None
