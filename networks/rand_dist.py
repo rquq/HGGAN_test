@@ -50,8 +50,13 @@ class Distribution(torch.Tensor):
             device = self.device
             data = np.random.gamma(shape=1, scale=self.scale, size=self.size())
             self.data = torch.from_numpy(data).type(type).to(device)
-            # return self.variable
-        return deepcopy(self).detach()
+        return self.detach()
+
+    def __deepcopy__(self, memo):
+        new_obj = Distribution(self.clone())
+        if hasattr(self, 'dist_type'):
+            new_obj.init_distribution(self.dist_type, **self.dist_kwargs)
+        return new_obj
 
     # # Silly hack: overwrite the to() method to wrap the new object
     # # in a distribution as well
