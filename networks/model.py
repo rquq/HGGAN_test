@@ -140,7 +140,6 @@ class BaseModel(object):
                 print('Load %s failed'%('OPT.' + key))
 
         epoch = 0 if 'Epoch' not in ckpt else ckpt['Epoch']
-        self.iter_count_loaded = ckpt.get('iter_count', None)
         self.is_resumed_start = True
         return epoch
 
@@ -848,10 +847,7 @@ class GlobalLocalAdversarialModel(AdversarialModel):
 
         best_fid = np.inf
         is_best = False
-        best_scores = {}
-        iter_count = getattr(self, 'iter_count_loaded', None)
-        if iter_count is None:
-            iter_count = (epoch_done - 1) * len(self.train_loader)
+        iter_count = (epoch_done - 1) * len(self.train_loader)
         for epoch in range(epoch_done, self.opt.training.epochs):
             if self.local_rank > -1 and hasattr(self.train_loader, 'sampler') and self.train_loader.sampler is not None:
                 self.train_loader.sampler.set_epoch(epoch)
