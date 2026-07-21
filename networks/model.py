@@ -14,7 +14,7 @@ import torch.nn.functional as F
 from metric.val_metrics import calculate_fid_kid_is
 from metric.mssim_psnr import calculate_mssim_psnr
 from networks.utils import _info, set_requires_grad, get_scheduler, idx_to_words, rescale_images, rescale_images2, \
-                            words_to_images, ctc_greedy_decoder, extract_all_patches
+                            words_to_images, ctc_greedy_decoder, extract_all_patches, frozen_bn
 from networks.BigGAN_networks import Generator, Discriminator, PatchDiscriminator
 from networks.module import Recognizer, WriterIdentifier, StyleEncoder, StyleBackbone
 from lib.datasets import get_dataset, get_collect_fn, Hdf5Dataset
@@ -63,6 +63,7 @@ class BaseModel(object):
         self.optimizers = Munch()
         self.log_root = log_root
         self.logger = None
+        self.is_resumed_start = False
         alphabet_key = 'rimes_word' if opt.dataset.startswith('rimes') else 'all'
         self.alphabet = Alphabets[alphabet_key]
         self.label_converter = strLabelConverter(alphabet_key)
@@ -165,6 +166,8 @@ class BaseModel(object):
                 self.print(f'Load OPT.{key} failed: {e}')
 
         epoch = 0 if 'Epoch' not in ckpt else ckpt['Epoch']
+        self.iter_count_loaded = ckpt.get('iter_count', None)
+        self.is_resumed_start = True
         del ckpt
         import gc
         gc.collect()
@@ -249,12 +252,14 @@ class AdversarialModel(BaseModel):
         self.set_mode('eval')
 
         device = self.device
-        batchA = next(iter(self.tst_loader))
-        batchB = next(iter(self.tst_loader2))
-        batch = Hdf5Dataset.merge_batch(batchA, batchB, device)
+        if not hasattr(self, 'cached_sample_batch') or self.cached_sample_batch is None:
+            batchA = next(iter(self.tst_loader))
+            batchB = next(iter(self.tst_loader2))
+            self.cached_sample_batch = Hdf5Dataset.merge_batch(batchA, batchB, device)
 
-        real_imgs, real_img_lens = batch['style_imgs'].to(device), batch['style_img_lens'].to(device)
-        real_lbs, real_lb_lens = batch['lbs'].to(device), batch['lb_lens'].to(device)
+        batch = self.cached_sample_batch
+        real_imgs, real_img_lens = batch['style_imgs'], batch['style_img_lens']
+        real_lbs, real_lb_lens = batch['lbs'], batch['lb_lens']
 
         with torch.no_grad():
             self.eval_z.sample_()
@@ -396,13 +401,18 @@ class AdversarialModel(BaseModel):
                                                  style_guided, n_rand_repeat)
                 return generator
 
-            # OPTIMIZATION: Pre-generate and cache fake image batches on CPU to avoid running the generator 6 times.
-            # This speeds up validation by up to 6x.
+            # OPTIMIZATION: Pre-generate and cache fake image batches on CPU.
+            # We compress images to int8 and drop style_imgs if not test_stage to fit within tight 15GB RAM limits.
             def batch_to_cpu(batch):
                 cpu_batch = {}
                 for k, v in batch.items():
                     if isinstance(v, torch.Tensor):
-                        cpu_batch[k] = v.cpu().pin_memory()
+                        if k == 'style_imgs' and not test_stage:
+                            continue
+                        if k in ['org_imgs', 'style_imgs']:
+                            cpu_batch[k] = (v.cpu().clamp(-1.0, 1.0) * 127.0).round().to(torch.int8)
+                        else:
+                            cpu_batch[k] = v.cpu()
                     else:
                         cpu_batch[k] = v
                 return cpu_batch
@@ -411,7 +421,16 @@ class AdversarialModel(BaseModel):
             generator_list = [batch_to_cpu(b) for b in get_generator()]
 
             def get_cached_generator():
-                return generator_list
+                decompressed_list = []
+                for batch in generator_list:
+                    decompressed = {}
+                    for k, v in batch.items():
+                        if k in ['org_imgs', 'style_imgs'] and isinstance(v, torch.Tensor):
+                            decompressed[k] = (v.to(torch.float32) / 127.0).pin_memory()
+                        else:
+                            decompressed[k] = v
+                    decompressed_list.append(decompressed)
+                return decompressed_list
 
             if not hasattr(self, 'valid_real_stats') or self.valid_real_stats is None:
                 from metric.val_metrics import calculate_activation_statistics, InceptionV3
@@ -445,23 +464,31 @@ class AdversarialModel(BaseModel):
                 res['cer'], res['wer'] = self.validate_ocr(get_cached_generator(), n_iters=len(eval_dloader) * n_rand_repeat)
 
             if getattr(self.opt.valid, 'validate_hwd', True):
-                # OPTIMIZATION: Cache real HWD dataset/features to avoid reprocessing real images every epoch.
-                if not hasattr(self, 'valid_real_hwd_dataset') or self.valid_real_hwd_dataset is None:
-                    self.print("Precalculating real image features for HWD...")
-                    from metric.val_metrics import ImageListDataset, batch_tensor_to_pil_list
-                    real_imgs_list = []
-                    real_authors_list = []
-                    for idx, batch in enumerate(tqdm(eval_dloader, desc='HWD Real Images')):
-                        imgs = batch['org_imgs']
-                        lens = batch['org_img_lens']
-                        wids = batch.get('wids', torch.arange(imgs.size(0)))
-                        pil_imgs = batch_tensor_to_pil_list(imgs, lens)
-                        real_imgs_list.extend(pil_imgs)
-                        for i in range(imgs.size(0)):
-                            real_authors_list.append(str(wids[i].item()))
-                    self.valid_real_hwd_dataset = ImageListDataset(real_imgs_list, real_authors_list)
+                # OPTIMIZATION: Cache real HWD features to avoid reprocessing real images every epoch.
+                if not hasattr(self, 'valid_real_hwd_features') or self.valid_real_hwd_features is None:
+                    if not hasattr(self, 'valid_real_hwd_dataset') or self.valid_real_hwd_dataset is None:
+                        self.print("Precalculating real image features for HWD...")
+                        from metric.val_metrics import ImageListDataset, batch_tensor_to_pil_list
+                        real_imgs_list = []
+                        real_authors_list = []
+                        for idx, batch in enumerate(tqdm(eval_dloader, desc='HWD Real Images')):
+                            imgs = batch['org_imgs']
+                            lens = batch['org_img_lens']
+                            wids = batch.get('wids', torch.arange(imgs.size(0)))
+                            pil_imgs = batch_tensor_to_pil_list(imgs, lens)
+                            real_imgs_list.extend(pil_imgs)
+                            for i in range(imgs.size(0)):
+                                real_authors_list.append(str(wids[i].item()))
+                        self.valid_real_hwd_dataset = ImageListDataset(real_imgs_list, real_authors_list)
+                    
+                    from metric.val_metrics import HWDScore
+                    hwd_scorer = HWDScore(batchsize=64).to(self.device)
+                    self.valid_real_hwd_features = hwd_scorer.digest(self.valid_real_hwd_dataset)
+                    self.valid_real_hwd_dataset = None
+                    import gc
+                    gc.collect()
 
-                hwd_val = calculate_hwd_score(eval_dloader, get_cached_generator(), n_rand_repeat, self.device, real_dataset=self.valid_real_hwd_dataset)
+                hwd_val = calculate_hwd_score(eval_dloader, get_cached_generator(), n_rand_repeat, self.device, real_features=self.valid_real_hwd_features)
                 res['hwd'] = hwd_val
 
             if getattr(self.opt.valid, 'validate_cmmd', True):
@@ -978,7 +1005,13 @@ class GlobalLocalAdversarialModel(AdversarialModel):
             ctc_len_scale = self.models.R.len_scale
 
         best_fid = np.inf
-        iter_count = (epoch_done - 1) * len(self.train_loader)
+        iter_count = getattr(self, 'iter_count_loaded', None)
+        if iter_count is None:
+            iter_count = (epoch_done - 1) * len(self.train_loader)
+        
+        if self.use_ema:
+            self.ema_tracker.step = iter_count // opt.training.num_critic_train
+            self.print(f"Set EMA tracker step to {self.ema_tracker.step} based on iter_count={iter_count}")
         is_best = False
         best_scores = None
 
@@ -1317,6 +1350,9 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                 is_save_step = (iter_count + 1) % save_interval_iters == 0
                 
                 should_eval = is_eval_step and (not is_save_step or save_interval_iters == eval_interval_iters)
+                if getattr(self, 'is_resumed_start', False):
+                    should_eval = False
+                    self.is_resumed_start = False
                 
                 if should_eval:
                     self.print('Calculate FID_KID (iter {})'.format(iter_count + 1)) if self.local_rank < 1 else None
@@ -1338,9 +1374,9 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                     if not os.path.exists(ckpt_root):
                         os.makedirs(ckpt_root) if self.local_rank < 1 else None
                     
-                    self.save('last', epoch)
+                    self.save('last', epoch, iter_count=iter_count)
                     if is_best:
-                        self.save('best', epoch, **best_scores) if self.local_rank < 1 else None
+                        self.save('best', epoch, iter_count=iter_count, **best_scores) if self.local_rank < 1 else None
                         is_best = False
 
                 iter_count += 1
@@ -1594,7 +1630,7 @@ class WriterIdentifyModel(BaseModel):
                                                       batch['wids'].to(device)
 
                 if self.opt.training.frozen_backbone:
-                    self.models.B.frozen_bn()
+                    frozen_bn(self.models.B)
 
                 #############################
                 # OptimizingRecognizer

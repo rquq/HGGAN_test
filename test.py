@@ -43,7 +43,7 @@ if __name__ == '__main__':
     cfg.seed = random.randint(0, 10000)
     cfg.valid.dset_split = args.split
 
-    model = get_model(cfg.model)(cfg, args.config)
+    model = get_model(cfg.model)(cfg)
     model.load(args.ckpt, cfg.device)
     print('guided: ', args.guided)
     print(model.validate(args.guided, test_stage=True))

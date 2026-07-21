@@ -32,7 +32,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
     cfg = yaml2config(args.config)
 
-    model = get_model(cfg.model)(cfg, args.config)
+    model = get_model(cfg.model)(cfg)
     model.load(args.ckpt, cfg.device)
     model.set_mode('eval')
     if args.mode == 'style':
