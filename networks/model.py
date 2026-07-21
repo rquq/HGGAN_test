@@ -170,7 +170,6 @@ class BaseModel(object):
                 self.print(f'Load OPT.{key} failed: {e}')
 
         epoch = 0 if 'Epoch' not in ckpt else ckpt['Epoch']
-        self.iter_count_loaded = ckpt.get('iter_count', None)
         self.is_resumed_start = True
         del ckpt
         import gc
@@ -1010,9 +1009,7 @@ class GlobalLocalAdversarialModel(AdversarialModel):
             ctc_len_scale = self.models.R.len_scale
 
         best_fid = np.inf
-        iter_count = getattr(self, 'iter_count_loaded', None)
-        if iter_count is None:
-            iter_count = (epoch_done - 1) * len(self.train_loader)
+        iter_count = (epoch_done - 1) * len(self.train_loader)
         
         if self.use_ema:
             self.ema_tracker.step = iter_count // opt.training.num_critic_train
