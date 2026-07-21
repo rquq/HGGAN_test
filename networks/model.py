@@ -56,7 +56,6 @@ class BaseModel(object):
         self.local_rank = opt.local_rank if 'local_rank' in opt else -1
         self.device = torch.device(opt.device)
         self.models = Munch()
-        self.models_ema = Munch()
         self.optimizers = Munch()
         self.log_root = log_root
         self.logger = None
