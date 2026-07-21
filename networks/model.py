@@ -256,12 +256,10 @@ class AdversarialModel(BaseModel):
         self.set_mode('eval')
 
         device = self.device
-        if not hasattr(self, 'cached_sample_batch') or self.cached_sample_batch is None:
-            batchA = next(iter(self.tst_loader))
-            batchB = next(iter(self.tst_loader2))
-            self.cached_sample_batch = Hdf5Dataset.merge_batch(batchA, batchB, device)
+        batchA = next(iter(self.tst_loader))
+        batchB = next(iter(self.tst_loader2))
+        batch = Hdf5Dataset.merge_batch(batchA, batchB, device)
 
-        batch = self.cached_sample_batch
         real_imgs, real_img_lens = batch['style_imgs'], batch['style_img_lens']
         real_lbs, real_lb_lens = batch['lbs'], batch['lb_lens']
 
