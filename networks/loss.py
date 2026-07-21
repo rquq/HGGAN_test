@@ -68,7 +68,7 @@ def KLloss(mu, logvar):
 # Contextual loss
 ##############################################################################
 class CXLoss(nn.Module):
-    def __init__(self, sigma=0.5, b=1.0, similarity="consine"):
+    def __init__(self, sigma=0.5, b=1.0, similarity="cosine"):
         super(CXLoss, self).__init__()
         self.similarity = similarity
         self.sigma = sigma
@@ -81,7 +81,7 @@ class CXLoss(nn.Module):
 
     def l2_normalize_channelwise(self, features):
         # Normalize on channel dimension (axis=1)
-        norms = features.norm(p=2, dim=1, keepdim=True)
+        norms = torch.clamp(features.norm(p=2, dim=1, keepdim=True), min=1e-8)
         features = features.div(norms)
         return features
 
@@ -153,7 +153,8 @@ class GramStyleLoss(nn.Module):
 
 class GramMatrix(nn.Module):
     def forward(self, input, feat_len=None):
-        with torch.amp.autocast('cuda', enabled=False):
+        device_type = input.device.type
+        with torch.amp.autocast(device_type, enabled=False):
             input = input.float()
             a, b, c, d = input.size()
 

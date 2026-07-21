@@ -102,7 +102,7 @@ class ClipEmbeddingModel:
         if device is not None:
             self._model = self._model.to(device)
         elif _CUDA_AVAILABLE:
-            self._model = self._model.cuda()
+            self._model = self._model.to(torch.device('cuda'))
         self.input_image_size = 336
         self.mean = torch.tensor([0.48145466, 0.4578275, 0.40821073]).view(1, 3, 1, 1)
         self.std = torch.tensor([0.26862954, 0.26130258, 0.27577711]).view(1, 3, 1, 1)
@@ -126,8 +126,10 @@ class ClipEmbeddingModel:
 
 
 def mmd(x, y):
-    x = torch.from_numpy(x)
-    y = torch.from_numpy(y)
+    if isinstance(x, np.ndarray):
+        x = torch.from_numpy(x)
+    if isinstance(y, np.ndarray):
+        y = torch.from_numpy(y)
 
     x_sqnorms = torch.sum(x**2, dim=-1)
     y_sqnorms = torch.sum(y**2, dim=-1)

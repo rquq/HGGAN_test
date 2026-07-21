@@ -153,7 +153,10 @@ def get_activations(data_source, n_batches, model, dims, device, crop=False, eva
         imgs_fid = imgs.clone()
         col_indices = torch.arange(width, device=device).view(1, 1, 1, width)
         padding_mask = col_indices >= org_img_lens.view(batch_size, 1, 1, 1)
-        imgs_fid = torch.where(padding_mask, torch.tensor(1.0, device=device), imgs_fid)
+        is_neg_one = (imgs_fid == -1)
+        all_neg_one_in_padding = (is_neg_one | ~padding_mask).all(dim=-1).all(dim=-2).all(dim=-3)
+        replace_mask = padding_mask & all_neg_one_in_padding.view(batch_size, 1, 1, 1)
+        imgs_fid = torch.where(replace_mask, torch.tensor(1.0, device=device), imgs_fid)
 
 
         # Normalize to [0, 1]

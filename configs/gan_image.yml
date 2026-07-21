@@ -1,4 +1,6 @@
 device: 'cuda:0'
+multi_gpu: false
+gpus: [0]
 model: 'gl_adversarial_model'
 dataset: 'custom'
 seed: 123456

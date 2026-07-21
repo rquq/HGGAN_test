@@ -139,10 +139,14 @@ class BaseModel(object):
         models = self.models.values() if len(modules) == 0 else modules
         for model in models:
             m_unwrapped = getattr(model, 'module', model)
-            try:
-                m_unwrapped.load_state_dict(ckpt.pop(type(model).__name__), strict=False)
-            except Exception as e:
-                self.print(f'Load {type(model).__name__} failed: {e}')
+            m_name = type(model).__name__
+            if m_name in ckpt:
+                try:
+                    m_unwrapped.load_state_dict(ckpt[m_name], strict=False)
+                except Exception as e:
+                    self.print(f'Load {m_name} failed: {e}')
+            else:
+                self.print(f'Key {m_name} not found in checkpoint')
 
         if hasattr(self, 'models_ema') and self.models_ema:
             for name, model_ema in self.models_ema.items():
@@ -629,7 +633,7 @@ class AdversarialModel(BaseModel):
                 acc_counts += real_preds.eq(fake_preds.to(self.device)).sum().item()
                 total_counts += real_preds.size(0)
 
-            wier = 1 - acc_counts * 1. / total_counts
+            wier = 1.0 - acc_counts / total_counts if total_counts > 0 else 1.0
 
         self.print('WID_wier:{:.2f}'.format(wier))
         return wier
@@ -662,7 +666,7 @@ class AdversarialModel(BaseModel):
                 fake_lbs, fake_lb_lens = fake_lbs.repeat(nrow * ncol, 1).to(self.device),\
                                          fake_lb_lens.repeat(nrow * ncol).to(self.device)
                 gen_imgs = self.models.G(styles, fake_lbs, fake_lb_lens)
-                gen_imgs = (1 - gen_imgs).squeeze().cpu().numpy() * 127
+                gen_imgs = (1 - gen_imgs).squeeze(1).cpu().numpy() * 127
                 plt.figure()
                 for i in range(nrow * ncol):
                     plt.subplot(nrow, ncol, i + 1)
@@ -707,11 +711,11 @@ class AdversarialModel(BaseModel):
                 gen_imgs, gen_img_lens = rescale_images2(gen_imgs, fake_lb_lens * self.opt.char_width, fake_lb_lens,
                                            batch['org_img_lens'].repeat_interleave(ncol).to(self.device),
                                            batch['lb_lens'].repeat_interleave(ncol).to(self.device))
-                gen_imgs = (1 - gen_imgs).squeeze().cpu().numpy() * 127
+                gen_imgs = (1 - gen_imgs).squeeze(1).cpu().numpy() * 127
                 real_imgs = torch.nn.functional.pad(batch['org_imgs'],
                                                     [0, gen_imgs.shape[-1] - batch['org_imgs'].size(-1), 0, 0],
                                                     mode='constant', value=-1)
-                real_imgs = (1 - real_imgs).squeeze().cpu().numpy() * 127
+                real_imgs = (1 - real_imgs).squeeze(1).cpu().numpy() * 127
                 plt.figure()
                 for i in range(nrow):
                     plt.subplot(nrow, 1 + ncol, i * (1 + ncol) + 1)
@@ -851,74 +855,77 @@ class GlobalLocalAdversarialModel(AdversarialModel):
 
         # ── WandB init (master process only) ──────────────────────────────
         _is_master = self.local_rank < 1
-        if _is_master:
-            import wandb as _wandb
-            # Get branchname and dates dynamically
-            import subprocess
-            from datetime import datetime
-            branchname = None
+        if _is_master and not getattr(self.opt, 'no_wandb', False):
             try:
-                branchname = subprocess.check_output(['git', 'rev-parse', '--abbrev-ref', 'HEAD'], stderr=subprocess.DEVNULL, timeout=2).decode().strip()
-            except Exception:
-                pass
-            if not branchname or branchname == 'HEAD':
+                import wandb as _wandb
+                # Get branchname and dates dynamically
+                import subprocess
+                from datetime import datetime
+                branchname = None
                 try:
-                    curr_dir = os.path.abspath(os.getcwd())
-                    for _ in range(5):
-                        head_path = os.path.join(curr_dir, '.git', 'HEAD')
-                        if os.path.exists(head_path):
-                            with open(head_path, 'r') as f:
-                                content = f.read().strip()
-                            if content.startswith('ref:'):
-                                branchname = content.split('/')[-1]
-                            else:
-                                branchname = content[:7]
-                            break
-                        curr_dir = os.path.dirname(curr_dir)
+                    branchname = subprocess.check_output(['git', 'rev-parse', '--abbrev-ref', 'HEAD'], stderr=subprocess.DEVNULL, timeout=2).decode().strip()
                 except Exception:
                     pass
-            folder_branch = None
-            try:
-                parts = os.path.abspath(__file__).split(os.sep)
-                if len(parts) >= 3:
-                    folder_branch = parts[-3]
-            except Exception:
-                pass
-            if branchname in [None, 'main', 'master', 'HEAD']:
-                if folder_branch in ['main', 'dev', 'random_crop_recog', 'classic_optimized', 'HiGANplus', 'higanplus']:
-                    branchname = folder_branch
-            if not branchname:
-                branchname = 'random_crop_recog'
-            
-            run_name = f"{branchname}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-
-            wandb_key = os.environ.get('WANDB_API_KEY')
-            if not wandb_key:
-                for path_candidate in [
-                    '/home/quq/machineLearning/HTG/wandb_key.txt',
-                    '/kaggle/working/wandb_key.txt',
-                    '../../wandb_key.txt',
-                    '../wandb_key.txt',
-                    './wandb_key.txt'
-                ]:
-                    if os.path.exists(path_candidate):
-                        try:
-                            with open(path_candidate, 'r') as f:
-                                wandb_key = f.read().strip()
-                            if wandb_key:
+                if not branchname or branchname == 'HEAD':
+                    try:
+                        curr_dir = os.path.abspath(os.getcwd())
+                        for _ in range(5):
+                            head_path = os.path.join(curr_dir, '.git', 'HEAD')
+                            if os.path.exists(head_path):
+                                with open(head_path, 'r') as f:
+                                    content = f.read().strip()
+                                if content.startswith('ref:'):
+                                    branchname = content.split('/')[-1]
+                                else:
+                                    branchname = content[:7]
                                 break
-                        except Exception:
-                            pass
-            if wandb_key:
-                _wandb.login(key=wandb_key)
-            else:
-                _wandb.login()
-            _wandb.init(
-                project='HiGANplus',
-                name=run_name,
-                config=vars(self.opt) if hasattr(self.opt, '__dict__') else dict(self.opt),
-                resume='allow',
-            )
+                            curr_dir = os.path.dirname(curr_dir)
+                    except Exception:
+                        pass
+                folder_branch = None
+                try:
+                    parts = os.path.abspath(__file__).split(os.sep)
+                    if len(parts) >= 3:
+                        folder_branch = parts[-3]
+                except Exception:
+                    pass
+                if branchname in [None, 'main', 'master', 'HEAD']:
+                    if folder_branch in ['main', 'dev', 'random_crop_recog', 'classic_optimized', 'HiGANplus', 'higanplus']:
+                        branchname = folder_branch
+                if not branchname:
+                    branchname = 'random_crop_recog'
+                
+                run_name = f"{branchname}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+
+                wandb_key = os.environ.get('WANDB_API_KEY')
+                if not wandb_key:
+                    for path_candidate in [
+                        '/home/quq/machineLearning/HTG/wandb_key.txt',
+                        '/kaggle/working/wandb_key.txt',
+                        '../../wandb_key.txt',
+                        '../wandb_key.txt',
+                        './wandb_key.txt'
+                    ]:
+                        if os.path.exists(path_candidate):
+                            try:
+                                with open(path_candidate, 'r') as f:
+                                    wandb_key = f.read().strip()
+                                if wandb_key:
+                                    break
+                            except Exception:
+                                pass
+                if wandb_key:
+                    _wandb.login(key=wandb_key)
+                else:
+                    _wandb.login()
+                _wandb.init(
+                    project='HiGANplus',
+                    name=run_name,
+                    config=vars(self.opt) if hasattr(self.opt, '__dict__') else dict(self.opt),
+                    resume='allow',
+                )
+            except Exception as e:
+                self.print(f"WandB initialization skipped or failed: {e}")
 
         opt = self.opt
         self.z = prepare_z_dist(opt.training.batch_size, opt.EncModel.style_dim, self.device,
@@ -1431,15 +1438,33 @@ class RecognizeModel(BaseModel):
 
         trainset_info = (self.opt.training.dset_name, self.opt.training.dset_split, False, self.opt.training.augment, True)
         self.print('Trainset: {} [{}]'.format(*trainset_info))
+        trainset = get_dataset(*trainset_info)
+        if self.local_rank > -1:
+            from torch.utils.data.distributed import DistributedSampler
+            self.train_sampler = DistributedSampler(trainset, num_replicas=None, rank=self.local_rank, shuffle=True)
+            shuffle = False
+        else:
+            self.train_sampler = None
+            shuffle = True
+
         self.train_loader = DataLoader(
-            get_dataset(*trainset_info),
+            trainset,
             batch_size=self.opt.training.batch_size,
-            shuffle=True,
+            shuffle=shuffle,
+            sampler=self.train_sampler,
             collate_fn=self.collect_fn,
             num_workers=4,
             pin_memory=(self.device.type == 'cuda'),
             worker_init_fn=seed_worker
         )
+
+        if self.local_rank > -1:
+            self.models.R = torch.nn.parallel.DistributedDataParallel(
+                self.models.R,
+                device_ids=[self.local_rank],
+                output_device=self.local_rank,
+                broadcast_buffers=False
+            )
 
         self.optimizers = Munch(R=torch.optim.Adam(self.models.R.parameters(), lr=self.opt.training.lr))
 
@@ -1452,11 +1477,14 @@ class RecognizeModel(BaseModel):
 
         device = self.device
         ctc_loss_meter = AverageMeter()
-        ctc_len_scale = self.models.R.len_scale
+        recognizer_unwrapped = self.models.R.module if self.local_rank > -1 else self.models.R
+        ctc_len_scale = recognizer_unwrapped.len_scale
         best_cer = np.inf
         iter_count = (epoch_done - 1) * len(self.train_loader)
 
         for epoch in range(epoch_done, self.opt.training.epochs):
+            if getattr(self, 'train_sampler', None) is not None:
+                self.train_sampler.set_epoch(epoch)
             for i, batch in enumerate(self.train_loader):
                 #############################
                 # Prepare inputs
@@ -1500,9 +1528,11 @@ class RecognizeModel(BaseModel):
             if epoch:
                 ckpt_root = os.path.join(self.log_root, self.opt.training.ckpt_dir)
                 if not os.path.exists(ckpt_root):
-                    os.makedirs(ckpt_root)
+                    os.makedirs(ckpt_root) if self.local_rank < 1 else None
 
                 self.save('last', epoch)
+                if self.local_rank > -1:
+                    dist.barrier()
 
 
             for scheduler in self.lr_schedulers.values():
@@ -1589,15 +1619,34 @@ class WriterIdentifyModel(BaseModel):
                          self.opt.training.random_clip,
                          False, self.opt.training.process_style)
         self.print('Trainset: {} [{}]'.format(*trainset_info))
+        trainset = get_dataset(*trainset_info)
+        if self.local_rank > -1:
+            from torch.utils.data.distributed import DistributedSampler
+            self.train_sampler = DistributedSampler(trainset, num_replicas=None, rank=self.local_rank, shuffle=True)
+            shuffle = False
+        else:
+            self.train_sampler = None
+            shuffle = True
+
         self.train_loader = DataLoader(
-            get_dataset(*trainset_info),
+            trainset,
             batch_size=self.opt.training.batch_size,
-            shuffle=True,
+            shuffle=shuffle,
+            sampler=self.train_sampler,
             collate_fn=get_collect_fn(sort_input=True, sort_style=False),
             num_workers=4,
             pin_memory=(self.device.type == 'cuda'),
             worker_init_fn=seed_worker
         )
+
+        if self.local_rank > -1:
+            for key in self.models.keys():
+                self.models[key] = torch.nn.parallel.DistributedDataParallel(
+                    self.models[key],
+                    device_ids=[self.local_rank],
+                    output_device=self.local_rank,
+                    broadcast_buffers=False
+                )
 
         if self.opt.training.frozen_backbone:
             self.print('frozen_backbone')
@@ -1620,6 +1669,8 @@ class WriterIdentifyModel(BaseModel):
         iter_count = (epoch_done - 1) * len(self.train_loader)
 
         for epoch in range(epoch_done, self.opt.training.epochs):
+            if getattr(self, 'train_sampler', None) is not None:
+                self.train_sampler.set_epoch(epoch)
             for i, batch in enumerate(self.train_loader):
                 #############################
                 # Prepare inputs
@@ -1630,7 +1681,8 @@ class WriterIdentifyModel(BaseModel):
                                                       batch['wids'].to(device)
 
                 if self.opt.training.frozen_backbone:
-                    frozen_bn(self.models.B)
+                    b_module = self.models.B.module if self.local_rank > -1 else self.models.B
+                    frozen_bn(b_module)
 
                 #############################
                 # OptimizingRecognizer
@@ -1664,9 +1716,11 @@ class WriterIdentifyModel(BaseModel):
             if epoch:
                 ckpt_root = os.path.join(self.log_root, self.opt.training.ckpt_dir)
                 if not os.path.exists(ckpt_root):
-                    os.makedirs(ckpt_root)
+                    os.makedirs(ckpt_root) if self.local_rank < 1 else None
 
                 self.save('last', epoch)
+                if self.local_rank > -1:
+                    dist.barrier()
 
 
             for scheduler in self.lr_schedulers.values():

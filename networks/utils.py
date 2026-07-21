@@ -185,7 +185,9 @@ def set_requires_grad(nets, requires_grad=False):
                 param.requires_grad = requires_grad
 
 
-def idx_to_words(idx, lexicon, max_word_len=0, capitize_ratio=0.5, blank_ratio=0., sort=True):
+def idx_to_words(idx, lexicon, max_word_len=0, capitize_ratio=0.5, blank_ratio=0., sort=True, capitalize_ratio=None):
+    if capitalize_ratio is not None:
+        capitize_ratio = capitalize_ratio
     words = []
     for i in idx:
         word = lexicon[i]
@@ -205,7 +207,10 @@ def idx_to_words(idx, lexicon, max_word_len=0, capitize_ratio=0.5, blank_ratio=0
 
 def pil_text_img(im, text, pos, color=(255, 0, 0), textSize=25):
     img_PIL = Image.fromarray(cv2.cvtColor(im, cv2.COLOR_BGR2RGB))
-    font = ImageFont.truetype('font/arial.ttf', textSize)
+    try:
+        font = ImageFont.truetype('font/arial.ttf', textSize)
+    except OSError:
+        font = ImageFont.load_default()
     fillColor = color  # (255,0,0)
     position = pos  # (100,100)
     draw = ImageDraw.Draw(img_PIL)
@@ -360,7 +365,7 @@ def rand_clip_images(imgs, img_lens, min_clip_width=64):
     pad_imgs = -np.ones((imgs.shape[0], 1, imgs.shape[2], max_img_len))
     for i, (clip_img, clip_img_len) in enumerate(zip(clip_imgs, clip_img_lens)):
         pad_imgs[i, 0, :, :clip_img_len] = clip_img
-    return torch.from_numpy(pad_imgs).float().to(device), torch.Tensor(clip_img_lens).int().to(device)
+    return torch.from_numpy(pad_imgs).float().to(device), torch.tensor(clip_img_lens, dtype=torch.int32, device=device)
 
 
 def _recalc_len(leng, scale):

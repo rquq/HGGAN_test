@@ -20,7 +20,8 @@ class RandomClip:
         if width > self.min_clip_width:
             crop_width = np.random.randint(self.min_clip_width, width)
             # crop_width = self._recalc_len(crop_width, scale=CharWidth)
-            rand_pos = np.random.randint(0, width - crop_width)
+            max_pos = width - crop_width
+            rand_pos = np.random.randint(0, max_pos) if max_pos > 0 else 0
             pic = pic.crop((rand_pos, 0, rand_pos + crop_width, height))
         return pic
 

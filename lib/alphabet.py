@@ -72,7 +72,7 @@ class strLabelConverter(object):
             results.append(result)
             result = []
 
-        labels = torch.nn.utils.rnn.pad_sequence([torch.LongTensor(text) for text in results], batch_first=True)
+        labels = torch.nn.utils.rnn.pad_sequence([torch.LongTensor(seq) for seq in results], batch_first=True)
         lengths = torch.IntTensor(length)
 
         if max_len is not None and max_len > labels.size(-1):
@@ -104,7 +104,8 @@ class strLabelConverter(object):
         if length.numel() == 1:
             length = length[0]
             if raw:
-                return ''.join([self.alphabet[i] for i in t if 0 <= i < len(self.alphabet)])
+                t_indices = t.tolist() if isinstance(t, torch.Tensor) else list(t)
+                return ''.join([self.alphabet[i] for i in t_indices if 0 <= i < len(self.alphabet)])
             else:
                 char_list = []
                 if t.dim() == 2:
