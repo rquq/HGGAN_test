@@ -292,7 +292,7 @@ class BaseModel(object):
                                 state[k_s] = v_s.to(self.device)
                     self.print(f'Loaded optimizer state for OPT.{key}')
                 except Exception as e:
-                    # Fallback for legacy checkpoints where optimizer param group length differs
+                    # Fallback for legacy checkpoints: verify shape matching for each parameter
                     try:
                         import copy
                         adapted_opt_dict = copy.deepcopy(ckpt_data[opt_key])
@@ -300,9 +300,14 @@ class BaseModel(object):
                         saved_param_ids = adapted_opt_dict['param_groups'][0]['params']
                         adapted_opt_dict['param_groups'][0]['params'] = list(range(len(curr_params)))
                         new_state = {}
-                        for idx, p_id in enumerate(saved_param_ids):
-                            if idx < len(curr_params) and p_id in adapted_opt_dict['state']:
-                                new_state[idx] = adapted_opt_dict['state'][p_id]
+                        for idx, p_curr in enumerate(curr_params):
+                            curr_shape = tuple(p_curr.shape)
+                            if idx < len(saved_param_ids):
+                                p_id = saved_param_ids[idx]
+                                if p_id in ckpt_data[opt_key].get('state', {}):
+                                    item = ckpt_data[opt_key]['state'][p_id]
+                                    if 'exp_avg' in item and tuple(item['exp_avg'].shape) == curr_shape:
+                                        new_state[idx] = item
                         adapted_opt_dict['state'] = new_state
                         self.optimizers[key].load_state_dict(adapted_opt_dict)
                         for state in self.optimizers[key].state.values():
