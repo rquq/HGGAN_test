@@ -69,6 +69,12 @@ class BaseModel(object):
         self.label_converter = strLabelConverter(alphabet_key)
         self.epoch_start = 1
 
+    @staticmethod
+    def unwrap_model(model):
+        if model is None:
+            return None
+        return getattr(model, 'module', model)
+
     def print(self, info):
         if self.local_rank > 0:
             return
@@ -100,27 +106,119 @@ class BaseModel(object):
             self.print(extra)
         self.print('=' * 20)
 
-    def save(self, tag='best', epoch_done=0, **kwargs):
+    def save(self, tag='best', epoch_done=0, iter_count=None, best_fid=None, **kwargs):
         if self.local_rank > 0:
             return
         ckpt = {}
-        for model in self.models.values():
-            m_unwrapped = getattr(model, 'module', model)
-            ckpt[type(model).__name__] = m_unwrapped.state_dict()
+        for name, model in self.models.items():
+            m_unwrapped = self.unwrap_model(model)
+            m_dict = m_unwrapped.state_dict()
+            ckpt[name] = m_dict
+            ckpt[type(m_unwrapped).__name__] = m_dict
 
         if hasattr(self, 'models_ema') and self.models_ema:
             for name, model_ema in self.models_ema.items():
-                ckpt[name + '_EMA'] = model_ema.state_dict()
+                m_ema_unwrapped = self.unwrap_model(model_ema)
+                m_ema_dict = m_ema_unwrapped.state_dict()
+                ckpt[name + '_EMA'] = m_ema_dict
+                ckpt[type(m_ema_unwrapped).__name__ + '_EMA'] = m_ema_dict
+
+        if hasattr(self, 'ema_tracker') and self.ema_tracker is not None:
+            ckpt['ema_step'] = self.ema_tracker.step
 
         for key, optim in self.optimizers.items():
             ckpt['OPT.' + key] = optim.state_dict()
+
+        if hasattr(self, 'lr_schedulers') and self.lr_schedulers:
+            for key, sched in self.lr_schedulers.items():
+                if hasattr(sched, 'state_dict'):
+                    ckpt['SCHED.' + key] = sched.state_dict()
+
+        import random
+        ckpt['rng_state'] = {
+            'torch': torch.get_rng_state(),
+            'cuda': torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
+            'numpy': np.random.get_state(),
+            'python': random.getstate(),
+            'z_dist': self.z.get_state() if hasattr(self, 'z') and hasattr(self.z, 'get_state') else None,
+            'y_dist': self.y.get_state() if hasattr(self, 'y') and hasattr(self.y, 'get_state') else None,
+            'eval_z_dist': self.eval_z.get_state() if hasattr(self, 'eval_z') and hasattr(self.eval_z, 'get_state') else None,
+            'eval_y_dist': self.eval_y.get_state() if hasattr(self, 'eval_y') and hasattr(self.eval_y, 'get_state') else None,
+        }
 
         for key, val in kwargs.items():
             ckpt[key] = val
 
         ckpt['Epoch'] = epoch_done
-        ckpt_save_path = os.path.join(self.log_root, self.opt.training.ckpt_dir, tag + '.pth')
+        if iter_count is not None:
+            ckpt['iter_count'] = iter_count
+        if best_fid is not None:
+            ckpt['best_fid'] = best_fid
+
+        ckpt_dir = os.path.join(self.log_root, self.opt.training.ckpt_dir)
+        os.makedirs(ckpt_dir, exist_ok=True)
+        ckpt_save_path = os.path.join(ckpt_dir, tag + '.pth')
         torch.save(ckpt, ckpt_save_path)
+
+    def restore_rng_state(self, rng=None):
+        if rng is None:
+            rng = getattr(self, '_restored_rng_state', None)
+        if not rng:
+            return
+        
+        if 'torch' in rng and rng['torch'] is not None:
+            try:
+                torch_rng = rng['torch'].cpu().to(torch.uint8) if isinstance(rng['torch'], torch.Tensor) else rng['torch']
+                torch.set_rng_state(torch_rng)
+            except Exception as e:
+                self.print(f'Restoring torch RNG warning: {e}')
+
+        if 'cuda' in rng and rng['cuda'] is not None and torch.cuda.is_available():
+            try:
+                cuda_rngs = [r.cpu().to(torch.uint8) if isinstance(r, torch.Tensor) else r for r in rng['cuda']]
+                for idx, c_state in enumerate(cuda_rngs):
+                    if idx < torch.cuda.device_count():
+                        torch.cuda.set_rng_state(c_state, device=idx)
+            except Exception as e:
+                self.print(f'Restoring CUDA RNG warning: {e}')
+
+        if 'numpy' in rng and rng['numpy'] is not None:
+            try:
+                import numpy as np
+                np.random.set_state(rng['numpy'])
+            except Exception as e:
+                self.print(f'Restoring numpy RNG warning: {e}')
+
+        if 'python' in rng and rng['python'] is not None:
+            try:
+                import random
+                random.setstate(rng['python'])
+            except Exception as e:
+                self.print(f'Restoring python RNG warning: {e}')
+
+        if hasattr(self, 'z') and hasattr(self.z, 'set_state') and rng.get('z_dist') is not None:
+            try:
+                self.z.set_state(rng['z_dist'])
+            except Exception as e:
+                self.print(f'Restoring z_dist RNG warning: {e}')
+
+        if hasattr(self, 'y') and hasattr(self.y, 'set_state') and rng.get('y_dist') is not None:
+            try:
+                self.y.set_state(rng['y_dist'])
+            except Exception as e:
+                self.print(f'Restoring y_dist RNG warning: {e}')
+
+        if hasattr(self, 'eval_z') and hasattr(self.eval_z, 'set_state') and rng.get('eval_z_dist') is not None:
+            try:
+                self.eval_z.set_state(rng['eval_z_dist'])
+            except Exception as e:
+                self.print(f'Restoring eval_z RNG warning: {e}')
+
+        if hasattr(self, 'eval_y') and hasattr(self.eval_y, 'set_state') and rng.get('eval_y_dist') is not None:
+            try:
+                self.eval_y.set_state(rng['eval_y_dist'])
+            except Exception as e:
+                self.print(f'Restoring eval_y RNG warning: {e}')
 
     def load(self, ckpt, map_location=None, modules=None):
         if modules is None:
@@ -131,47 +229,94 @@ class BaseModel(object):
         self.print(f'load checkpoint from {ckpt}')
         if map_location is None:
             map_location = 'cpu'
-        ckpt = torch.load(ckpt, map_location=map_location, weights_only=False)
+        ckpt_data = torch.load(ckpt, map_location=map_location, weights_only=False)
 
-        if ckpt is None:
+        if ckpt_data is None:
             return 0
 
-        models = self.models.values() if len(modules) == 0 else modules
-        for model in models:
-            m_unwrapped = getattr(model, 'module', model)
-            m_name = type(model).__name__
-            if m_name in ckpt:
+        self.restored_metadata = {
+            'Epoch': ckpt_data.get('Epoch', 0),
+            'iter_count': ckpt_data.get('iter_count', None),
+            'best_fid': ckpt_data.get('best_fid', ckpt_data.get('fid', None)),
+            'ema_step': ckpt_data.get('ema_step', None),
+        }
+
+        for name, model in self.models.items():
+            if len(modules) > 0 and model not in modules:
+                continue
+            m_unwrapped = self.unwrap_model(model)
+            m_name = type(m_unwrapped).__name__
+            target_key = name if name in ckpt_data else (m_name if m_name in ckpt_data else None)
+            if target_key:
                 try:
-                    m_unwrapped.load_state_dict(ckpt[m_name], strict=False)
+                    m_unwrapped.load_state_dict(ckpt_data[target_key], strict=False)
+                    self.print(f'Loaded weights for {name} using key {target_key}')
                 except Exception as e:
-                    self.print(f'Load {m_name} failed: {e}')
+                    self.print(f'Load {name} ({target_key}) failed: {e}')
             else:
-                self.print(f'Key {m_name} not found in checkpoint')
+                self.print(f'Key {name} / {m_name} not found in checkpoint')
 
         if hasattr(self, 'models_ema') and self.models_ema:
             for name, model_ema in self.models_ema.items():
                 ema_key = name + '_EMA'
-                if ema_key in ckpt:
+                alt_ema_key = type(self.unwrap_model(self.models.get(name))).__name__ + '_EMA' if name in self.models else None
+                
+                target_key = None
+                if ema_key in ckpt_data:
+                    target_key = ema_key
+                elif alt_ema_key and alt_ema_key in ckpt_data:
+                    target_key = alt_ema_key
+
+                if target_key:
                     try:
-                        model_ema.load_state_dict(ckpt.pop(ema_key), strict=False)
-                        self.print(f'Loaded EMA weights for {name}')
+                        m_ema_unwrapped = self.unwrap_model(model_ema)
+                        m_ema_unwrapped.load_state_dict(ckpt_data[target_key], strict=False)
+                        self.print(f'Loaded EMA weights for {name} using key {target_key}')
                     except Exception as e:
-                        self.print(f'Load {ema_key} failed: {e}')
+                        self.print(f'Load EMA key {target_key} failed: {e}')
                 else:
                     if name in self.models:
-                        m_unwrapped = getattr(self.models[name], 'module', self.models[name])
-                        model_ema.load_state_dict(m_unwrapped.state_dict())
+                        m_unwrapped = self.unwrap_model(self.models[name])
+                        m_ema_unwrapped = self.unwrap_model(model_ema)
+                        m_ema_unwrapped.load_state_dict(m_unwrapped.state_dict())
                         self.print(f'Initialized EMA weights for {name} from active model')
 
         for key in self.optimizers.keys():
-            try:
-                self.optimizers[key].load_state_dict(ckpt.pop('OPT.' + key))
-            except Exception as e:
-                self.print(f'Load OPT.{key} failed: {e}')
+            opt_key = 'OPT.' + key
+            if opt_key in ckpt_data:
+                try:
+                    self.optimizers[key].load_state_dict(ckpt_data[opt_key])
+                    for state in self.optimizers[key].state.values():
+                        for k_s, v_s in state.items():
+                            if isinstance(v_s, torch.Tensor):
+                                state[k_s] = v_s.to(self.device)
+                    self.print(f'Loaded optimizer state for OPT.{key}')
+                except Exception as e:
+                    self.print(f'Load OPT.{key} failed: {e}')
 
-        epoch = 0 if 'Epoch' not in ckpt else ckpt['Epoch']
+        if hasattr(self, 'lr_schedulers') and self.lr_schedulers:
+            for key in self.lr_schedulers.keys():
+                sched_key = 'SCHED.' + key
+                if sched_key in ckpt_data:
+                    try:
+                        self.lr_schedulers[key].load_state_dict(ckpt_data[sched_key])
+                        self.print(f'Loaded scheduler state for SCHED.{key}')
+                    except Exception as e:
+                        self.print(f'Load SCHED.{key} failed: {e}')
+        self._ckpt_sched_data = {k: v for k, v in ckpt_data.items() if k.startswith('SCHED.')}
+
+        if 'rng_state' in ckpt_data:
+            self._restored_rng_state = ckpt_data['rng_state']
+            self.restore_rng_state(self._restored_rng_state)
+
+
+        if hasattr(self, 'ema_tracker') and self.ema_tracker is not None and self.restored_metadata.get('ema_step') is not None:
+            self.ema_tracker.step = self.restored_metadata['ema_step']
+            self.print(f'Loaded EMA tracker step={self.ema_tracker.step}')
+
+        epoch = self.restored_metadata['Epoch']
         self.is_resumed_start = True
-        del ckpt
+        del ckpt_data
         import gc
         gc.collect()
         torch.cuda.empty_cache()
@@ -225,6 +370,7 @@ class AdversarialModel(BaseModel):
             num_workers=4,
             drop_last=True,
             pin_memory=(self.device.type == 'cuda'),
+            persistent_workers=True,
             worker_init_fn=seed_worker
         )
 
@@ -386,6 +532,7 @@ class AdversarialModel(BaseModel):
                     shuffle=False,
                     num_workers=4,
                     pin_memory=(self.device.type == 'cuda'),
+                    persistent_workers=True,
                     worker_init_fn=seed_worker
                 )
             eval_dloader = self.eval_dloader
@@ -421,17 +568,20 @@ class AdversarialModel(BaseModel):
             self.print("Generating and caching validation fake images...")
             generator_list = [batch_to_cpu(b) for b in get_generator()]
 
+            cached_decompressed_list = None
             def get_cached_generator():
-                decompressed_list = []
-                for batch in generator_list:
-                    decompressed = {}
-                    for k, v in batch.items():
-                        if k in ['org_imgs', 'style_imgs'] and isinstance(v, torch.Tensor):
-                            decompressed[k] = (v.to(torch.float32) / 127.0).pin_memory()
-                        else:
-                            decompressed[k] = v
-                    decompressed_list.append(decompressed)
-                return decompressed_list
+                nonlocal cached_decompressed_list
+                if cached_decompressed_list is None:
+                    cached_decompressed_list = []
+                    for batch in generator_list:
+                        decompressed = {}
+                        for k, v in batch.items():
+                            if k in ['org_imgs', 'style_imgs'] and isinstance(v, torch.Tensor):
+                                decompressed[k] = (v.to(torch.float32) / 127.0).pin_memory()
+                            else:
+                                decompressed[k] = v
+                        cached_decompressed_list.append(decompressed)
+                return cached_decompressed_list
 
             if not hasattr(self, 'valid_real_stats') or self.valid_real_stats is None:
                 from metric.val_metrics import calculate_activation_statistics, InceptionV3
@@ -550,10 +700,7 @@ class AdversarialModel(BaseModel):
         self.set_mode('eval')
         # Use the already loaded recognizer from self.models instead of creating a new one
         # to avoid redundant memory allocation and potential OOM.
-        if self.local_rank > -1:
-            recognizer = self.models.R.module
-        else:
-            recognizer = self.models.R
+        recognizer = self.unwrap_model(self.models.R)
         
         ctc_len_scale = recognizer.len_scale
         char_trans = 0
@@ -600,12 +747,8 @@ class AdversarialModel(BaseModel):
         else:
             # OPTIMIZATION: Use the already loaded WriterIdentifier and StyleBackbone
             # from self.models instead of creating a new copy to avoid redundant VRAM allocation and OOM.
-            if self.local_rank > -1:
-                writer_identifier = self.models.W.module
-                writer_backbone = self.models.B.module
-            else:
-                writer_identifier = self.models.W
-                writer_backbone = self.models.B
+            writer_identifier = self.unwrap_model(self.models.W)
+            writer_backbone = self.unwrap_model(self.models.B)
             self.print('Using already loaded writer identifier and style backbone')
 
         writer_identifier.eval(), writer_backbone.eval()
@@ -658,8 +801,6 @@ class AdversarialModel(BaseModel):
                 styles = [torch.lerp(style0, style1, i / (interp_num - 1)) for i in range(interp_num)]
                 styles = torch.cat(styles, dim=0).float().to(self.device)
 
-                pass
-
                 fake_lbs, fake_lb_lens = fake_lbs.repeat(nrow * ncol, 1).to(self.device),\
                                          fake_lb_lens.repeat(nrow * ncol).to(self.device)
                 gen_imgs = self.models.G(styles, fake_lbs, fake_lb_lens)
@@ -709,8 +850,10 @@ class AdversarialModel(BaseModel):
                                            batch['org_img_lens'].repeat_interleave(ncol).to(self.device),
                                            batch['lb_lens'].repeat_interleave(ncol).to(self.device))
                 gen_imgs = (1 - gen_imgs).squeeze(1).cpu().numpy() * 127
+                max_w = max(gen_imgs.shape[-1], batch['org_imgs'].size(-1))
+                pad_real_w = max_w - batch['org_imgs'].size(-1)
                 real_imgs = torch.nn.functional.pad(batch['org_imgs'],
-                                                    [0, gen_imgs.shape[-1] - batch['org_imgs'].size(-1), 0, 0],
+                                                    [0, pad_real_w, 0, 0],
                                                     mode='constant', value=-1)
                 real_imgs = (1 - real_imgs).squeeze(1).cpu().numpy() * 127
                 plt.figure()
@@ -747,9 +890,8 @@ class AdversarialModel(BaseModel):
 
                 rand_z.sample_()
                 rand_styles = rand_z.unsqueeze(1).repeat(1, ncol, 1, 1).view(nrow * ncol, rand_z.size(1), -1)
-                pass
                 gen_imgs = self.models.G(rand_styles, fake_lbs, fake_lb_lens)
-                gen_imgs = (1 - gen_imgs).squeeze().cpu().numpy() * 127
+                gen_imgs = (1 - gen_imgs).squeeze(1).cpu().numpy() * 127
                 plt.figure()
                 for i in range(nrow):
                     for j in range(ncol):
@@ -795,7 +937,7 @@ class AdversarialModel(BaseModel):
                 fake_lb_lens = fake_lb_lens.repeat(nrow,).to(self.device)
                 enc_styles = self.models.E(real_imgs, real_img_lens, self.models.B)
 
-                real_imgs = (1 - real_imgs).squeeze().cpu().numpy() * 127
+                real_imgs = (1 - real_imgs).squeeze(1).cpu().numpy() * 127
                 gen_imgs = self.models.G(enc_styles, fake_lbs, fake_lb_lens)
                 space_indexs = get_space_index(text)
                 for idx in space_indexs:
@@ -803,7 +945,7 @@ class AdversarialModel(BaseModel):
                 gen_imgs, gen_img_lens = rescale_images2(gen_imgs, fake_lb_lens * self.opt.char_width, fake_lb_lens,
                                            batch['org_img_lens'].to(self.device),
                                            batch['lb_lens'].to(self.device))
-                gen_imgs = (1 - gen_imgs).squeeze().cpu().numpy() * 127
+                gen_imgs = (1 - gen_imgs).squeeze(1).cpu().numpy() * 127
                 plt.figure()
 
                 for i in range(nrow):
@@ -957,10 +1099,14 @@ class GlobalLocalAdversarialModel(AdversarialModel):
             self.ema_tracker = EMA(self.ema_beta)
 
         epoch_done = 1
-        if os.path.exists(self.opt.training.pretrained_ckpt):
-            epoch_done = self.load(self.opt.training.pretrained_ckpt, self.device) + 1
+        resume_path = getattr(self.opt.training, 'resume', None)
+        if not resume_path or not os.path.exists(resume_path):
+            resume_path = getattr(self.opt.training, 'pretrained_ckpt', None)
+
+        is_resuming = resume_path is not None and os.path.exists(resume_path)
+        if is_resuming:
+            epoch_done = self.load(resume_path, self.device)
             # Skipping immediate validation on resume to prevent OOM due to optimizer state overhead.
-            # self.validate(style_guided=True)
             torch.cuda.empty_cache()
         else:
             if os.path.exists(self.opt.training.pretrained_w):
@@ -975,12 +1121,40 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                 self.print(f'load pretrained recognizer: {self.opt.training.pretrained_r}')
                 # self.validate_ocr()
 
-        self.epoch_start = epoch_done
+        restored_meta = getattr(self, 'restored_metadata', {})
+        restored_iter = restored_meta.get('iter_count', None)
+        restored_ema_step = restored_meta.get('ema_step', None)
+
+        if restored_iter is not None:
+            iter_count = restored_iter + 1
+            self.print(f"Resumed exact iter_count={iter_count} from checkpoint")
+            start_epoch = iter_count // len(self.train_loader) + 1
+            skip_batches = iter_count % len(self.train_loader)
+        elif is_resuming:
+            start_epoch = epoch_done + 1
+            skip_batches = 0
+            iter_count = epoch_done * len(self.train_loader)
+            self.print(f"Calculated iter_count={iter_count} based on epoch_done={epoch_done}")
+        else:
+            start_epoch = 1
+            skip_batches = 0
+            iter_count = 0
+
+        self.epoch_start = start_epoch
 
         self.lr_schedulers = Munch(
-            G=get_scheduler(self.optimizers.G, opt.training, last_epoch=epoch_done - 1),
-            D=get_scheduler(self.optimizers.D, opt.training, last_epoch=epoch_done - 1)
+            G=get_scheduler(self.optimizers.G, opt.training, last_epoch=start_epoch - 2 if is_resuming else -1),
+            D=get_scheduler(self.optimizers.D, opt.training, last_epoch=start_epoch - 2 if is_resuming else -1)
         )
+        if hasattr(self, '_ckpt_sched_data') and self._ckpt_sched_data:
+            for key in self.lr_schedulers.keys():
+                sched_key = 'SCHED.' + key
+                if sched_key in self._ckpt_sched_data:
+                    try:
+                        self.lr_schedulers[key].load_state_dict(self._ckpt_sched_data[sched_key])
+                        self.print(f'Loaded restored scheduler state for {key}')
+                    except Exception as e:
+                        self.print(f'Failed to restore scheduler state for {key}: {e}')
 
         # multi-gpu
         if self.local_rank > -1:
@@ -1003,24 +1177,35 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                                                     'gp_wid', 'gp_recn'])
         device = self.device
 
-        if self.local_rank > -1:
-            ctc_len_scale = self.models.R.module.len_scale
-        else:
-            ctc_len_scale = self.models.R.len_scale
+        ctc_len_scale = self.unwrap_model(self.models.R).len_scale
 
-        best_fid = np.inf
-        iter_count = (epoch_done - 1) * len(self.train_loader)
-        
+        best_fid = restored_meta.get('best_fid', None)
+        if best_fid is None:
+            best_fid = np.inf
+        else:
+            self.print(f"Resumed best_fid={best_fid:.4f} from checkpoint")
+
         if self.use_ema:
-            self.ema_tracker.step = iter_count // opt.training.num_critic_train
-            self.print(f"Set EMA tracker step to {self.ema_tracker.step} based on iter_count={iter_count}")
+            if restored_ema_step is not None:
+                self.ema_tracker.step = restored_ema_step
+                self.print(f"Restored EMA tracker step={self.ema_tracker.step} from checkpoint")
+            else:
+                self.ema_tracker.step = iter_count // opt.training.num_critic_train
+                self.print(f"Set EMA tracker step to {self.ema_tracker.step} based on iter_count={iter_count}")
         is_best = False
         best_scores = None
 
-        for epoch in range(epoch_done, self.opt.training.epochs):
+        _should_restore_rng = is_resuming and skip_batches > 0
+        for epoch in range(start_epoch, self.opt.training.epochs + 1):
             if getattr(self, 'train_sampler', None) is not None:
                 self.train_sampler.set_epoch(epoch)
             for i, batch in enumerate(self.train_loader):
+                if epoch == start_epoch and i < skip_batches:
+                    continue
+                
+                if _should_restore_rng:
+                    self.restore_rng_state()
+                    _should_restore_rng = False
                 #############################
                 # Prepare inputs & Network Forward
                 #############################
@@ -1376,9 +1561,9 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                     if not os.path.exists(ckpt_root):
                         os.makedirs(ckpt_root) if self.local_rank < 1 else None
                     
-                    self.save('last', epoch, iter_count=iter_count)
+                    self.save('last', epoch, iter_count=iter_count, best_fid=best_fid)
                     if is_best:
-                        self.save('best', epoch, iter_count=iter_count, **best_scores) if self.local_rank < 1 else None
+                        self.save('best', epoch, iter_count=iter_count, best_fid=best_fid, **(best_scores or {})) if self.local_rank < 1 else None
                         is_best = False
 
                 iter_count += 1
@@ -1413,9 +1598,11 @@ class RecognizeModel(BaseModel):
             self.print(f'load pretrained backbone from {opt.training.pretrained_backbone}')
 
         if os.path.exists(opt.training.resume):
-            ckpt = torch.load(opt.training.resume, device, weights_only=False)['Recognizer']
-            recognizer.load_state_dict(ckpt)
+            ckpt = torch.load(opt.training.resume, device, weights_only=False)
+            target_ckpt = ckpt.get('Recognizer', ckpt.get('R', ckpt))
+            recognizer.load_state_dict(target_ckpt, strict=False)
             self.print(f'load pretrained model from {opt.training.resume}')
+
 
         self.models = Munch(R=recognizer)
 
@@ -1464,23 +1651,45 @@ class RecognizeModel(BaseModel):
         self.optimizers = Munch(R=torch.optim.Adam(self.models.R.parameters(), lr=self.opt.training.lr))
 
         epoch_done = 1
-        if self.opt.training.resume:
+        is_resuming = bool(self.opt.training.resume and os.path.exists(self.opt.training.resume))
+        if is_resuming:
             epoch_done = self.load(self.opt.training.resume)
             self.print(self.validate())
 
-        self.lr_schedulers = Munch(R=get_scheduler(self.optimizers.R, self.opt.training, last_epoch=epoch_done - 1))
+        restored_meta = getattr(self, 'restored_metadata', {})
+        restored_iter = restored_meta.get('iter_count', None)
+        if restored_iter is not None:
+            iter_count = restored_iter + 1
+            start_epoch = iter_count // len(self.train_loader) + 1
+            skip_batches = iter_count % len(self.train_loader)
+        elif is_resuming:
+            start_epoch = epoch_done + 1
+            skip_batches = 0
+            iter_count = epoch_done * len(self.train_loader)
+        else:
+            start_epoch = 1
+            skip_batches = 0
+            iter_count = 0
+
+        self.lr_schedulers = Munch(R=get_scheduler(self.optimizers.R, self.opt.training, last_epoch=start_epoch - 2 if is_resuming else -1))
+        if hasattr(self, '_ckpt_sched_data') and self._ckpt_sched_data and 'SCHED.R' in self._ckpt_sched_data:
+            try:
+                self.lr_schedulers.R.load_state_dict(self._ckpt_sched_data['SCHED.R'])
+            except Exception:
+                pass
 
         device = self.device
         ctc_loss_meter = AverageMeter()
-        recognizer_unwrapped = self.models.R.module if self.local_rank > -1 else self.models.R
+        recognizer_unwrapped = self.unwrap_model(self.models.R)
         ctc_len_scale = recognizer_unwrapped.len_scale
         best_cer = np.inf
-        iter_count = (epoch_done - 1) * len(self.train_loader)
 
-        for epoch in range(epoch_done, self.opt.training.epochs):
+        for epoch in range(start_epoch, self.opt.training.epochs + 1):
             if getattr(self, 'train_sampler', None) is not None:
                 self.train_sampler.set_epoch(epoch)
             for i, batch in enumerate(self.train_loader):
+                if epoch == start_epoch and i < skip_batches:
+                    continue
                 #############################
                 # Prepare inputs
                 #############################
@@ -1516,8 +1725,6 @@ class RecognizeModel(BaseModel):
                               len(self.train_loader), ctc_loss_avg, lr)
                     self.print(info)
 
-
-
                 iter_count += 1
 
             if epoch:
@@ -1525,7 +1732,7 @@ class RecognizeModel(BaseModel):
                 if not os.path.exists(ckpt_root):
                     os.makedirs(ckpt_root) if self.local_rank < 1 else None
 
-                self.save('last', epoch)
+                self.save('last', epoch, iter_count=iter_count)
                 if self.local_rank > -1:
                     dist.barrier()
 
@@ -1652,21 +1859,43 @@ class WriterIdentifyModel(BaseModel):
                                     lr=self.opt.training.lr))
 
         epoch_done = 1
-        if self.opt.training.resume:
+        is_resuming = bool(self.opt.training.resume and os.path.exists(self.opt.training.resume))
+        if is_resuming:
             epoch_done = self.load(self.opt.training.resume)
             self.print(self.validate())
 
-        self.lr_schedulers = Munch(W=get_scheduler(self.optimizers.W, self.opt.training, last_epoch=epoch_done - 1))
+        restored_meta = getattr(self, 'restored_metadata', {})
+        restored_iter = restored_meta.get('iter_count', None)
+        if restored_iter is not None:
+            iter_count = restored_iter + 1
+            start_epoch = iter_count // len(self.train_loader) + 1
+            skip_batches = iter_count % len(self.train_loader)
+        elif is_resuming:
+            start_epoch = epoch_done + 1
+            skip_batches = 0
+            iter_count = epoch_done * len(self.train_loader)
+        else:
+            start_epoch = 1
+            skip_batches = 0
+            iter_count = 0
+
+        self.lr_schedulers = Munch(W=get_scheduler(self.optimizers.W, self.opt.training, last_epoch=start_epoch - 2 if is_resuming else -1))
+        if hasattr(self, '_ckpt_sched_data') and self._ckpt_sched_data and 'SCHED.W' in self._ckpt_sched_data:
+            try:
+                self.lr_schedulers.W.load_state_dict(self._ckpt_sched_data['SCHED.W'])
+            except Exception:
+                pass
 
         device = self.device
         wid_loss_meter = AverageMeter()
         best_wrr = 0
-        iter_count = (epoch_done - 1) * len(self.train_loader)
 
-        for epoch in range(epoch_done, self.opt.training.epochs):
+        for epoch in range(start_epoch, self.opt.training.epochs + 1):
             if getattr(self, 'train_sampler', None) is not None:
                 self.train_sampler.set_epoch(epoch)
             for i, batch in enumerate(self.train_loader):
+                if epoch == start_epoch and i < skip_batches:
+                    continue
                 #############################
                 # Prepare inputs
                 #############################
@@ -1676,7 +1905,7 @@ class WriterIdentifyModel(BaseModel):
                                                       batch['wids'].to(device)
 
                 if self.opt.training.frozen_backbone:
-                    b_module = self.models.B.module if self.local_rank > -1 else self.models.B
+                    b_module = self.unwrap_model(self.models.B)
                     frozen_bn(b_module)
 
                 #############################
@@ -1713,7 +1942,7 @@ class WriterIdentifyModel(BaseModel):
                 if not os.path.exists(ckpt_root):
                     os.makedirs(ckpt_root) if self.local_rank < 1 else None
 
-                self.save('last', epoch)
+                self.save('last', epoch, iter_count=iter_count)
                 if self.local_rank > -1:
                     dist.barrier()
 

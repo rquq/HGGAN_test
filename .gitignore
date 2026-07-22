@@ -21,6 +21,7 @@ lightning_logs/
 checkpoint/
 checkpoints/
 .cache/
+scratch/
 
 # Kill Hugging Face cache completely
 pretrained/hf_cache/

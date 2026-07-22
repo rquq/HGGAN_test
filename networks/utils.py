@@ -102,10 +102,10 @@ def get_scheduler(optimizer, opt, last_epoch=-1):
     and linearly decay the rate to zero over the next <opt.n_epochs_decay> epochs.
     For other schedulers (step, plateau, and cosine), we use the default PyTorch schedulers.
     """
-    # If resuming and last_epoch > -1, PyTorch expects initial_lr to be present in all param groups
+    base_lr = getattr(opt, 'lr', None)
     for group in optimizer.param_groups:
-        if 'initial_lr' not in group:
-            group['initial_lr'] = group.get('lr', opt.lr)
+        if 'initial_lr' not in group or base_lr is not None:
+            group['initial_lr'] = base_lr if base_lr is not None else group.get('lr', 1e-4)
 
     if opt.lr_policy == 'linear':
         def lambda_rule(epoch):
@@ -123,9 +123,11 @@ def get_scheduler(optimizer, opt, last_epoch=-1):
     return scheduler
 
 
-def _len2mask(length, max_len, dtype=torch.float32):
+def _len2mask(length, max_len=None, dtype=torch.float32):
     assert len(length.shape) == 1, 'Length shape should be 1 dimensional.'
-    max_len = max_len or length.max().item()
+    if length.numel() == 0:
+        return torch.empty((0, 0), device=length.device, dtype=dtype or torch.float32)
+    max_len = max_len or int(length.max().item())
     mask = torch.arange(max_len, device=length.device,
                         dtype=length.dtype).expand(len(length), max_len) < length.unsqueeze(1)
     if dtype is not None:
@@ -221,14 +223,12 @@ def pil_text_img(im, text, pos, color=(255, 0, 0), textSize=25):
 
 
 def words_to_images(texts, img_h, img_w, n_channel=1):
-    n_channel = 3
-    word_imgs = np.zeros((len(texts), img_h, img_w, n_channel)).astype(np.uint8)
+    word_imgs = np.zeros((len(texts), img_h, img_w, 3), dtype=np.uint8)
     for i in range(len(texts)):
-        # cv2.putText(word_imgs[i], texts[i], (2, 29), cv2.FONT_HERSHEY_SIMPLEX, 0.5, 255, 2)
-        word_imgs[i] = pil_text_img(word_imgs[i], texts[i], (1, 1),  textSize=25)
-    word_imgs = word_imgs.sum(axis=-1, keepdims=True).astype(np.uint8)
-    word_imgs = torch.from_numpy(word_imgs).permute([0, 3, 1, 2]).float() / 128 - 1
-    return word_imgs
+        word_imgs[i] = pil_text_img(word_imgs[i], texts[i], (1, 1), textSize=25)
+    gray_imgs = np.mean(word_imgs, axis=-1, keepdims=True).astype(np.float32)
+    word_imgs_t = torch.from_numpy(gray_imgs).permute([0, 3, 1, 2]).float() / 128.0 - 1.0
+    return word_imgs_t
 
 
 def ctc_greedy_decoder(probs_seq, blank_index=0):
@@ -345,27 +345,44 @@ def extract_all_patches(org_imgs, org_img_lens, block_size=32, step=8, plot=Fals
     return patches
 
 
-def rand_clip_images(imgs, img_lens, min_clip_width=64):
+def rand_clip_images(imgs: torch.Tensor, img_lens: torch.Tensor, min_clip_width: int = 64):
     device = imgs.device
-    imgs, img_lens = imgs.cpu().numpy(), img_lens.cpu().numpy()
-    clip_imgs, clip_img_lens = [], []
-    for img, img_len in zip(imgs, img_lens):
+    min_clip_width = max(1, int(min_clip_width))
+    step = max(1, min_clip_width // 4)
+    clip_imgs = []
+    clip_img_lens = []
+
+    lens_list = img_lens.tolist() if isinstance(img_lens, torch.Tensor) else [int(l) for l in img_lens]
+
+    for i, img_len in enumerate(lens_list):
+        img_len = int(img_len)
         if img_len <= min_clip_width:
-            clip_imgs.append(img[:, :, :img_len])
+            clip_imgs.append(imgs[i, :, :, :img_len])
             clip_img_lens.append(img_len)
         else:
-            crop_width = np.random.randint(min_clip_width, img_len)
-            crop_width = crop_width - crop_width % (min_clip_width // 4)
-            rand_pos = np.random.randint(0, img_len - crop_width)
-            clip_img = img[:, :, rand_pos: rand_pos + crop_width]
+            crop_width = int(np.random.randint(min_clip_width, img_len))
+            crop_width = crop_width - crop_width % step
+            crop_width = min(img_len, max(min_clip_width, crop_width))
+
+            max_pos = img_len - crop_width
+            rand_pos = int(np.random.randint(0, max_pos)) if max_pos > 0 else 0
+            clip_img = imgs[i, :, :, rand_pos : rand_pos + crop_width]
             clip_imgs.append(clip_img)
-            clip_img_lens.append(clip_img.shape[-1])
+            clip_img_lens.append(clip_img.size(-1))
 
     max_img_len = max(clip_img_lens)
-    pad_imgs = -np.ones((imgs.shape[0], 1, imgs.shape[2], max_img_len))
-    for i, (clip_img, clip_img_len) in enumerate(zip(clip_imgs, clip_img_lens)):
-        pad_imgs[i, 0, :, :clip_img_len] = clip_img
-    return torch.from_numpy(pad_imgs).float().to(device), torch.tensor(clip_img_lens, dtype=torch.int32, device=device)
+    pad_imgs = torch.full(
+        (imgs.size(0), imgs.size(1), imgs.size(2), max_img_len),
+        -1.0,
+        dtype=imgs.dtype,
+        device=device
+    )
+    for i, (clip_img, clip_len) in enumerate(zip(clip_imgs, clip_img_lens)):
+        pad_imgs[i, :, :, :clip_len] = clip_img
+
+    out_lens = torch.tensor(clip_img_lens, dtype=torch.int32, device=device)
+    return pad_imgs, out_lens
+
 
 
 def _recalc_len(leng, scale):
@@ -381,15 +398,16 @@ def augment_images(imgs, img_lens, lbs, lb_lens):
         new_width = int(img_len * (1 + ratio))
         ref_img_lens.append(_recalc_len(new_width, scale=CharWidth))
 
-    target_idx = np.argsort(ref_img_lens)[::-1]
+    target_idx = np.argsort(ref_img_lens)[::-1].copy()
 
     ref_img_lens = np.array(ref_img_lens, dtype=int)
-    pad_imgs = -np.ones((bz, c, h, _recalc_len(ref_img_lens.max(), h)))
+    max_ref_len = _recalc_len(int(ref_img_lens.max()), scale=CharWidth)
+    pad_imgs = -np.ones((bz, c, h, max_ref_len), dtype=np.float32)
     for i, (img, img_len, ref_img_len) in enumerate(zip(imgs.detach(), img_lens, ref_img_lens)):
         mode = 'area' if img_len > ref_img_len else 'bilinear'
         align_corners = None if img_len > ref_img_len else False
         resized_img = F.interpolate(img[:, :, :img_len].unsqueeze(dim=0),
-                                    (h, ref_img_len),
+                                    (h, int(ref_img_len)),
                                     mode=mode,
                                     align_corners=align_corners)
         org_img = resized_img[0, 0].cpu().numpy()
@@ -399,8 +417,8 @@ def augment_images(imgs, img_lens, lbs, lb_lens):
     ref_img_lens = np.stack([ref_img_lens[idx] for idx in target_idx])
     resized_imgs = torch.from_numpy(pad_imgs).float().to(imgs.device).detach()
     resized_img_lens = torch.from_numpy(ref_img_lens).int().to(imgs.device).detach()
-    sort_lbs = torch.stack([lbs[idx] for idx in target_idx])
-    sort_lb_lens = torch.stack([lb_lens[idx] for idx in target_idx])
+    sort_lbs = lbs[target_idx]
+    sort_lb_lens = lb_lens[target_idx]
     return resized_imgs, resized_img_lens, sort_lbs, sort_lb_lens
 
 

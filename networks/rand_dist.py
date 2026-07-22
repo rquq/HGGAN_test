@@ -64,6 +64,26 @@ class Distribution(torch.Tensor):
             # return self.variable
         return self
 
+    def get_state(self):
+        state = {}
+        if hasattr(self, 'generator') and self.generator is not None:
+            state['generator'] = self.generator.get_state()
+        if hasattr(self, 'np_rng') and self.np_rng is not None:
+            state['np_rng'] = self.np_rng.get_state()
+        return state
+
+    def set_state(self, state):
+        if not state or not isinstance(state, dict):
+            return
+        if hasattr(self, 'generator') and self.generator is not None and 'generator' in state and state['generator'] is not None:
+            gen_state = state['generator']
+            if isinstance(gen_state, torch.Tensor):
+                gen_state = gen_state.cpu().to(torch.uint8)
+            self.generator.set_state(gen_state)
+        if hasattr(self, 'np_rng') and self.np_rng is not None and 'np_rng' in state and state['np_rng'] is not None:
+            self.np_rng.set_state(state['np_rng'])
+
+
     # # Silly hack: overwrite the to() method to wrap the new object
     # # in a distribution as well
     def to(self, *args, **kwargs):

@@ -27,23 +27,19 @@ class Hdf5Dataset(Dataset):
     def _load_h5py(self, file_path, normalize_wid=True):
         # print(self.file_path)
         self.file_path = file_path
-        if os.path.exists(self.file_path):
-            with h5py.File(self.file_path, 'r') as h5f:
-                self.imgs, self.lbs = h5f['imgs'][:], h5f['lbs'][:]
-                self.img_seek_idxs, self.lb_seek_idxs = h5f['img_seek_idxs'][:], h5f['lb_seek_idxs'][:]
-                self.img_lens, self.lb_lens = h5f['img_lens'][:], h5f['lb_lens'][:]
-                if 'wids' in h5f:
-                    self.wids = h5f['wids'][:]
-                else:
-                    self.wids = np.zeros((len(self.img_lens),), dtype=np.int32)
-                if normalize_wid and len(self.wids) > 0:
-                    self.wids -= self.wids.min()
-        else:
-            print(self.file_path, ' does not exist!')
-            self.imgs, self.lbs = None, None
-            self.img_seek_idxs, self.lb_seek_idxs =  None, None
-            self.img_lens, self.lb_lens =  None, None
-            self.wids = None
+        if not os.path.exists(self.file_path):
+            raise FileNotFoundError(f"HDF5 dataset file path does not exist: {self.file_path}")
+
+        with h5py.File(self.file_path, 'r') as h5f:
+            self.imgs, self.lbs = h5f['imgs'][:], h5f['lbs'][:]
+            self.img_seek_idxs, self.lb_seek_idxs = h5f['img_seek_idxs'][:], h5f['lb_seek_idxs'][:]
+            self.img_lens, self.lb_lens = h5f['img_lens'][:], h5f['lb_lens'][:]
+            if 'wids' in h5f:
+                self.wids = h5f['wids'][:]
+            else:
+                self.wids = np.zeros((len(self.img_lens),), dtype=np.int32)
+            if normalize_wid and len(self.wids) > 0:
+                self.wids -= self.wids.min()
 
     def __getitem__(self, idx):
         data = {}
@@ -117,35 +113,35 @@ class Hdf5Dataset(Dataset):
         bz = len(lb_lens)
         org_h = max(img.shape[-2] for img in org_imgs)
         pad_org_img_max_len = Hdf5Dataset._recalc_len(max(org_img_lens))
-        pad_org_imgs = -np.ones((bz, 1, org_h, pad_org_img_max_len))
+        pad_org_imgs = np.full((bz, 1, org_h, pad_org_img_max_len), -1.0, dtype=np.float32)
         for i, (org_img, org_img_len) in enumerate(zip(org_imgs, org_img_lens)):
             pad_org_imgs[i, 0, :org_img.shape[-2], :org_img_len] = org_img
-        bdata['org_imgs'] = torch.from_numpy(pad_org_imgs).float()
-        bdata['org_img_lens'] = torch.IntTensor(org_img_lens)
+        bdata['org_imgs'] = torch.from_numpy(pad_org_imgs)
+        bdata['org_img_lens'] = torch.tensor(org_img_lens, dtype=torch.int32)
 
         style_h = max(img.shape[-2] for img in style_imgs)
         pad_style_img_max_len = Hdf5Dataset._recalc_len(max(style_img_lens))
-        pad_style_imgs = -np.ones((bz, 1, style_h, pad_style_img_max_len))
+        pad_style_imgs = np.full((bz, 1, style_h, pad_style_img_max_len), -1.0, dtype=np.float32)
         for i, (style_img, style_img_len) in enumerate(zip(style_imgs, style_img_lens)):
             pad_style_imgs[i, 0, :style_img.shape[-2], :style_img_len] = style_img
-        bdata['style_imgs'] = torch.from_numpy(pad_style_imgs).float()
-        bdata['style_img_lens'] = torch.IntTensor(style_img_lens)
+        bdata['style_imgs'] = torch.from_numpy(pad_style_imgs)
+        bdata['style_img_lens'] = torch.tensor(style_img_lens, dtype=torch.int32)
 
-        pad_lbs = np.zeros((bz, max(lb_lens)))
+        pad_lbs = np.zeros((bz, max(lb_lens)), dtype=np.int64)
         for i, (lb, lb_len) in enumerate(zip(lbs, lb_lens)):
             pad_lbs[i, :lb_len] = lb
-        bdata['lbs'] = torch.from_numpy(pad_lbs).long()
+        bdata['lbs'] = torch.from_numpy(pad_lbs)
         bdata['lb_lens'] = torch.tensor(lb_lens, dtype=torch.int32)
         bdata['wids'] = torch.tensor(wids, dtype=torch.long)
 
         if len(aug_imgs) > 0:
             aug_h = max(img.shape[-2] for img in aug_imgs)
-            pad_aug_imgs = -np.ones((bz, 1, aug_h, max(aug_img_lens)))
+            pad_aug_imgs = np.full((bz, 1, aug_h, max(aug_img_lens)), -1.0, dtype=np.float32)
             for i, aug_img in enumerate(aug_imgs):
                 pad_aug_imgs[i, 0, :aug_img.shape[-2], :aug_img.shape[-1]] = aug_img
 
-            bdata['aug_imgs'] = torch.from_numpy(pad_aug_imgs).float()
-            bdata['aug_img_lens'] = torch.IntTensor(aug_img_lens)
+            bdata['aug_imgs'] = torch.from_numpy(pad_aug_imgs)
+            bdata['aug_img_lens'] = torch.tensor(aug_img_lens, dtype=torch.int32)
 
         return bdata
 
@@ -164,6 +160,9 @@ class Hdf5Dataset(Dataset):
     def sort_collect_fn_aug(batch):
         batch = Hdf5Dataset.collect_fn(batch)
 
+        if 'aug_img_lens' not in batch:
+            return batch
+
         style_img_lens = batch['aug_img_lens']
         _, idx = torch.sort(style_img_lens, descending=True)
 
@@ -181,12 +180,13 @@ class Hdf5Dataset(Dataset):
         for img_key, img_len_key in [('org_imgs', 'org_img_lens'),
                                      ('style_imgs', 'style_img_lens'),
                                      ('aug_imgs', 'aug_img_lens')]:
-            if img_len_key not in batch1: continue
+            if img_len_key not in batch1 or img_len_key not in batch2:
+                continue
 
             imgs1, imgs2 =  batch1[img_key], batch2[img_key]
             img_lens1, img_lens2 = batch1[img_len_key], batch2[img_len_key]
             max_img_len = max(imgs1.size(-1), imgs2.size(-1))
-            pad_imgs = -torch.ones((bz1 + bz2, imgs1.size(1), imgs1.size(2), max_img_len)).float().to(device)
+            pad_imgs = torch.full((bz1 + bz2, imgs1.size(1), imgs1.size(2), max_img_len), -1.0, dtype=torch.float32, device=device)
             pad_imgs[:bz1, :, :, :imgs1.size(-1)] = imgs1
             pad_imgs[bz1:, :, :, :imgs2.size(-1)] = imgs2
             merge_img_lens = torch.cat([img_lens1, img_lens2]).to(device)
@@ -195,7 +195,7 @@ class Hdf5Dataset(Dataset):
             mbdata[img_len_key] = merge_img_lens
 
         max_lb_len = max(lb_lens1.max(), lb_lens2.max()).item()
-        pad_lbs = torch.zeros((bz1 + bz2, max_lb_len)).long().to(device)
+        pad_lbs = torch.zeros((bz1 + bz2, max_lb_len), dtype=torch.long, device=device)
         pad_lbs[:bz1, :lbs1.size(-1)] = lbs1
         pad_lbs[bz1:, :lbs2.size(-1)] = lbs2
         mbdata['lbs'] = pad_lbs
@@ -260,11 +260,11 @@ class ImageDataset(Hdf5Dataset):
     def _load_h5py(self, file_path, normalize_wid=True):
         assert os.path.exists(file_path), file_path + " does not exist!"
 
-        all_imgs, all_texts = [], []
         fileExtensions = ["jpg", "jpeg", "png", "bmp", "gif"]
         listOfFiles = []
         for extension in fileExtensions:
-            listOfFiles.extend(glob.glob(os.path.join(file_path, "*."+ extension)))
+            listOfFiles.extend(glob.glob(os.path.join(file_path, "*." + extension)))
+            listOfFiles.extend(glob.glob(os.path.join(file_path, "*." + extension.upper())))
 
         for fn in listOfFiles:
             img = cv2.imread(fn, cv2.IMREAD_GRAYSCALE)
@@ -272,7 +272,7 @@ class ImageDataset(Hdf5Dataset):
                 continue
 
             # Read image labels
-            label_text = os.path.basename(fn).split('.')[0]
+            label_text = os.path.splitext(os.path.basename(fn))[0]
 
             # Normalize image-height
             h, w = img.shape[:2]
