@@ -292,7 +292,26 @@ class BaseModel(object):
                                 state[k_s] = v_s.to(self.device)
                     self.print(f'Loaded optimizer state for OPT.{key}')
                 except Exception as e:
-                    self.print(f'Load OPT.{key} failed: {e}')
+                    # Fallback for legacy checkpoints where optimizer param group length differs
+                    try:
+                        import copy
+                        adapted_opt_dict = copy.deepcopy(ckpt_data[opt_key])
+                        curr_params = self.optimizers[key].param_groups[0]['params']
+                        saved_param_ids = adapted_opt_dict['param_groups'][0]['params']
+                        adapted_opt_dict['param_groups'][0]['params'] = list(range(len(curr_params)))
+                        new_state = {}
+                        for idx, p_id in enumerate(saved_param_ids):
+                            if idx < len(curr_params) and p_id in adapted_opt_dict['state']:
+                                new_state[idx] = adapted_opt_dict['state'][p_id]
+                        adapted_opt_dict['state'] = new_state
+                        self.optimizers[key].load_state_dict(adapted_opt_dict)
+                        for state in self.optimizers[key].state.values():
+                            for k_s, v_s in state.items():
+                                if isinstance(v_s, torch.Tensor):
+                                    state[k_s] = v_s.to(self.device)
+                        self.print(f'Loaded adapted optimizer state for OPT.{key} (legacy checkpoint compatibility)')
+                    except Exception as inner_e:
+                        self.print(f'Load OPT.{key} failed: {e}')
 
         if hasattr(self, 'lr_schedulers') and self.lr_schedulers:
             for key in self.lr_schedulers.keys():
