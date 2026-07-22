@@ -330,6 +330,12 @@ class BaseModel(object):
                 model.train()
             else:
                 raise NotImplementedError()
+        if hasattr(self, 'models_ema') and self.models_ema:
+            for model_ema in self.models_ema.values():
+                if mode == 'eval':
+                    model_ema.eval()
+                elif mode == 'train':
+                    model_ema.train()
 
     def validate(self, *args, **kwargs):
         raise NotImplementedError()
@@ -511,8 +517,6 @@ class AdversarialModel(BaseModel):
                     yield fake_batch
 
     def validate(self, style_guided=True, test_stage=False, *args, **kwargs):
-        self.set_mode('eval')
-        
         use_ema = getattr(self, 'use_ema', False)
         if use_ema:
             active_G = self.models.G
@@ -521,6 +525,8 @@ class AdversarialModel(BaseModel):
             self.models.G = self.models_ema.G
             self.models.E = self.models_ema.E
             self.models.B = self.models_ema.B
+
+        self.set_mode('eval')
 
         try:
             # OPTIMIZATION: Cache validation DataLoader to avoid worker startup/shutdown overhead

@@ -197,10 +197,18 @@ class StyleEncoder(nn.Module):
         # ADD: Heavy CNN to capture global word geometry (slant, spacing, ratio)
         self.sequence_model = HeavyCNNAttention(in_dim)
         
-        # Projection layers for multi-scale CNN backbone features — built lazily on
-        # first forward pass so channel dims adapt to any backbone configuration.
-        self.proj_layers = None
+        # Projection layers for multi-scale CNN backbone features — pre-built with default
+        # channels [64, 128, 256] matching StyleBackbone, dynamically adaptable if needed.
         self._in_dim = in_dim
+        self.proj_layers = nn.ModuleList([
+            nn.Conv2d(64, in_dim, kernel_size=1),
+            nn.Conv2d(128, in_dim, kernel_size=1),
+            nn.Conv2d(256, in_dim, kernel_size=1),
+        ])
+        for layer in self.proj_layers:
+            nn.init.normal_(layer.weight, 0.0, 0.02)
+            if layer.bias is not None:
+                nn.init.zeros_(layer.bias)
         
         # Learned style query tokens (style_dim tokens, each of size in_dim)
         self.num_style_tokens = style_dim  # one query per style-dim slot
@@ -214,8 +222,37 @@ class StyleEncoder(nn.Module):
         nn.init.constant_(self.logvar.weight, 0.)
         nn.init.constant_(self.logvar.bias, -10.)
 
+    def _load_from_state_dict(self, state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs):
+        proj_keys = [k for k in state_dict.keys() if k.startswith(prefix + 'proj_layers.')]
+        if len(proj_keys) > 0:
+            prefix_len = len(prefix)
+            layer_indices = sorted(list(set(
+                int(k[prefix_len:].split('.')[1])
+                for k in proj_keys
+                if k[prefix_len:].startswith('proj_layers.') and k[prefix_len:].split('.')[1].isdigit()
+            )))
+            if self.proj_layers is None or len(self.proj_layers) != len(layer_indices):
+                layers = []
+                for idx in layer_indices:
+                    w_key = f"{prefix}proj_layers.{idx}.weight"
+                    if w_key in state_dict:
+                        in_ch = state_dict[w_key].shape[1]
+                        layers.append(nn.Conv2d(in_ch, self._in_dim, kernel_size=1))
+                if len(layers) > 0:
+                    self.proj_layers = nn.ModuleList(layers)
+        super()._load_from_state_dict(state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs)
+
     def _build_proj_layers(self, all_feats):
         """Build projection Conv2d layers matching the actual backbone feature channels."""
+        if self.proj_layers is not None and len(self.proj_layers) == len(all_feats):
+            channels_match = all(
+                layer.weight.shape[1] == f.size(1) 
+                for layer, f in zip(self.proj_layers, all_feats)
+            )
+            if channels_match:
+                self.proj_layers = self.proj_layers.to(all_feats[0].device)
+                return
+
         layers = []
         for f in all_feats:
             layers.append(nn.Conv2d(f.size(1), self._in_dim, kernel_size=1))
@@ -230,9 +267,11 @@ class StyleEncoder(nn.Module):
         # Always request intermediate features to capture local details
         feat, all_feats = cnn_backbone(img, ret_feats=True)
         
-        # Lazy-build projection layers on first call
-        if self.proj_layers is None:
+        # Build/adapt projection layers if needed
+        if self.proj_layers is None or len(self.proj_layers) != len(all_feats):
             self._build_proj_layers(all_feats)
+        else:
+            self.proj_layers = self.proj_layers.to(all_feats[0].device)
         
         # 1. Global context from main feature using Heavy CNN
         feat_m = self.sequence_model(feat) # feat is (B, C, W), feat_m is (B, C, W)
