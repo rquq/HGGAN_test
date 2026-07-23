@@ -410,8 +410,7 @@ class AdversarialModel(BaseModel):
             every_n = getattr(self.opt.valid, 'validate_cmmd_every_n_epochs', 3)
             should_run_cmmd = test_stage or (current_epoch is None)
             if not should_run_cmmd:
-                epoch_start = getattr(self, 'epoch_start', 1)
-                should_run_cmmd = (current_epoch - epoch_start) % every_n == 0
+                should_run_cmmd = (current_epoch % every_n == 0)
                 
             if should_run_cmmd:
                 from metric.val_metrics import calculate_cmmd_score, compute_real_embeddings
