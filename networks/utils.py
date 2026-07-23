@@ -223,8 +223,8 @@ def words_to_images(texts, img_h, img_w, n_channel=1):
     word_imgs = np.zeros((len(texts), img_h, img_w, 3), dtype=np.uint8)
     for i in range(len(texts)):
         word_imgs[i] = pil_text_img(word_imgs[i], texts[i], (1, 1), textSize=25)
-    gray_imgs = np.mean(word_imgs, axis=-1, keepdims=True).astype(np.float32)
-    word_imgs_t = torch.from_numpy(gray_imgs).permute([0, 3, 1, 2]).float() / 128.0 - 1.0
+    word_imgs_sum = word_imgs.sum(axis=-1, keepdims=True).astype(np.uint8)
+    word_imgs_t = torch.from_numpy(word_imgs_sum).permute([0, 3, 1, 2]).float() / 128.0 - 1.0
     return word_imgs_t
 
 

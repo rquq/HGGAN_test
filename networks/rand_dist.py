@@ -39,7 +39,13 @@ class Distribution(torch.Tensor):
 
     def sample_(self):
         if self.dist_type == 'normal':
-            self.normal_(self.mean, self.var, generator=self.generator)
+            if self.dim() == 3:
+                B, T, D = self.size()
+                temp = torch.empty((B, 1, D), device=self.device, dtype=self.dtype)
+                temp.normal_(self.mean, self.var, generator=self.generator)
+                self.data.copy_(temp.repeat(1, T, 1))
+            else:
+                self.normal_(self.mean, self.var, generator=self.generator)
         elif self.dist_type == 'uniform':
             self.uniform_(self.low, self.high, generator=self.generator)
         elif self.dist_type == 'categorical':
