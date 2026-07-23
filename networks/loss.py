@@ -3,9 +3,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-def _len2mask(length, max_len, dtype=torch.float32):
+def _len2mask(length, max_len=None, dtype=torch.float32):
     assert len(length.shape) == 1, 'Length shape should be 1 dimensional.'
-    max_len = max_len or length.max().item()
+    if length.numel() == 0:
+        return torch.empty((0, 0), device=length.device, dtype=dtype or torch.float32)
+    max_len = max_len or int(length.max().item())
     mask = torch.arange(max_len, device=length.device,
                         dtype=length.dtype).expand(len(length), max_len) < length.unsqueeze(1)
     if dtype is not None:
@@ -104,9 +106,6 @@ class CXLoss(nn.Module):
         :return:
         '''
 
-        # print("featureT target size:", featureT.shape)
-        # print("featureI inference size:", featureI.shape)
-
         featureI, featureT = self.center_by_T(featureI, featureT)
 
         featureI = self.l2_normalize_channelwise(featureI)
@@ -162,27 +161,27 @@ class GramMatrix(nn.Module):
                 # mask for varying lengths
                 mask = _len2mask(feat_len, d).view(a, 1, 1, d)
                 input = input * mask
+                denom = (c * torch.clamp(feat_len, min=1)).view(a, 1, 1) * b
+            else:
+                denom = float(b * c * d)
 
-            features = input.view(a * b, c * d)  # resise F_XL into \hat F_XL
-            G = torch.mm(features, features.t())  # compute the gram product
+            features = input.view(a, b, c * d)
+            G = torch.bmm(features, features.transpose(1, 2))
 
-            return G.div(a * b * c * d)
+            return G / denom
 
 
 def contrastive_style_loss(fake_styles, real_styles, temperature=0.07):
     """
     Enforces stroke and texture consistency at the latent feature level.
-    fake_styles: (B, 32, style_dim) - Extracted from generated images
-    real_styles: (B, 32, style_dim) - Extracted from input real images
+    fake_styles: (B, 32, style_dim) or (B, style_dim)
+    real_styles: (B, 32, style_dim) or (B, style_dim)
     """
-    # Mean-pool to get style vectors
-    f_s = F.normalize(fake_styles.mean(dim=1), dim=-1) # (B, D)
-    r_s = F.normalize(real_styles.mean(dim=1), dim=-1) # (B, D)
+    _pool = lambda s: s if s.dim() == 2 else s.mean(dim=1)
+    f_s, r_s = F.normalize(_pool(fake_styles), dim=-1), F.normalize(_pool(real_styles), dim=-1)
     
-    # Compute similarity matrix
-    logits = torch.matmul(f_s, r_s.t()) / temperature # (B, B)
-    labels = torch.arange(f_s.size(0)).to(fake_styles.device)
-    
-    # InfoNCE Loss
-    loss = F.cross_entropy(logits, labels)
-    return loss
+    logits = torch.matmul(f_s, r_s.t()) / temperature
+    labels = torch.arange(f_s.size(0), device=fake_styles.device)
+    return F.cross_entropy(logits, labels)
+
+

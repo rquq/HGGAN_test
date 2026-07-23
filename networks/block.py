@@ -101,7 +101,7 @@ class LinearBlock(nn.Module):
         elif norm == 'none':
             self.norm = None
         else:
-            assert 0, "Unsupported normalization: {}".format(norm)
+            raise ValueError("Unsupported normalization: {}".format(norm))
 
         # initialize activation
         if activation == 'relu':
@@ -113,7 +113,7 @@ class LinearBlock(nn.Module):
         elif activation == 'none':
             self.activation = None
         else:
-            assert 0, "Unsupported activation: {}".format(activation)
+            raise ValueError("Unsupported activation: {}".format(activation))
 
     def forward(self, x):
         out = self.fc(x)
@@ -142,7 +142,7 @@ class Conv2dBlock(nn.Module):
         elif pad_type == 'zero':
             self.pad = nn.ZeroPad2d(padding)
         else:
-            assert 0, "Unsupported padding type: {}".format(pad_type)
+            raise ValueError("Unsupported padding type: {}".format(pad_type))
 
         # initialize normalization
         norm_dim = out_dim
@@ -161,7 +161,7 @@ class Conv2dBlock(nn.Module):
         elif norm == 'none':
             self.norm = None
         else:
-            assert 0, "Unsupported normalization: {}".format(norm)
+            raise ValueError("Unsupported normalization: {}".format(norm))
 
         # initialize activation
         if activation == 'relu':
@@ -173,7 +173,7 @@ class Conv2dBlock(nn.Module):
         elif activation == 'none':
             self.activation = None
         else:
-            assert 0, "Unsupported activation: {}".format(activation)
+            raise ValueError("Unsupported activation: {}".format(activation))
 
         if sn:
             self.conv = nn.utils.spectral_norm(nn.Conv2d(in_dim, out_dim, ks, st, bias=self.use_bias, groups=groups))
@@ -364,15 +364,17 @@ class DeepBLSTM(nn.Module):
 
         self.lstm.flatten_parameters()
 
-    def forward(self, x, x_len):
+    def forward(self, x, x_len=None):
         """Propogate input forward through the network."""
         self.lstm.flatten_parameters()
-        if isinstance(x_len, torch.Tensor):
-            x_len = x_len.cpu()
+        if x_len is None:
+            x_len = torch.full((x.size(0),), x.size(1), dtype=torch.long, device='cpu')
+        elif isinstance(x_len, torch.Tensor):
+            x_len = torch.clamp(x_len.cpu(), min=1)
         x_pack = pack_padded_sequence(x, x_len, batch_first=self.batch_first, enforce_sorted=False)
         init_hidden = self.get_init_state(x.size(0), x.device)
         out_pack, _ = self.lstm(x_pack, init_hidden)
-        out, out_len = pad_packed_sequence(out_pack, batch_first=self.batch_first)
+        out, out_len = pad_packed_sequence(out_pack, batch_first=self.batch_first, total_length=x.size(1))
         return out
 
     def get_init_state(self, batch_size, device):
@@ -629,7 +631,6 @@ class InstanceLayerNorm2d(nn.Module):
             rho_1 = rho_1.expand(input.shape[0], -1, -1, -1)
             out = rho_0 * out_in + rho_1 * out_ln
 
-        # print('ILN-weight:{} out:{}'.format(self.gamma.size(), out.size()))
         out = out * self.gamma.expand(input.shape[0], -1, -1, -1) + self.beta.expand(input.shape[0], -1, -1, -1)
         return out
 
@@ -705,7 +706,6 @@ class AdaptiveInstanceLayerNorm2d(nn.Module):
             rho_0 = rho_0.expand(input.shape[0], -1, -1, -1)
             rho_1 = rho_1.expand(input.shape[0], -1, -1, -1)
             out = rho_0 * out_in + rho_1 * out_ln
-        # print('AdaILN-weight:{} out:{}'.format(self.weight.size(), out.size()))
         out = out * self.weight.unsqueeze(2).unsqueeze(3) + self.bias.unsqueeze(2).unsqueeze(3)
         return out
 

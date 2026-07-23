@@ -1,3 +1,4 @@
+import os
 import argparse
 import sys
 from lib.utils import yaml2config
@@ -39,7 +40,8 @@ if __name__ == '__main__':
     )
 
     args = parser.parse_args()
-    cfg = yaml2config(args.config)
+    config_path = args.config if getattr(args, 'config', None) is not None else "configs/gan_iam.yml"
+    cfg = yaml2config(config_path)
     infer_cfg = getattr(cfg, 'inference', cfg)
 
     # Resolution order: CLI flag > config YAML (inference block or root) > fallback default
@@ -51,7 +53,17 @@ if __name__ == '__main__':
     cfg.ckpt = ckpt
     cfg.mode = mode
 
+    print("=" * 60)
+    print("EVALUATION DEMO CONFIGURATION")
+    print(f" - Config File : {config_path}")
+    print(f" - Checkpoint  : {ckpt}")
+    print(f" - Mode        : {mode}")
+    print(f" - Device      : {device}")
+    print("=" * 60)
+
     model = get_model(cfg.model)(cfg)
+    if not os.path.exists(ckpt):
+        print(f"[Warning] Specified checkpoint path does not exist: {ckpt}")
     model.load(ckpt, device)
     model.set_mode('eval')
 

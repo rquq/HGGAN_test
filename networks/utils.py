@@ -40,7 +40,6 @@ def init_weights(net, init_type='normal', init_gain=0.02):
                 raise NotImplementedError('initialization method [%s] is not implemented' % init_type)
 
     if init_type in ['N02', 'glorot', 'xavier', 'kaiming', 'ortho']:
-        # print('initialize network {} with {}'.format(net.__class__.__name__, init_type))
         net.apply(init_func)  # apply the initialization function <init_func>
     return net
 
@@ -69,7 +68,7 @@ def get_norm_layer(norm='in', **kwargs):
     elif norm == 'none':
         def norm_layer(x): return Identity()
     else:
-        assert 0, "Unsupported normalization: {}".format(norm)
+        raise ValueError("Unsupported normalization: {}".format(norm))
     return norm_layer
 
 
@@ -187,13 +186,11 @@ def set_requires_grad(nets, requires_grad=False):
                 param.requires_grad = requires_grad
 
 
-def idx_to_words(idx, lexicon, max_word_len=0, capitize_ratio=0.5, blank_ratio=0., sort=True, capitalize_ratio=None):
-    if capitalize_ratio is not None:
-        capitize_ratio = capitalize_ratio
+def idx_to_words(idx, lexicon, max_word_len=0, capitalize_ratio=0.5, blank_ratio=0., sort=True):
     words = []
     for i in idx:
         word = lexicon[i]
-        if np.random.random() < capitize_ratio:
+        if np.random.random() < capitalize_ratio:
             word = word_capitalize(word)
 
         if len(word) > max_word_len >= 1:
@@ -250,7 +247,6 @@ def ctc_greedy_decoder(probs_seq, blank_index=0):
     # remove consecutive duplicate indexes
     index_list = [index_group[0] for index_group in groupby(max_index_list)]
     # remove blank indexes
-    # blank_index = len(vocabulary)
     index_list = [index for index in index_list if index != blank_index]
     # convert index list to string
     return index_list
@@ -345,7 +341,7 @@ def extract_all_patches(org_imgs, org_img_lens, block_size=32, step=8, plot=Fals
     return patches
 
 
-def rand_clip_images(imgs: torch.Tensor, img_lens: torch.Tensor, min_clip_width: int = 64):
+def rand_clip_images(imgs, img_lens, min_clip_width=64):
     device = imgs.device
     min_clip_width = max(1, int(min_clip_width))
     step = max(1, min_clip_width // 4)
@@ -424,15 +420,18 @@ def augment_images(imgs, img_lens, lbs, lb_lens):
 
 def rescale_images(imgs, img_lens, ref_img_lens):
     bz, c, h, w = imgs.size()
-    pad_imgs = -np.ones((bz, c, h, _recalc_len(ref_img_lens.max(), h)))
+    max_ref = int(torch.as_tensor(ref_img_lens).max().item())
+    pad_imgs = -np.ones((bz, c, h, _recalc_len(max_ref, h)))
     for i, (img, img_len, ref_img_len) in enumerate(zip(imgs, img_lens, ref_img_lens)):
-        mode = 'area' if img_len > ref_img_len else 'bilinear'
-        align_corners = None if img_len > ref_img_len else False
-        resized_img = F.interpolate(img[:, :, :img_len].unsqueeze(dim=0),
-                                    (h, ref_img_len),
+        i_len = int(img_len)
+        r_len = int(ref_img_len)
+        mode = 'area' if i_len > r_len else 'bilinear'
+        align_corners = None if i_len > r_len else False
+        resized_img = F.interpolate(img[:, :, :i_len].unsqueeze(dim=0),
+                                    (h, r_len),
                                     mode=mode,
                                     align_corners=align_corners)
-        pad_imgs[i, :, :, :ref_img_len] = resized_img[0].cpu().numpy()
+        pad_imgs[i, :, :, :r_len] = resized_img[0].cpu().numpy()
 
     resized_imgs = torch.from_numpy(pad_imgs).float().to(imgs.device)
     return resized_imgs, ref_img_lens
@@ -444,6 +443,11 @@ def rescale_images2(imgs, img_lens, lb_lens, ref_img_lens, ref_lb_lens):
     return resized_imgs, target_img_lens
 
 
-def pad_image_lengths(img_lens: torch.Tensor, scale=ImgHeight):
+def pad_image_lengths(img_lens, scale=ImgHeight):
     tmp = img_lens % scale
     return torch.where(tmp != 0, img_lens + scale - tmp, img_lens).detach()
+
+
+def ensure_dim3(tensor):
+    """Ensures input tensor is 3D (B, S, D) by unsqueezing 2D (B, D) tensors."""
+    return tensor.unsqueeze(1) if tensor.dim() == 2 else tensor

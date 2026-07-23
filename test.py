@@ -1,7 +1,9 @@
+import os
 import argparse
+import random
+from munch import Munch
 from lib.utils import yaml2config
 from networks import get_model
-import random
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Evaluation test script")
@@ -64,12 +66,15 @@ if __name__ == '__main__':
     )
 
     args = parser.parse_args()
-    cfg = yaml2config(args.config)
+    config_path = args.config if getattr(args, 'config', None) is not None else "configs/gan_iam.yml"
+    cfg = yaml2config(config_path)
     infer_cfg = getattr(cfg, 'inference', cfg)
 
     # Resolution order: CLI flag > config YAML (inference block or root) > fallback default
     device = args.device if args.device is not None else getattr(infer_cfg, 'device', getattr(cfg, 'device', 'cuda:0'))
     ckpt = args.ckpt if args.ckpt is not None else getattr(infer_cfg, 'ckpt', getattr(cfg, 'ckpt', './pretrained/HiGAN+.pth'))
+    cfg.valid = getattr(cfg, 'valid', None) or Munch()
+
     split = args.split if args.split is not None else getattr(cfg.valid, 'dset_split', getattr(infer_cfg, 'split', getattr(cfg, 'split', 'test')))
     guided = args.guided if args.guided is not None else getattr(infer_cfg, 'guided', getattr(cfg, 'guided', True))
 
@@ -85,7 +90,25 @@ if __name__ == '__main__':
     cfg.valid.dset_split = split
     cfg.guided = guided
 
+    print("=" * 60)
+    print("EVALUATION TEST CONFIGURATION")
+    print(f" - Config File : {config_path}")
+    print(f" - Checkpoint  : {ckpt}")
+    print(f" - Split       : {split}")
+    print(f" - Device      : {device}")
+    print(f" - Guided Mode : {guided}")
+    print(f" - Seed        : {seed}")
+    print("=" * 60)
+
     model = get_model(cfg.model)(cfg)
+    if not os.path.exists(ckpt):
+        print(f"[Warning] Specified checkpoint path does not exist: {ckpt}")
     model.load(ckpt, device)
-    print('guided: ', guided)
-    print(model.validate(guided, test_stage=True))
+    model.set_mode('eval')
+    val_results = model.validate(guided, test_stage=True)
+    print("Evaluation Results:")
+    for k, v in val_results.items():
+        if isinstance(v, float):
+            print(f"  {k:10s}: {v:.4f}")
+        else:
+            print(f"  {k:10s}: {v}")

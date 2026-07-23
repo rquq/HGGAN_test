@@ -182,10 +182,7 @@ class Generator(nn.Module):
                                                                        scale_factor=self.arch['upsample'][index])
                                                      if index < len(self.arch['upsample']) else None))]]
 
-            # If attention on this block, attach it to the end
-            # print('index ', index, self.arch['resolution'][index])
             if self.arch['attention'][self.arch['resolution'][index]]:
-                print('Adding attention layer in G at resolution %d' % self.arch['resolution'][index])
                 self.blocks[-1] += [layers.Attention(self.arch['out_channels'][index], self.which_conv)]
 
         # Turn self.blocks into a ModuleList so that it's all properly registered.
@@ -216,7 +213,6 @@ class Generator(nn.Module):
         # The input goes into classes go into the first layer only.
         char_ids = y
         y = self.text_embedding(y).float().to(y.device)
-        # z = torch.cat((z.unsqueeze(1).repeat(1, y.shape[1], 1), y), 2)
         # Use Mamba to mix style and content
         y_mixed = self.style_content_mix(y, z, char_ids=char_ids, y_lens=y_lens)
         h = self.filter_linear(y_mixed)
@@ -261,8 +257,11 @@ class Generator(nn.Module):
 
         attn_layer = self.blocks[attn_index][-1]
         out = []
-        for l in [attn_layer.attn1, attn_layer.attn2]:
-            out.append({'out': l._vis_out, 'gamma': l.gamma.item()})
+        if hasattr(attn_layer, 'attn1') and hasattr(attn_layer, 'attn2'):
+            for l in [attn_layer.attn1, attn_layer.attn2]:
+                out.append({'out': getattr(l, '_vis_out', None), 'gamma': l.gamma.item()})
+        elif hasattr(attn_layer, 'gamma'):
+            out.append({'gamma': attn_layer.gamma.item()})
         return out
 
 
@@ -368,7 +367,6 @@ class Discriminator(nn.Module):
                                            downsample=(nn.AvgPool2d(2) if self.arch['downsample'][index] else None))]]
 
             if self.arch['attention'][self.arch['resolution'][index]]:
-                print('Adding attention layer in D at resolution %d' % self.arch['resolution'][index])
                 self.blocks[-1] += [layers.Attention(self.arch['out_channels'][index], self.which_conv)]
         # Turn self.blocks into a ModuleList so that it's all properly registered.
         self.blocks = nn.ModuleList([nn.ModuleList(block) for block in self.blocks])
@@ -452,12 +450,6 @@ class NLayerDiscriminator(nn.Module):
             ]
 
         nf_mult_prev = nf_mult
-        # nf_mult = min(2 ** n_layers, 8)
-        # sequence += [
-        #     self.which_conv(ndf * nf_mult_prev, ndf * nf_mult, kernel_size=kw, stride=1, padding=padw, bias=True),
-        #     # norm_layer(ndf * nf_mult),
-        #     nn.ReLU(inplace=False)
-        # ]
 
         sequence += [self.which_conv(nf_mult * ndf, 1, kernel_size=kw, stride=1, padding=padw)]  # output 1 channel prediction map
         self.model = nn.Sequential(*sequence)

@@ -67,7 +67,7 @@ class strLabelConverter(object):
         for item in text:
             length.append(len(item))
             for char in item:
-                index = self.dict.get(char, 0)
+                index = self.dict.get(char.lower() if self._ignore_case else char, 0)
                 result.append(index)
             results.append(result)
             result = []

@@ -133,7 +133,6 @@ class StyleBackbone(nn.Module):
 
 
 def get_1d_sinusoidal_embeddings(length, dim, device):
-    import numpy as np
     pe = torch.zeros(length, dim, device=device)
     div_term = torch.exp(torch.arange(0, dim, 2, device=device).float() * -(np.log(10000.0) / dim))
     pos = torch.arange(0, length, device=device).float().unsqueeze(1)
@@ -146,7 +145,6 @@ def get_1d_sinusoidal_embeddings(length, dim, device):
 
 
 def get_2d_sinusoidal_embeddings(height, width, dim, device):
-    import numpy as np
     pe = torch.zeros(height, width, dim, device=device)
     d_h = dim // 2
     d_w = dim - d_h
@@ -434,11 +432,13 @@ class Recognizer(nn.Module):
         cnn_feat2 = self.cnn_ctc(cnn_feat)
         ctc_feat = cnn_feat2.squeeze(-2).transpose(1, 2)
         if self.use_rnn:
+            if x_len is None:
+                x_len = torch.full((x.size(0),), x.size(-1), dtype=torch.long, device=x.device)
             if self.bidirectional:
-                ctc_len = torch.div(x_len, self.len_scale, rounding_mode='trunc')
+                ctc_len = torch.clamp(torch.div(x_len, self.len_scale, rounding_mode='trunc'), min=1)
             else:
                 ctc_len = None
-            ctc_feat = self.rnn_ctc(ctc_feat, ctc_len.cpu())
+            ctc_feat = self.rnn_ctc(ctc_feat, ctc_len.cpu() if isinstance(ctc_len, torch.Tensor) else ctc_len)
         logits = self.ctc_cls(ctc_feat)
         if self.training:
             logits = logits.transpose(0, 1).log_softmax(2)

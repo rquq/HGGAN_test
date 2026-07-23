@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import math
+from .utils import ensure_dim3
 
 # --- Numerically Stable Associative Scan for T4 Optimization ---
 def associative_scan_mamba(dA, dB):
@@ -42,7 +43,7 @@ def associative_scan_mamba(dA, dB):
     return res_b
 
 class RMSNorm(nn.Module):
-    def __init__(self, d_model: int, eps: float = 1e-5):
+    def __init__(self, d_model, eps=1e-5):
         super().__init__()
         self.eps = eps
         self.weight = nn.Parameter(torch.ones(d_model))
@@ -237,6 +238,7 @@ class StyleCrossMambaBlock(nn.Module):
         return y
 
     def forward(self, x, style_seq, mask=None):
+        style_seq = ensure_dim3(style_seq)
         L = x.shape[1]
         xz = self.in_proj(x)
         x_in, z = xz.chunk(2, dim=-1)

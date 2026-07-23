@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from .mamba import MambaBlock, RMSNorm, StyleCrossMambaBlock
+from .utils import ensure_dim3
 
 class StyleContentCrossAttention(nn.Module):
     """
@@ -45,6 +46,7 @@ class StyleContentCrossAttention(nn.Module):
             char_ids: (B, L) raw character labels to guide vertical styling
             mask: (B, L) sequence mask for content tokens
         """
+        style_seq = ensure_dim3(style_seq)
         B, L, D = content_seq.shape
         S = style_seq.shape[1]
         
@@ -125,6 +127,7 @@ class AllographicModulation(nn.Module):
             char_ids: (B, L) raw character labels to guide vertical styling
             mask: (B, L) sequence mask for content tokens
         """
+        style_seq = ensure_dim3(style_seq)
         B, L, D = content_seq.shape
         S = style_seq.shape[1]
         
@@ -225,6 +228,7 @@ class StyleContentMamba(nn.Module):
             char_ids: (B, L) raw character labels
             y_lens: (B,) sequence lengths of content characters
         """
+        style_seq = ensure_dim3(style_seq)
         B, L, D = content_seq.shape
         
         # Construct sequence mask

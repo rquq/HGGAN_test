@@ -9,16 +9,16 @@ _Resampling = getattr(Image, 'Resampling', Image)
 
 class RandomClip:
     """Randomly crops an image along its width if width exceeds min_clip_width."""
-    def __init__(self, min_clip_width: int = ImgHeight * 2, align_scale: int = CharWidth):
+    def __init__(self, min_clip_width=ImgHeight * 2, align_scale=CharWidth):
         self.min_clip_width = max(1, int(min_clip_width))
         self.align_scale = max(1, int(align_scale)) if align_scale is not None else None
 
-    def _recalc_len(self, leng: int, scale: int = CharWidth) -> int:
+    def _recalc_len(self, leng, scale=CharWidth):
         scale = max(1, int(scale))
         tmp = leng % scale
         return leng - tmp if tmp != 0 else leng
 
-    def __call__(self, pic: Image.Image) -> Image.Image:
+    def __call__(self, pic):
         if not isinstance(pic, Image.Image):
             return pic
         width, height = pic.size[0], pic.size[1]
@@ -27,26 +27,27 @@ class RandomClip:
             if self.align_scale is not None:
                 crop_width = self._recalc_len(crop_width, scale=self.align_scale)
                 crop_width = max(self.min_clip_width, crop_width)
+            crop_width = min(width, crop_width)
             max_pos = width - crop_width
             rand_pos = int(np.random.randint(0, max_pos)) if max_pos > 0 else 0
             pic = pic.crop((rand_pos, 0, rand_pos + crop_width, height))
         return pic
 
-    def __repr__(self) -> str:
+    def __repr__(self):
         return f"{self.__class__.__name__}(min_clip_width={self.min_clip_width}, align_scale={self.align_scale})"
 
 
 class RandomScale:
     """Randomly rescales image width within a specified variance."""
-    def __init__(self, var: float = 0.4):
+    def __init__(self, var=0.4):
         self.var = float(var)
 
-    def _recalc_len(self, leng: int, scale: int = CharWidth) -> int:
+    def _recalc_len(self, leng, scale=CharWidth):
         scale = max(1, int(scale))
         tmp = leng % scale
         return leng + scale - tmp if tmp != 0 else leng
 
-    def __call__(self, pic: Image.Image) -> Image.Image:
+    def __call__(self, pic):
         if not isinstance(pic, Image.Image):
             return pic
         width, height = pic.size[0], pic.size[1]
@@ -59,5 +60,5 @@ class RandomScale:
             pic = pic.resize((new_width, height), _Resampling.LANCZOS)
         return pic
 
-    def __repr__(self) -> str:
+    def __repr__(self):
         return f"{self.__class__.__name__}(var={self.var})"

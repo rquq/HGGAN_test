@@ -354,7 +354,7 @@ class BaseModel(object):
                                     state[k_s] = v_s.to(self.device)
                         self.print(f'Loaded adapted optimizer state for OPT.{key} (legacy checkpoint compatibility)')
                     except Exception as inner_e:
-                        self.print(f'Load OPT.{key} failed: {e}')
+                        self.print(f'Load OPT.{key} failed: {inner_e}')
 
         if hasattr(self, 'lr_schedulers') and self.lr_schedulers:
             for key in self.lr_schedulers.keys():
@@ -861,12 +861,12 @@ class AdversarialModel(BaseModel):
                     break
 
                 fake_lbs = self.label_converter.encode(text)
-                fake_lbs = torch.LongTensor(fake_lbs)
+                fake_lbs = torch.LongTensor(fake_lbs).unsqueeze(0)
                 fake_lb_lens = torch.IntTensor([len(text)])
 
-                # style0 = torch.zeros((1, self.opt.GenModel.style_dim)) + 1e-1
-                # style1 = torch.ones_like(style0) - 1e-1
-                style0 = torch.randn((1, self.opt.EncModel.style_dim, self.opt.EncModel.style_dim))
+                num_tokens = getattr(self.opt.EncModel, 'num_style_tokens', 32)
+                style_dim = getattr(self.opt.EncModel, 'style_dim', 32)
+                style0 = torch.randn((1, num_tokens, style_dim))
                 style1 = torch.randn(style0.size())
 
                 styles = [torch.lerp(style0, style1, i / (interp_num - 1)) for i in range(interp_num)]
@@ -1669,7 +1669,6 @@ class RecognizeModel(BaseModel):
         device = self.device
         self.collect_fn = get_collect_fn(sort_input=opt.training.sort_input, sort_style=False)
         recognizer = Recognizer(**opt.OcrModel).to(device)
-        # print(recognizer.cnn_backbone)
         if os.path.exists(opt.training.pretrained_backbone):
             ckpt = torch.load(opt.training.pretrained_backbone, device, weights_only=False)['Recognizer']
             new_ckpt = {}
@@ -1821,7 +1820,7 @@ class RecognizeModel(BaseModel):
 
     def validate(self, *args, **kwargs):
         self.set_mode('eval')
-        ctc_len_scale = self.models.R.len_scale
+        ctc_len_scale = self.unwrap_model(self.models.R).len_scale
         char_trans = 0
         total_chars = 0
         word_trans = 0
@@ -1931,7 +1930,7 @@ class WriterIdentifyModel(BaseModel):
 
         if self.opt.training.frozen_backbone:
             self.print('frozen_backbone')
-            self.optimizers = Munch(W=torch.optim.Adam(self.models.W.parameters()), lr=self.opt.training.lr)
+            self.optimizers = Munch(W=torch.optim.Adam(self.models.W.parameters(), lr=self.opt.training.lr))
         else:
             self.optimizers = Munch(W=torch.optim.Adam(
                                         chain(self.models.W.parameters(), self.models.B.parameters()),

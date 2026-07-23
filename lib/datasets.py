@@ -25,7 +25,6 @@ class Hdf5Dataset(Dataset):
         self.process_style = process_style
 
     def _load_h5py(self, file_path, normalize_wid=True):
-        # print(self.file_path)
         self.file_path = file_path
         if not os.path.exists(self.file_path):
             raise FileNotFoundError(f"HDF5 dataset file path does not exist: {self.file_path}")
@@ -194,7 +193,7 @@ class Hdf5Dataset(Dataset):
             mbdata[img_key] = pad_imgs
             mbdata[img_len_key] = merge_img_lens
 
-        max_lb_len = max(lb_lens1.max(), lb_lens2.max()).item()
+        max_lb_len = max(lbs1.size(-1), lbs2.size(-1))
         pad_lbs = torch.zeros((bz1 + bz2, max_lb_len), dtype=torch.long, device=device)
         pad_lbs[:bz1, :lbs1.size(-1)] = lbs1
         pad_lbs[bz1:, :lbs2.size(-1)] = lbs2
@@ -238,7 +237,7 @@ class Hdf5Dataset(Dataset):
                                dtype=np.int64)
             h5f.create_dataset('img_lens',
                                data=img_lens,
-                               dtype=np.int16)
+                               dtype=np.int32)
             h5f.create_dataset('lb_seek_idxs',
                                data=lb_seek_idxs,
                                dtype=np.int64)
@@ -266,6 +265,8 @@ class ImageDataset(Hdf5Dataset):
             listOfFiles.extend(glob.glob(os.path.join(file_path, "*." + extension)))
             listOfFiles.extend(glob.glob(os.path.join(file_path, "*." + extension.upper())))
 
+        all_imgs = []
+        all_texts = []
         for fn in listOfFiles:
             img = cv2.imread(fn, cv2.IMREAD_GRAYSCALE)
             if img is None:

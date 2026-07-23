@@ -9,13 +9,8 @@ def seed_rng(seed):
   np.random.seed(seed)
 
 
-# A highly simplified convenience class for sampling from distributions
-# One could also use PyTorch's inbuilt distributions package.
-# Note that this class requires initialization to proceed as
-# x = Distribution(torch.randn(size))
-# x.init_distribution(dist_type, **dist_kwargs)
-# x = x.to(device,dtype)
-# This is partially based on https://discuss.pytorch.org/t/subclassing-torch-tensor/23754/2
+# A convenience class for sampling from distributions without corrupting global RNG state.
+# Subclasses torch.Tensor based on https://discuss.pytorch.org/t/subclassing-torch-tensor/23754/2
 class Distribution(torch.Tensor):
     # Init the params of the distribution
     def init_distribution(self, dist_type, **kwargs):
@@ -84,11 +79,10 @@ class Distribution(torch.Tensor):
             self.np_rng.set_state(state['np_rng'])
 
 
-    # # Silly hack: overwrite the to() method to wrap the new object
-    # # in a distribution as well
+    # Overwrite to() method to preserve distribution attributes and Generator device state
     def to(self, *args, **kwargs):
         device_tensor = super().to(*args, **kwargs)
-        new_obj = Distribution(device_tensor)
+        new_obj = device_tensor.as_subclass(Distribution)
         dist_type = getattr(self, 'dist_type', 'normal')
         dist_kwargs = getattr(self, 'dist_kwargs', {})
         new_obj.dist_type = dist_type
