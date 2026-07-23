@@ -96,20 +96,132 @@ class BaseModel(object):
             self.print(extra)
         self.print('=' * 20)
 
-    def save(self, tag='best', epoch_done=0, **kwargs):
+    def unwrap_model(self, model):
+        if hasattr(model, 'module'):
+            return model.module
+        return model
+
+    def save(self, tag='best', epoch_done=0, iter_count=None, best_fid=None, **kwargs):
+        if self.local_rank > 0:
+            return
         ckpt = {}
-        for model in self.models.values():
-            ckpt[type(model).__name__] = model.state_dict()
+        for name, model in self.models.items():
+            m_unwrapped = self.unwrap_model(model)
+            m_dict = m_unwrapped.state_dict()
+            ckpt[name] = m_dict
+            ckpt[type(m_unwrapped).__name__] = m_dict
 
         for key, optim in self.optimizers.items():
             ckpt['OPT.' + key] = optim.state_dict()
+
+        if hasattr(self, 'lr_schedulers') and self.lr_schedulers:
+            for key, sched in self.lr_schedulers.items():
+                if hasattr(sched, 'state_dict'):
+                    ckpt['SCHED.' + key] = sched.state_dict()
+
+        import random
+        ckpt['rng_state'] = {
+            'torch': torch.get_rng_state(),
+            'cuda': torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
+            'numpy': np.random.get_state(),
+            'python': random.getstate(),
+            'z_dist': self.z.get_state() if hasattr(self, 'z') and hasattr(self.z, 'get_state') else None,
+            'y_dist': self.y.get_state() if hasattr(self, 'y') and hasattr(self.y, 'get_state') else None,
+            'eval_z_dist': self.eval_z.get_state() if hasattr(self, 'eval_z') and hasattr(self.eval_z, 'get_state') else None,
+            'eval_y_dist': self.eval_y.get_state() if hasattr(self, 'eval_y') and hasattr(self.eval_y, 'get_state') else None,
+        }
 
         for key, val in kwargs.items():
             ckpt[key] = val
 
         ckpt['Epoch'] = epoch_done
-        ckpt_save_path = os.path.join(self.log_root, self.opt.training.ckpt_dir, tag + '.pth')
-        torch.save(ckpt, ckpt_save_path)
+        if iter_count is not None:
+            ckpt['iter_count'] = iter_count
+        if best_fid is not None:
+            ckpt['best_fid'] = best_fid
+
+        ckpt_dir = os.path.join(self.log_root, self.opt.training.ckpt_dir)
+        os.makedirs(ckpt_dir, exist_ok=True)
+        ckpt_save_path = os.path.join(ckpt_dir, tag + '.pth')
+        tmp_save_path = os.path.join(ckpt_dir, tag + '.pth.tmp')
+        torch.save(ckpt, tmp_save_path)
+        os.replace(tmp_save_path, ckpt_save_path)
+
+    def restore_rng_state(self, rng=None):
+        if rng is None:
+            rng = getattr(self, '_restored_rng_state', None)
+        if not rng:
+            return
+
+        if 'torch' in rng and rng['torch'] is not None:
+            try:
+                torch_rng = rng['torch'].cpu().to(torch.uint8) if isinstance(rng['torch'], torch.Tensor) else rng['torch']
+                torch.set_rng_state(torch_rng)
+            except Exception as e:
+                self.print(f'Restoring torch RNG warning: {e}')
+
+        if 'cuda' in rng and rng['cuda'] is not None and torch.cuda.is_available():
+            try:
+                cuda_rngs = [r.cpu().to(torch.uint8) if isinstance(r, torch.Tensor) else r for r in rng['cuda']]
+                for idx, c_state in enumerate(cuda_rngs):
+                    if idx < torch.cuda.device_count():
+                        torch.cuda.set_rng_state(c_state, device=idx)
+            except Exception as e:
+                self.print(f'Restoring CUDA RNG warning: {e}')
+
+        if 'numpy' in rng and rng['numpy'] is not None:
+            try:
+                import numpy as np
+                np.random.set_state(rng['numpy'])
+            except Exception as e:
+                self.print(f'Restoring numpy RNG warning: {e}')
+
+        if 'python' in rng and rng['python'] is not None:
+            try:
+                import random
+                random.setstate(rng['python'])
+            except Exception as e:
+                self.print(f'Restoring python RNG warning: {e}')
+
+        if hasattr(self, 'z') and hasattr(self.z, 'set_state') and rng.get('z_dist') is not None:
+            try:
+                self.z.set_state(rng['z_dist'])
+            except Exception as e:
+                self.print(f'Restoring z_dist RNG warning: {e}')
+
+        if hasattr(self, 'y') and hasattr(self.y, 'set_state') and rng.get('y_dist') is not None:
+            try:
+                self.y.set_state(rng['y_dist'])
+            except Exception as e:
+                self.print(f'Restoring y_dist RNG warning: {e}')
+
+        if hasattr(self, 'eval_z') and hasattr(self.eval_z, 'set_state') and rng.get('eval_z_dist') is not None:
+            try:
+                self.eval_z.set_state(rng['eval_z_dist'])
+            except Exception as e:
+                self.print(f'Restoring eval_z RNG warning: {e}')
+
+        if hasattr(self, 'eval_y') and hasattr(self.eval_y, 'set_state') and rng.get('eval_y_dist') is not None:
+            try:
+                self.eval_y.set_state(rng['eval_y_dist'])
+            except Exception as e:
+                self.print(f'Restoring eval_y RNG warning: {e}')
+
+    def resolve_resume_path(self, resume_path):
+        if not resume_path:
+            return None
+        if isinstance(resume_path, bool) or str(resume_path).lower() in ('true', 'latest'):
+            candidate = os.path.join(self.log_root, getattr(self.opt.training, 'ckpt_dir', 'ckpts'), 'last.pth')
+            return candidate if os.path.exists(candidate) else None
+        if os.path.isdir(resume_path):
+            candidate = os.path.join(resume_path, 'last.pth')
+            if os.path.exists(candidate):
+                return candidate
+            candidate = os.path.join(resume_path, getattr(self.opt.training, 'ckpt_dir', 'ckpts'), 'last.pth')
+            return candidate if os.path.exists(candidate) else None
+        if os.path.isfile(resume_path):
+            return resume_path
+        return None
 
     def load(self, ckpt, map_location=None, modules=None):
         if modules is None:
@@ -117,29 +229,66 @@ class BaseModel(object):
         elif not isinstance(modules, list):
             modules = [modules]
 
-        print('load checkpoint from ', ckpt)
+        resolved_ckpt = self.resolve_resume_path(ckpt)
+        if resolved_ckpt:
+            ckpt = resolved_ckpt
+
+        if not ckpt or not os.path.exists(ckpt):
+            self.print(f'Checkpoint file not found: {ckpt}')
+            return 0
+
+        self.print(f'load checkpoint from {ckpt}')
         if map_location is None:
-            ckpt = torch.load(ckpt)
-        else:
-            ckpt = torch.load(ckpt, map_location=map_location)
+            map_location = 'cpu'
+        ckpt_data = torch.load(ckpt, map_location=map_location, weights_only=False)
 
-        if ckpt is None:
-            return
+        if ckpt_data is None:
+            return 0
 
-        models = self.models.values() if len(modules) == 0 else modules
-        for model in models:
-            try:
-                model.load_state_dict(ckpt.pop(type(model).__name__))
-            except Exception as e:
-                print('Load %s failed'%type(model).__name__)
+        self.restored_metadata = {
+            'Epoch': ckpt_data.get('Epoch', 0),
+            'iter_count': ckpt_data.get('iter_count', None),
+            'best_fid': ckpt_data.get('best_fid', ckpt_data.get('fid', None)),
+        }
+
+        for name, model in self.models.items():
+            if len(modules) > 0 and model not in modules:
+                continue
+            m_unwrapped = self.unwrap_model(model)
+            m_name = type(m_unwrapped).__name__
+            target_key = name if name in ckpt_data else (m_name if m_name in ckpt_data else None)
+            if target_key:
+                try:
+                    m_unwrapped.load_state_dict(ckpt_data[target_key], strict=False)
+                    self.print(f'Loaded weights for {name} using key {target_key}')
+                except Exception as e:
+                    self.print(f'Load {name} ({target_key}) failed: {e}')
+            else:
+                self.print(f'Key {name} / {m_name} not found in checkpoint')
 
         for key in self.optimizers.keys():
-            try:
-                self.optimizers[key].load_state_dict(ckpt.pop('OPT.' + key))
-            except Exception as e:
-                print('Load %s failed'%('OPT.' + key))
+            opt_key = 'OPT.' + key
+            if opt_key in ckpt_data:
+                try:
+                    self.optimizers[key].load_state_dict(ckpt_data[opt_key])
+                    for state in self.optimizers[key].state.values():
+                        for k_s, v_s in state.items():
+                            if isinstance(v_s, torch.Tensor):
+                                state[k_s] = v_s.to(self.device)
+                    self.print(f'Loaded optimizer state for OPT.{key}')
+                except Exception as e:
+                    self.print(f'Load OPT.{key} failed: {e}')
 
-        epoch = 0 if 'Epoch' not in ckpt else ckpt['Epoch']
+        self._ckpt_sched_data = {}
+        for key in getattr(self, 'optimizers', {}).keys():
+            sched_key = 'SCHED.' + key
+            if sched_key in ckpt_data:
+                self._ckpt_sched_data[sched_key] = ckpt_data[sched_key]
+
+        if 'rng_state' in ckpt_data:
+            self._restored_rng_state = ckpt_data['rng_state']
+
+        epoch = ckpt_data.get('Epoch', 0)
         self.is_resumed_start = True
         return epoch
 
@@ -805,20 +954,60 @@ class GlobalLocalAdversarialModel(AdversarialModel):
         )
 
         epoch_done = 1
-        if os.path.exists(self.opt.training.pretrained_ckpt):
-            epoch_done = self.load(self.opt.training.pretrained_ckpt, self.device)
+        resume_path = getattr(self.opt.training, 'resume', None)
+        if not resume_path or not os.path.exists(resume_path):
+            resume_path = getattr(self.opt.training, 'pretrained_ckpt', None)
+
+        is_resuming = resume_path is not None and os.path.exists(resume_path)
+        if is_resuming:
+            epoch_done = self.load(resume_path, self.device)
+            torch.cuda.empty_cache()
         else:
             if os.path.exists(self.opt.training.pretrained_w):
-                w_dict = torch.load(self.opt.training.pretrained_w, self.device)
-                self.models.W.load_state_dict(w_dict['WriterIdentifier'])
-                self.models.B.load_state_dict(w_dict['StyleBackbone'])
-                print('load pretrained writer_identifier: ', self.opt.training.pretrained_w)
-                # self.validate_wid()
+                w_dict = torch.load(self.opt.training.pretrained_w, map_location='cpu', weights_only=False)
+                self.models.W.load_state_dict(w_dict['WriterIdentifier'], strict=False)
+                self.models.B.load_state_dict(w_dict['StyleBackbone'], strict=False)
+                self.print(f'load pretrained writer_identifier: {self.opt.training.pretrained_w}')
             if os.path.exists(self.opt.training.pretrained_r):
-                r_dict = torch.load(self.opt.training.pretrained_r)['Recognizer']
-                self.models.R.load_state_dict(r_dict, self.device)
-                print('load pretrained recognizer: ', self.opt.training.pretrained_r)
-                # self.validate_ocr()
+                r_dict = torch.load(self.opt.training.pretrained_r, map_location='cpu', weights_only=False)['Recognizer']
+                self.models.R.load_state_dict(r_dict, strict=False)
+                self.print(f'load pretrained recognizer: {self.opt.training.pretrained_r}')
+
+        restored_meta = getattr(self, 'restored_metadata', {})
+        restored_iter = restored_meta.get('iter_count', None)
+
+        if restored_iter is not None:
+            iter_count = restored_iter + 1
+            self.print(f"Resumed exact iter_count={iter_count} from checkpoint")
+            start_epoch = iter_count // len(self.train_loader) + 1
+            skip_batches = iter_count % len(self.train_loader)
+        elif is_resuming:
+            start_epoch = epoch_done + 1
+            skip_batches = 0
+            iter_count = epoch_done * len(self.train_loader)
+            self.print(f"Calculated iter_count={iter_count} based on epoch_done={epoch_done}")
+        else:
+            start_epoch = 1
+            skip_batches = 0
+            iter_count = 0
+
+        self.lr_schedulers = Munch(
+            G=get_scheduler(self.optimizers.G, opt.training, last_epoch=start_epoch - 2 if is_resuming else -1),
+            D=get_scheduler(self.optimizers.D, opt.training, last_epoch=start_epoch - 2 if is_resuming else -1)
+        )
+        if hasattr(self, '_ckpt_sched_data') and self._ckpt_sched_data:
+            for key in self.lr_schedulers.keys():
+                sched_key = 'SCHED.' + key
+                if sched_key in self._ckpt_sched_data:
+                    try:
+                        self.lr_schedulers[key].load_state_dict(self._ckpt_sched_data[sched_key])
+                        if hasattr(self.lr_schedulers[key], 'get_last_lr') and key in self.optimizers:
+                            lrs = self.lr_schedulers[key].get_last_lr()
+                            for param_group, lr in zip(self.optimizers[key].param_groups, lrs):
+                                param_group['lr'] = lr
+                        self.print(f'Loaded restored scheduler state for {key}')
+                    except Exception as e:
+                        self.print(f'Failed to restore scheduler state for {key}: {e}')
 
         # multi-gpu
         if self.local_rank > -1:
@@ -845,13 +1034,16 @@ class GlobalLocalAdversarialModel(AdversarialModel):
         else:
             ctc_len_scale = self.models.R.len_scale
 
-        best_fid = np.inf
+        best_fid = restored_meta.get('best_fid', np.inf) if restored_meta.get('best_fid') is not None else np.inf
         is_best = False
-        iter_count = (epoch_done - 1) * len(self.train_loader)
-        for epoch in range(epoch_done, self.opt.training.epochs):
+        self.restore_rng_state()
+        for epoch in range(start_epoch, self.opt.training.epochs + 1):
             if self.local_rank > -1 and hasattr(self.train_loader, 'sampler') and self.train_loader.sampler is not None:
                 self.train_loader.sampler.set_epoch(epoch)
             for i, batch in enumerate(self.train_loader):
+                if skip_batches > 0:
+                    skip_batches -= 1
+                    continue
                 #############################
                 # Prepare inputs & Network Forward
                 #############################
@@ -1137,9 +1329,9 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                     if not os.path.exists(ckpt_root):
                         os.makedirs(ckpt_root) if self.local_rank < 1 else None
                     
-                    self.save('last', epoch, iter_count=iter_count)
+                    self.save('last', epoch, iter_count=iter_count, best_fid=best_fid) if self.local_rank < 1 else None
                     if is_best:
-                        self.save('best', epoch, iter_count=iter_count, **best_scores) if self.local_rank < 1 else None
+                        self.save('best', epoch, iter_count=iter_count, best_fid=best_fid, **best_scores) if self.local_rank < 1 else None
                         is_best = False
 
                 iter_count += 1
