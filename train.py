@@ -31,28 +31,11 @@ if __name__ == "__main__":
         default="configs/gan_iam.yml",
         help="Configuration file to use",
     )
-    parser.add_argument(
-        "--local_rank",
-        "--local-rank",
-        type=int,
-        default=-1,
-        help="Local rank for distributed training",
-    )
-    parser.add_argument(
-        "--no_wandb",
-        action="store_true",
-        help="Disable WandB logging",
-    )
 
     args = parser.parse_args()
     cfg = yaml2config(args.config)
 
-    # Resolution order: CLI flag > config YAML > default
-    if args.no_wandb or getattr(cfg, 'no_wandb', False):
-        cfg.no_wandb = True
-
-
-    local_rank = args.local_rank
+    local_rank = getattr(cfg, 'local_rank', -1)
     if local_rank == -1 and "LOCAL_RANK" in os.environ:
         local_rank = int(os.environ["LOCAL_RANK"])
 

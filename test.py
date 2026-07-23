@@ -2,8 +2,6 @@ import argparse
 from lib.utils import yaml2config
 from networks import get_model
 import random
-import ast
-
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Evaluation test script")

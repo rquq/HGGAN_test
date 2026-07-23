@@ -56,7 +56,7 @@ def seed_worker(worker_id):
 class BaseModel(object):
     def __init__(self, opt, log_root='./'):
         self.opt = opt
-        self.local_rank = opt.local_rank if 'local_rank' in opt else -1
+        self.local_rank = getattr(opt, 'local_rank', -1)
         self.device = torch.device(opt.device)
         self.models = Munch()
         self.models_ema = Munch()
@@ -158,7 +158,9 @@ class BaseModel(object):
         ckpt_dir = os.path.join(self.log_root, self.opt.training.ckpt_dir)
         os.makedirs(ckpt_dir, exist_ok=True)
         ckpt_save_path = os.path.join(ckpt_dir, tag + '.pth')
-        torch.save(ckpt, ckpt_save_path)
+        tmp_save_path = os.path.join(ckpt_dir, tag + '.pth.tmp')
+        torch.save(ckpt, tmp_save_path)
+        os.replace(tmp_save_path, ckpt_save_path)
 
     def restore_rng_state(self, rng=None):
         if rng is None:
@@ -220,11 +222,35 @@ class BaseModel(object):
             except Exception as e:
                 self.print(f'Restoring eval_y RNG warning: {e}')
 
+    def resolve_resume_path(self, resume_path):
+        if not resume_path:
+            return None
+        if isinstance(resume_path, bool) or str(resume_path).lower() in ('true', 'latest'):
+            candidate = os.path.join(self.log_root, getattr(self.opt.training, 'ckpt_dir', 'ckpts'), 'last.pth')
+            return candidate if os.path.exists(candidate) else None
+        if os.path.isdir(resume_path):
+            candidate = os.path.join(resume_path, 'last.pth')
+            if os.path.exists(candidate):
+                return candidate
+            candidate = os.path.join(resume_path, getattr(self.opt.training, 'ckpt_dir', 'ckpts'), 'last.pth')
+            return candidate if os.path.exists(candidate) else None
+        if os.path.isfile(resume_path):
+            return resume_path
+        return None
+
     def load(self, ckpt, map_location=None, modules=None):
         if modules is None:
             modules = []
         elif not isinstance(modules, list):
             modules = [modules]
+
+        resolved_ckpt = self.resolve_resume_path(ckpt)
+        if resolved_ckpt:
+            ckpt = resolved_ckpt
+
+        if not ckpt or not os.path.exists(ckpt):
+            self.print(f'Checkpoint file not found: {ckpt}')
+            return 0
 
         self.print(f'load checkpoint from {ckpt}')
         if map_location is None:
@@ -324,6 +350,10 @@ class BaseModel(object):
                 if sched_key in ckpt_data:
                     try:
                         self.lr_schedulers[key].load_state_dict(ckpt_data[sched_key])
+                        if hasattr(self.lr_schedulers[key], 'get_last_lr') and key in self.optimizers:
+                            lrs = self.lr_schedulers[key].get_last_lr()
+                            for param_group, lr in zip(self.optimizers[key].param_groups, lrs):
+                                param_group['lr'] = lr
                         self.print(f'Loaded scheduler state for SCHED.{key}')
                     except Exception as e:
                         self.print(f'Load SCHED.{key} failed: {e}')
@@ -677,8 +707,7 @@ class AdversarialModel(BaseModel):
                 every_n = getattr(self.opt.valid, 'validate_cmmd_every_n_epochs', 3)
                 should_run_cmmd = test_stage or (current_epoch is None)
                 if not should_run_cmmd:
-                    epoch_start = getattr(self, 'epoch_start', 1)
-                    should_run_cmmd = (current_epoch - epoch_start) % every_n == 0
+                    should_run_cmmd = (current_epoch % every_n == 0)
                     
                 if should_run_cmmd:
                     from metric.val_metrics import calculate_cmmd_score, compute_real_embeddings
@@ -1182,6 +1211,10 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                 if sched_key in self._ckpt_sched_data:
                     try:
                         self.lr_schedulers[key].load_state_dict(self._ckpt_sched_data[sched_key])
+                        if hasattr(self.lr_schedulers[key], 'get_last_lr') and key in self.optimizers:
+                            lrs = self.lr_schedulers[key].get_last_lr()
+                            for param_group, lr in zip(self.optimizers[key].param_groups, lrs):
+                                param_group['lr'] = lr
                         self.print(f'Loaded restored scheduler state for {key}')
                     except Exception as e:
                         self.print(f'Failed to restore scheduler state for {key}: {e}')
@@ -1569,7 +1602,6 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                 should_eval = is_eval_step and (not is_save_step or save_interval_iters == eval_interval_iters)
                 if getattr(self, 'is_resumed_start', False):
                     should_eval = False
-                    self.is_resumed_start = False
                 
                 if should_eval:
                     self.print('Calculate FID_KID (iter {})'.format(iter_count + 1)) if self.local_rank < 1 else None
@@ -1597,6 +1629,8 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                         is_best = False
 
                 iter_count += 1
+                if getattr(self, 'is_resumed_start', False):
+                    self.is_resumed_start = False
 
             if epoch:
                 if self.local_rank > -1:
@@ -1626,13 +1660,6 @@ class RecognizeModel(BaseModel):
                     new_ckpt[key] = val
             recognizer.load_state_dict(new_ckpt, strict=False)
             self.print(f'load pretrained backbone from {opt.training.pretrained_backbone}')
-
-        if os.path.exists(opt.training.resume):
-            ckpt = torch.load(opt.training.resume, device, weights_only=False)
-            target_ckpt = ckpt.get('Recognizer', ckpt.get('R', ckpt))
-            recognizer.load_state_dict(target_ckpt, strict=False)
-            self.print(f'load pretrained model from {opt.training.resume}')
-
 
         self.models = Munch(R=recognizer)
 
@@ -1681,7 +1708,7 @@ class RecognizeModel(BaseModel):
         self.optimizers = Munch(R=torch.optim.Adam(self.models.R.parameters(), lr=self.opt.training.lr))
 
         epoch_done = 1
-        is_resuming = bool(self.opt.training.resume and os.path.exists(self.opt.training.resume))
+        is_resuming = bool(self.opt.training.resume and (os.path.exists(str(self.opt.training.resume)) or self.resolve_resume_path(self.opt.training.resume)))
         if is_resuming:
             epoch_done = self.load(self.opt.training.resume)
             self.print(self.validate())
@@ -1705,6 +1732,10 @@ class RecognizeModel(BaseModel):
         if hasattr(self, '_ckpt_sched_data') and self._ckpt_sched_data and 'SCHED.R' in self._ckpt_sched_data:
             try:
                 self.lr_schedulers.R.load_state_dict(self._ckpt_sched_data['SCHED.R'])
+                if hasattr(self.lr_schedulers.R, 'get_last_lr') and 'R' in self.optimizers:
+                    lrs = self.lr_schedulers.R.get_last_lr()
+                    for param_group, lr in zip(self.optimizers.R.param_groups, lrs):
+                        param_group['lr'] = lr
             except Exception:
                 pass
 
