@@ -90,7 +90,7 @@ def get_linear_scheduler(optimizer, start_decay_iter, n_iters_decay):
     return scheduler
 
 
-def get_scheduler(optimizer, opt):
+def get_scheduler(optimizer, opt, last_epoch=-1):
     """Return a learning rate scheduler
 
     Parameters:
@@ -103,19 +103,24 @@ def get_scheduler(optimizer, opt):
     For other schedulers (step, plateau, and cosine), we use the default PyTorch schedulers.
     See https://pytorch.org/docs/stable/optim.html for more details.
     """
+    base_lr = getattr(opt, 'lr', None)
+    for group in optimizer.param_groups:
+        if 'initial_lr' not in group or base_lr is not None:
+            group['initial_lr'] = base_lr if base_lr is not None else group.get('lr', 1e-4)
+
     if opt.lr_policy == 'linear':
         def lambda_rule(epoch):
             lr_l = 1.0 - min(max(0, (epoch - opt.start_decay_epoch) / float(opt.n_epochs_decay + 1)), 0.999)
             return lr_l
-        scheduler = lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda_rule)
+        scheduler = lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda_rule, last_epoch=last_epoch)
     elif opt.lr_policy == 'step':
-        scheduler = lr_scheduler.StepLR(optimizer, step_size=opt.lr_decay_iters, gamma=0.1)
+        scheduler = lr_scheduler.StepLR(optimizer, step_size=opt.lr_decay_iters, gamma=0.1, last_epoch=last_epoch)
     elif opt.lr_policy == 'plateau':
         scheduler = lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.2, threshold=0.01, patience=5)
     elif opt.lr_policy == 'cosine':
-        scheduler = lr_scheduler.CosineAnnealingLR(optimizer, T_max=opt.n_epochs, eta_min=0)
+        scheduler = lr_scheduler.CosineAnnealingLR(optimizer, T_max=opt.n_epochs, eta_min=0, last_epoch=last_epoch)
     else:
-        return NotImplementedError('learning rate policy [%s] is not implemented', opt.lr_policy)
+        raise NotImplementedError('learning rate policy [%s] is not implemented' % opt.lr_policy)
     return scheduler
 
 
