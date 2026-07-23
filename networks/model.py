@@ -245,10 +245,22 @@ class BaseModel(object):
         if ckpt_data is None:
             return 0
 
+        best_fid = ckpt_data.get('best_fid', ckpt_data.get('fid', None))
+        if best_fid is None:
+            ckpt_dir_of_file = os.path.dirname(ckpt)
+            source_best_pth = os.path.join(ckpt_dir_of_file, 'best.pth')
+            if os.path.exists(source_best_pth) and os.path.abspath(source_best_pth) != os.path.abspath(ckpt):
+                try:
+                    best_data = torch.load(source_best_pth, map_location='cpu', weights_only=False)
+                    best_fid = best_data.get('best_fid', best_data.get('fid', None))
+                    self.print(f"Restored best_fid={best_fid} from existing best.pth in resume directory")
+                except Exception as e:
+                    self.print(f"Could not read best_fid from {source_best_pth}: {e}")
+
         self.restored_metadata = {
             'Epoch': ckpt_data.get('Epoch', 0),
             'iter_count': ckpt_data.get('iter_count', None),
-            'best_fid': ckpt_data.get('best_fid', ckpt_data.get('fid', None)),
+            'best_fid': best_fid,
         }
 
         for name, model in self.models.items():
@@ -1323,6 +1335,12 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                         best_fid = scores['fid']
                         is_best = True
                         best_scores = scores
+                        if _is_master:
+                            ckpt_root = os.path.join(self.log_root, self.opt.training.ckpt_dir)
+                            os.makedirs(ckpt_root, exist_ok=True)
+                            self.save('best', epoch, iter_count=iter_count, best_fid=best_fid, **(best_scores or {}))
+                            self.print(f"--> Saved new best checkpoint (best_fid: {best_fid:.4f}) at iter {iter_count + 1}")
+                        is_best = False
                 
                 if is_save_step:
                     ckpt_root = os.path.join(self.log_root, self.opt.training.ckpt_dir)
@@ -1331,7 +1349,7 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                     
                     self.save('last', epoch, iter_count=iter_count, best_fid=best_fid) if self.local_rank < 1 else None
                     if is_best:
-                        self.save('best', epoch, iter_count=iter_count, best_fid=best_fid, **best_scores) if self.local_rank < 1 else None
+                        self.save('best', epoch, iter_count=iter_count, best_fid=best_fid, **(best_scores or {})) if self.local_rank < 1 else None
                         is_best = False
 
                 iter_count += 1
