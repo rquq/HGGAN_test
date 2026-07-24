@@ -1,64 +1,64 @@
 import os
 import logging
 import datetime
-import numpy
-from munch import Munch
+import yaml
+import numpy as np
+import cv2
 import matplotlib.pyplot as plt
+from munch import Munch
+from torchvision.utils import make_grid
+from PIL import Image
 
 
 def get_logger(logdir):
     logger = logging.getLogger("gan")
     logger.setLevel(logging.INFO)
-    logger.propagate = False
-    logger.handlers = []
 
     ts = str(datetime.datetime.now()).split(".")[0].replace(" ", "_")
     ts = ts.replace(":", "_").replace("-", "_")
     file_path = os.path.join(logdir, "run_{}.log".format(ts))
 
-    # File handler
-    file_handler = logging.FileHandler(file_path, mode='w')
-    file_handler.setLevel(logging.INFO)
-    file_formatter = logging.Formatter('%(message)s')
-    file_handler.setFormatter(file_formatter)
-    logger.addHandler(file_handler)
-
-    # Console handler
-    console = logging.StreamHandler()
-    console.setLevel(logging.INFO)
     formatter = logging.Formatter('%(message)s')
-    console.setFormatter(formatter)
-    logger.addHandler(console)
-    
+
+    if not any(isinstance(h, logging.FileHandler) for h in logger.handlers):
+        file_handler = logging.FileHandler(file_path, mode='w')
+        file_handler.setLevel(logging.INFO)
+        file_handler.setFormatter(formatter)
+        logger.addHandler(file_handler)
+
+    if not any(isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler) for h in logger.handlers):
+        console = logging.StreamHandler()
+        console.setLevel(logging.INFO)
+        console.setFormatter(formatter)
+        logger.addHandler(console)
+
     return logger
 
 
-import yaml, munch
 def yaml2config(yml_path):
-    with open(yml_path) as fp:
-        json = yaml.load(fp, Loader=yaml.FullLoader)
+    with open(yml_path, 'r', encoding='utf-8') as fp:
+        data = yaml.load(fp, Loader=yaml.FullLoader)
 
-    def to_munch(json):
-        for key, val in json.items():
-            if isinstance(val, dict):
-                json[key] = to_munch(val)
-        return munch.Munch(json)
+    def to_munch(d):
+        if isinstance(d, dict):
+            return Munch({k: to_munch(v) for k, v in d.items()})
+        elif isinstance(d, list):
+            return [to_munch(v) for v in d]
+        return d
 
-    cfg = to_munch(json)
+    cfg = to_munch(data)
     return cfg
 
 
-from torchvision.utils import make_grid
 def draw_image(tensor, nrow=8, padding=2,
-           normalize=False, value_range=None, scale_each=False, pad_value=0):
-    from PIL import Image
+               normalize=False, value_range=None, scale_each=False, pad_value=0):
     grid = make_grid(tensor, nrow=nrow, padding=padding, pad_value=pad_value,
                      normalize=normalize, value_range=value_range, scale_each=scale_each)
     # Add 0.5 after unnormalizing to [0, 255] to round to nearest integer
-    ndarr = grid.mul_(255).add_(0.5).clamp_(0, 255).permute(1, 2, 0).cpu().numpy().astype(numpy.uint8)
+    ndarr = grid.mul_(255).add_(0.5).clamp_(0, 255).permute(1, 2, 0).cpu().numpy().astype(np.uint8)
     return ndarr
 
-import cv2
+
 def plot_heatmap(arr):
     heatmapshow = cv2.normalize(arr, None, alpha=0, beta=255, norm_type=cv2.NORM_MINMAX, dtype=cv2.CV_8U)
     heatmapshow = cv2.applyColorMap(heatmapshow, cv2.COLORMAP_JET)

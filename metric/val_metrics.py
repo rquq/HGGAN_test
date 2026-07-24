@@ -148,15 +148,16 @@ def get_activations(data_source, n_batches, model, dims, device, crop=False, eva
             imgs_is = imgs.clone()
             org_img_lens_is = org_img_lens.clone()
 
-        # Replace background value of -1 with 1.0 starting from org_img_lens
+        # Replace background value of -1 with 1.0 starting from org_img_lens (Vectorized)
         batch_size, _, height, width = imgs.size()
         imgs_fid = imgs.clone()
-        for i in range(batch_size):
-            len_i = int(org_img_lens[i].item())
-            if len_i < width:
-                padding_region = imgs_fid[i, :, :, len_i:]
-                if torch.all(padding_region == -1):
-                    imgs_fid[i, :, :, len_i:] = 1.0
+        col_indices = torch.arange(width, device=device).view(1, 1, 1, width)
+        padding_mask = col_indices >= org_img_lens.view(batch_size, 1, 1, 1)
+        is_neg_one = (imgs_fid == -1)
+        all_neg_one_in_padding = (is_neg_one | ~padding_mask).flatten(1).all(dim=1)
+        replace_mask = padding_mask & all_neg_one_in_padding.view(batch_size, 1, 1, 1)
+        imgs_fid = torch.where(replace_mask, torch.tensor(1.0, device=device), imgs_fid)
+
 
         # Normalize to [0, 1]
         imgs_fid = (imgs_fid + 1) / 2
@@ -245,7 +246,7 @@ def calculate_frechet_distance(mu1, sigma1, mu2, sigma2, eps=1e-6):
     if np.iscomplexobj(covmean):
         if not np.allclose(np.diagonal(covmean).imag, 0, atol=1e-3):
             m = np.max(np.abs(covmean.imag))
-            raise ValueError('Imaginary component {}'.format(m))
+            print('Warning: Imaginary component {} in FID sqrtm calculation. Proceeding with real part.'.format(m))
         covmean = covmean.real
 
     tr_covmean = np.trace(covmean)
@@ -286,12 +287,28 @@ def polynomial_mmd_averages(codes_g, codes_r, n_subsets=50, subset_size=1000,
 
 def polynomial_mmd(codes_g, codes_r, degree=3, gamma=None, coef0=1,
                    var_at_m=None, ret_var=True):
-    X = codes_g
-    Y = codes_r
-    K_XX = polynomial_kernel(X, degree=degree, gamma=gamma, coef0=coef0)
-    K_YY = polynomial_kernel(Y, degree=degree, gamma=gamma, coef0=coef0)
-    K_XY = polynomial_kernel(X, Y, degree=degree, gamma=gamma, coef0=coef0)
-    return _mmd2_and_variance(K_XX, K_XY, K_YY, var_at_m=var_at_m, ret_var=ret_var)
+    if torch.cuda.is_available():
+        device = 'cuda'
+        X_t = torch.from_numpy(codes_g).to(device)
+        Y_t = torch.from_numpy(codes_r).to(device)
+        
+        if gamma is None:
+            gamma = 1.0 / X_t.shape[1]
+            
+        K_XX = (gamma * torch.matmul(X_t, X_t.T) + coef0) ** degree
+        K_YY = (gamma * torch.matmul(Y_t, Y_t.T) + coef0) ** degree
+        K_XY = (gamma * torch.matmul(X_t, Y_t.T) + coef0) ** degree
+        
+        K_XX_np = K_XX.cpu().numpy()
+        K_YY_np = K_YY.cpu().numpy()
+        K_XY_np = K_XY.cpu().numpy()
+    else:
+        from sklearn.metrics.pairwise import polynomial_kernel
+        K_XX_np = polynomial_kernel(codes_g, degree=degree, gamma=gamma, coef0=coef0)
+        K_YY_np = polynomial_kernel(codes_r, degree=degree, gamma=gamma, coef0=coef0)
+        K_XY_np = polynomial_kernel(codes_g, codes_r, degree=degree, gamma=gamma, coef0=coef0)
+        
+    return _mmd2_and_variance(K_XX_np, K_XY_np, K_YY_np, var_at_m=var_at_m, ret_var=ret_var)
 
 def _sqn(arr):
     flat = np.ravel(arr)
@@ -442,14 +459,14 @@ def calculate_fid_kid_is(cfg, data_loader, generator, n_rand_repeat, device, cro
     return res
 
 # Handwriting Distance (HWD) Wrapper
-def calculate_hwd_score(data_loader, generator, n_rand_repeat, device, n_batches=None, real_dataset=None):
+def calculate_hwd_score(data_loader, generator, n_rand_repeat, device, n_batches=None, real_dataset=None, real_features=None):
     if n_batches is None:
         n_batches = len(data_loader)
         
     fake_imgs_list = []
     fake_authors_list = []
     
-    if real_dataset is None:
+    if real_features is None and real_dataset is None:
         real_imgs_list = []
         real_authors_list = []
         print("Extracting images for HWD calculation...")
@@ -481,6 +498,14 @@ def calculate_hwd_score(data_loader, generator, n_rand_repeat, device, n_batches
     fake_dataset = ImageListDataset(fake_imgs_list, fake_authors_list)
     
     print("Computing HWD Score...")
-    hwd_scorer = HWDScore().to(device)
-    score = hwd_scorer(fake_dataset, real_dataset)
+    # Use batch size 64 to speed up VGG16 extraction
+    hwd_scorer = HWDScore(batchsize=64).to(device)
+    
+    fake_pd = hwd_scorer.digest(fake_dataset)
+    if real_features is None:
+        real_pd = hwd_scorer.digest(real_dataset)
+    else:
+        real_pd = real_features
+        
+    score = hwd_scorer.distance(fake_pd, real_pd)
     return score

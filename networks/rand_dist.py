@@ -9,21 +9,23 @@ def seed_rng(seed):
   np.random.seed(seed)
 
 
-# A highly simplified convenience class for sampling from distributions
-# One could also use PyTorch's inbuilt distributions package.
-# Note that this class requires initialization to proceed as
-# x = Distribution(torch.randn(size))
-# x.init_distribution(dist_type, **dist_kwargs)
-# x = x.to(device,dtype)
-# This is partially based on https://discuss.pytorch.org/t/subclassing-torch-tensor/23754/2
+# A convenience class for sampling from distributions without corrupting global RNG state.
+# Subclasses torch.Tensor based on https://discuss.pytorch.org/t/subclassing-torch-tensor/23754/2
 class Distribution(torch.Tensor):
     # Init the params of the distribution
     def init_distribution(self, dist_type, **kwargs):
         self.dist_type = dist_type
         self.dist_kwargs = kwargs
-        self.generator = torch.Generator(device=self.device if hasattr(self, 'device') else None)
-        self.generator.manual_seed(kwargs['seed'])
-        self.np_rng = np.random.RandomState(kwargs['seed'])
+        # Use a LOCAL generator so we never corrupt the global RNG state.
+        # The global seeds (set by seed_everything in train.py) stay intact.
+        seed = kwargs.get('seed')
+        if seed is not None:
+            self.generator = torch.Generator(device=self.device)
+            self.generator.manual_seed(seed)
+            self.np_rng = np.random.RandomState(seed)
+        else:
+            self.generator = None
+            self.np_rng = None
         if self.dist_type == 'normal':
             self.mean, self.var = kwargs['mean'], kwargs['var']
         elif self.dist_type == 'uniform':
@@ -37,7 +39,13 @@ class Distribution(torch.Tensor):
 
     def sample_(self):
         if self.dist_type == 'normal':
-            self.normal_(self.mean, self.var, generator=self.generator)
+            if self.dim() == 3:
+                B, T, D = self.size()
+                temp = torch.empty((B, 1, D), device=self.device, dtype=self.dtype)
+                temp.normal_(self.mean, self.var, generator=self.generator)
+                self.data.copy_(temp.repeat(1, T, 1))
+            else:
+                self.normal_(self.mean, self.var, generator=self.generator)
         elif self.dist_type == 'uniform':
             self.uniform_(self.low, self.high, generator=self.generator)
         elif self.dist_type == 'categorical':
@@ -45,44 +53,73 @@ class Distribution(torch.Tensor):
         elif self.dist_type == 'poisson':
             type = self.type()
             device = self.device
-            data = self.np_rng.poisson(self.lam, self.size())
+            rng = self.np_rng if self.np_rng is not None else np.random
+            data = rng.poisson(self.lam, self.size())
             self.data = torch.from_numpy(data).type(type).to(device)
         elif self.dist_type == 'gamma':
             type = self.type()
             device = self.device
-            data = self.np_rng.gamma(shape=1, scale=self.scale, size=self.size())
+            rng = self.np_rng if self.np_rng is not None else np.random
+            data = rng.gamma(shape=1, scale=self.scale, size=self.size())
             self.data = torch.from_numpy(data).type(type).to(device)
+            # return self.variable
         return self
 
-    # # Silly hack: overwrite the to() method to wrap the new object
-    # # in a distribution as well
+    def get_state(self):
+        state = {}
+        if hasattr(self, 'generator') and self.generator is not None:
+            state['generator'] = self.generator.get_state()
+        if hasattr(self, 'np_rng') and self.np_rng is not None:
+            state['np_rng'] = self.np_rng.get_state()
+        return state
+
+    def set_state(self, state):
+        if not state or not isinstance(state, dict):
+            return
+        if hasattr(self, 'generator') and self.generator is not None and 'generator' in state and state['generator'] is not None:
+            gen_state = state['generator']
+            if isinstance(gen_state, torch.Tensor):
+                gen_state = gen_state.cpu().to(torch.uint8)
+            self.generator.set_state(gen_state)
+        if hasattr(self, 'np_rng') and self.np_rng is not None and 'np_rng' in state and state['np_rng'] is not None:
+            self.np_rng.set_state(state['np_rng'])
+
+
+    # Overwrite to() method to preserve distribution attributes and Generator device state
     def to(self, *args, **kwargs):
         device_tensor = super().to(*args, **kwargs)
-        new_obj = Distribution(device_tensor)
-        new_obj.dist_type = self.dist_type
-        new_obj.dist_kwargs = self.dist_kwargs
-        if hasattr(self, 'generator'):
+        new_obj = device_tensor.as_subclass(Distribution)
+        dist_type = getattr(self, 'dist_type', 'normal')
+        dist_kwargs = getattr(self, 'dist_kwargs', {})
+        new_obj.dist_type = dist_type
+        new_obj.dist_kwargs = dist_kwargs
+        # Migrate the local torch Generator to the target device
+        if hasattr(self, 'generator') and self.generator is not None:
             target_device = device_tensor.device
             if self.generator.device != target_device:
                 new_obj.generator = torch.Generator(device=target_device)
-                if 'seed' in self.dist_kwargs:
-                    new_obj.generator.manual_seed(self.dist_kwargs['seed'])
+                seed = dist_kwargs.get('seed')
+                if seed is not None:
+                    new_obj.generator.manual_seed(seed)
             else:
                 new_obj.generator = self.generator
-        if hasattr(self, 'np_rng'):
-            new_obj.np_rng = self.np_rng
-        if self.dist_type == 'normal':
-            new_obj.mean, new_obj.var = self.mean, self.var
-        elif self.dist_type == 'uniform':
-            new_obj.low, new_obj.high = self.low, self.high
-        elif self.dist_type == 'categorical':
-            new_obj.num_categories = self.num_categories
-        elif self.dist_type == 'poisson':
-            new_obj.lam = self.lam
-        elif self.dist_type == 'gamma':
-            new_obj.scale = self.scale
+        else:
+            new_obj.generator = None
+        # Share the numpy RNG instance (device-independent)
+        new_obj.np_rng = getattr(self, 'np_rng', None)
+        if dist_type == 'normal':
+            new_obj.mean = getattr(self, 'mean', 0)
+            new_obj.var = getattr(self, 'var', 1.0)
+        elif dist_type == 'uniform':
+            new_obj.low = getattr(self, 'low', 0)
+            new_obj.high = getattr(self, 'high', 1)
+        elif dist_type == 'categorical':
+            new_obj.num_categories = getattr(self, 'num_categories', 1)
+        elif dist_type == 'poisson':
+            new_obj.lam = getattr(self, 'lam', 1)
+        elif dist_type == 'gamma':
+            new_obj.scale = getattr(self, 'scale', 1)
         return new_obj
-
 
 # Convenience function to prepare a z vector
 def prepare_z_dist(G_batch_size, dim_z, device='cuda', seed=0, num_tokens=32):

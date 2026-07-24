@@ -35,9 +35,9 @@ class BlockSpecificStyleProjection(nn.Module):
         self.num_blocks = num_blocks
         self.style_chunk_size = style_chunk_size
         
-        # Attention queries for each block to dynamically pool the 32 tokens
+        # Attention queries for each block to dynamically pool the style tokens
         self.pool_queries = nn.ParameterList([
-            nn.Parameter(torch.randn(1, 32)) for _ in range(num_blocks)
+            nn.Parameter(torch.randn(1, 1, style_dim) * 0.02) for _ in range(num_blocks)
         ])
         
         # Block-specific projection layers using which_linear for Spectral Normalization stability
@@ -52,20 +52,23 @@ class BlockSpecificStyleProjection(nn.Module):
     def forward(self, z):
         """
         Args:
-            z: (B, 32, style_dim) - Style sequence from encoder
+            z: (B, S, D) - Style sequence from encoder (S style tokens of dimension D=style_dim)
         Returns:
             ys: list of style vectors of shape (B, style_chunk_size) modulating each GBlock
         """
         B, S, D = z.shape
         ys = []
         for i in range(self.num_blocks):
-            # Compute attention weights over the sequence of 32 tokens: shape (1, 32)
-            attn_weights = torch.softmax(self.pool_queries[i], dim=1) # (1, 32)
+            # pool_queries[i] has shape (1, 1, D)
+            # z.transpose(-2, -1) has shape (B, D, S)
+            # Query-Key dot product yields (B, 1, S) compatibility scores
+            scores = torch.matmul(self.pool_queries[i], z.transpose(-2, -1)) / (D ** 0.5)
+            attn_weights = torch.softmax(scores, dim=-1) # (B, 1, S)
             
-            # Weighted average: (B, 32, D) * (1, 32, 1) -> (B, D)
-            z_pooled = torch.sum(z * attn_weights.unsqueeze(-1), dim=1) 
+            # Weighted average: (B, 1, S) x (B, S, D) -> (B, 1, D) -> (B, D)
+            z_pooled = torch.matmul(attn_weights, z).squeeze(1)
             
-            # Project to the CCBN modulation dimension (32)
+            # Project to the CCBN modulation dimension
             y_block = self.projections[i](z_pooled)
             ys.append(y_block)
             
@@ -150,19 +153,15 @@ class Generator(nn.Module):
         else:
             bn_linear = nn.Linear
 
-        self.which_bn = functools.partial(layers.ccbn,
-                                          which_linear=bn_linear,
+        self.which_bn = functools.partial(layers.bn,
                                           cross_replica=self.cross_replica,
                                           mybn=self.mybn,
-                                          input_size=self.z_chunk_size,
-                                          norm_style=self.norm_style,
                                           eps=self.BN_eps)
 
         self.filter_linear = self.which_linear(self.embed_dim,
                                         self.arch['in_channels'][0] * (self.bottom_width * self.bottom_height))
-        self.style_content_mix = StyleContentMamba(self.embed_dim, self.style_dim)
-        
-        self.bssp = BlockSpecificStyleProjection(self.z_chunk_size, num_blocks=len(self.arch['in_channels']), which_linear=self.which_linear)
+        self.style_content_mix = StyleContentMamba(self.embed_dim, self.style_dim, vocab_size=self.n_classes)
+        self.mid_fusion_proj = nn.Conv2d(self.embed_dim, self.arch['in_channels'][2], kernel_size=1)
 
         # self.blocks is a doubly-nested list of modules, the outer loop intended
         # to be over blocks at a given resolution (resblocks and/or self-attention)
@@ -179,10 +178,7 @@ class Generator(nn.Module):
                                                                        scale_factor=self.arch['upsample'][index])
                                                      if index < len(self.arch['upsample']) else None))]]
 
-            # If attention on this block, attach it to the end
-            # print('index ', index, self.arch['resolution'][index])
             if self.arch['attention'][self.arch['resolution'][index]]:
-                print('Adding attention layer in G at resolution %d' % self.arch['resolution'][index])
                 self.blocks[-1] += [layers.Attention(self.arch['out_channels'][index], self.which_conv)]
 
         # Turn self.blocks into a ModuleList so that it's all properly registered.
@@ -200,21 +196,11 @@ class Generator(nn.Module):
         if self.init != 'none':
             init_weights(self, self.init)
 
-    # Note on this forward function: we pass in a y vector which has
-    # already been passed through G.shared to enable easy class-wise
-    # interpolation later. If we passed in the one-hot and then ran it through
-    # G.shared in this forward function, it would be harder to handle.
     def forward(self, z, y, y_lens):
-        # z is now a sequence of shape (B, 32, style_dim)
-        # 1. Disentangle Structure vs Texture: Block-Specific Attention Pooling for GBlocks
-        ys = self.bssp(z)
-
-        # This is the change we made to the Big-GAN generator architecture.
-        # The input goes into classes go into the first layer only.
+        char_ids = y
         y = self.text_embedding(y).float().to(y.device)
-        # z = torch.cat((z.unsqueeze(1).repeat(1, y.shape[1], 1), y), 2)
-        # Use Mamba to mix style and content
-        y_mixed = self.style_content_mix(y, z)
+        # 1. Primary Engine: Fusion handles 100% of style + content alignment
+        y_mixed = self.style_content_mix(y, z, char_ids=char_ids, y_lens=y_lens)
         h = self.filter_linear(y_mixed)
 
         # Reshape - when y is not a single class value but rather an array of classes, the reshape is needed to create
@@ -226,12 +212,18 @@ class Generator(nn.Module):
         len_scale = 1
         x_lens = y_lens * self.bottom_width
         for index, blocklist in enumerate(self.blocks):
+            if index == 2:
+                # Multi-stage fusion injection into intermediate resolution block (16x32)
+                y_trans = y_mixed.transpose(1, 2).unsqueeze(2)
+                y_spatial = F.interpolate(y_trans, size=(h.size(2), h.size(3)), mode='nearest')
+                h = h + self.mid_fusion_proj(y_spatial)
+
             # Second inner loop in case block has multiple layers
             for block in blocklist:
                 if isinstance(block, layers.Attention):
                     h = block(h, x_lens=x_lens * len_scale)
                 else:
-                    h = block(h, y=ys[index])
+                    h = block(h)
             len_scale *= self.arch['upsample'][index][1]
 
         # Apply batchnorm-relu-conv-tanh at output
@@ -257,8 +249,11 @@ class Generator(nn.Module):
 
         attn_layer = self.blocks[attn_index][-1]
         out = []
-        for l in [attn_layer.attn1, attn_layer.attn2]:
-            out.append({'out': l._vis_out, 'gamma': l.gamma.item()})
+        if hasattr(attn_layer, 'attn1') and hasattr(attn_layer, 'attn2'):
+            for l in [attn_layer.attn1, attn_layer.attn2]:
+                out.append({'out': getattr(l, '_vis_out', None), 'gamma': l.gamma.item()})
+        elif hasattr(attn_layer, 'gamma'):
+            out.append({'gamma': attn_layer.gamma.item()})
         return out
 
 
@@ -364,7 +359,6 @@ class Discriminator(nn.Module):
                                            downsample=(nn.AvgPool2d(2) if self.arch['downsample'][index] else None))]]
 
             if self.arch['attention'][self.arch['resolution'][index]]:
-                print('Adding attention layer in D at resolution %d' % self.arch['resolution'][index])
                 self.blocks[-1] += [layers.Attention(self.arch['out_channels'][index], self.which_conv)]
         # Turn self.blocks into a ModuleList so that it's all properly registered.
         self.blocks = nn.ModuleList([nn.ModuleList(block) for block in self.blocks])
@@ -392,11 +386,11 @@ class Discriminator(nn.Module):
             h = torch.sum(self.activation(h), [2, 3])
         else:
             h = self.activation(h)
-            h_lens = torch.div(x_lens * h.size(-1), (x.size(-1) + 1e-8), rounding_mode='trunc')
+            h_lens = torch.div(x_lens * h.size(-1), x.size(-1), rounding_mode='trunc')
             mask = _len2mask(h_lens.int(), h.size(-1), torch.float32).to(x.device).detach()
             mask = mask.view(mask.size(0), 1, 1, mask.size(1))
             h = torch.sum(h * mask, [2, 3])
-            h = h / y_lens.unsqueeze(dim=-1)
+            h = h / torch.clamp(y_lens, min=1).unsqueeze(dim=-1)
 
         # Get initial class-unconditional output
         out = self.linear(h)
@@ -407,51 +401,6 @@ class Discriminator(nn.Module):
 class PatchDiscriminator(Discriminator):
     def __init__(self, *args, **kwargs):
         super(PatchDiscriminator, self).__init__(*args, **kwargs)
-        # Learnable row-specific spatial bias to make the patch discriminator row-aware (for 5 vertical positions)
-        self.row_bias = nn.Parameter(torch.zeros(5, 1, 32, 32))
-        nn.init.normal_(self.row_bias, std=0.01)
-
-        # Learnable row-specific projection embedding for conditional row discrimination
-        self.row_embed = self.which_embedding(5, self.arch['out_channels'][-1])
-        nn.init.orthogonal_(self.row_embed.weight)
-
-    def forward(self, x, x_lens=None, y_lens=None, row_indices=None):
-        if row_indices is not None:
-            # Add row-specific spatial bias to inject vertical position information
-            x = x + self.row_bias[row_indices]
-
-        # Process through the standard discriminator blocks
-        h = x
-        len_scale = 1
-        for index, blocklist in enumerate(self.blocks):
-            for block in blocklist:
-                h = block(h, x_len=torch.div(x_lens, len_scale, rounding_mode='trunc') if x_lens is not None else None)
-            len_scale *= 2 if self.arch['downsample'][index] else 1
-
-        # Global sum pooling
-        if x_lens is None:
-            h = torch.sum(self.activation(h), [2, 3])
-        else:
-            h = self.activation(h)
-            h_lens = torch.div(x_lens * h.size(-1), (x.size(-1) + 1e-8), rounding_mode='trunc')
-            mask = _len2mask(h_lens.int(), h.size(-1), torch.float32).to(x.device).detach()
-            mask = mask.view(mask.size(0), 1, 1, mask.size(1))
-            h = torch.sum(h * mask, [2, 3])
-            h = h / y_lens.unsqueeze(dim=-1)
-
-        # Base validity score
-        out = self.linear(h)
-
-        # Projection conditioning: compute dot product of the feature and row embedding
-        if row_indices is not None:
-            if self.one_hot:
-                row_input = F.one_hot(row_indices, num_classes=5).float()
-            else:
-                row_input = row_indices
-            proj = torch.sum(h * self.row_embed(row_input), dim=1, keepdim=True)
-            out = out + proj
-
-        return out
 
 
 
@@ -493,12 +442,6 @@ class NLayerDiscriminator(nn.Module):
             ]
 
         nf_mult_prev = nf_mult
-        # nf_mult = min(2 ** n_layers, 8)
-        # sequence += [
-        #     self.which_conv(ndf * nf_mult_prev, ndf * nf_mult, kernel_size=kw, stride=1, padding=padw, bias=True),
-        #     # norm_layer(ndf * nf_mult),
-        #     nn.ReLU(inplace=False)
-        # ]
 
         sequence += [self.which_conv(nf_mult * ndf, 1, kernel_size=kw, stride=1, padding=padw)]  # output 1 channel prediction map
         self.model = nn.Sequential(*sequence)
@@ -506,9 +449,9 @@ class NLayerDiscriminator(nn.Module):
     def forward(self, x, x_lens, y_lens):
         """Standard forward."""
         h = self.model(x)
-        h_lens = torch.div(x_lens * h.size(-1), (x.size(-1) + 1e-8), rounding_mode='trunc')
+        h_lens = torch.div(x_lens * h.size(-1), x.size(-1), rounding_mode='trunc')
         mask = _len2mask(h_lens.int(), h.size(-1), torch.float32).to(x.device).detach()
         mask = mask.view(mask.size(0), 1, 1, mask.size(1))
         h = torch.sum(h * mask, [2, 3])
-        h = h / y_lens.unsqueeze(dim=-1)
+        h = h / torch.clamp(y_lens, min=1).unsqueeze(dim=-1)
         return h

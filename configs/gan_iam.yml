@@ -1,15 +1,18 @@
 device: 'cuda:0'
+multi_gpu: false
+gpus: [0]
 model: 'gl_adversarial_model'
-
-wandb:
-  key: ''
-  project: 'HiGANplus'
-  name: ~
-  resume: 'allow'
 dataset: 'iam_word_org'
 seed: 123456
 img_height: 64
 char_width: 32
+
+
+inference:
+  ckpt: './pretrained/HiGAN+.pth'
+  mode: 'text'
+  guided: true
+  deploy_dst: './pretrained/deploy_HiGAN+.pth'
 
 
 training:
@@ -45,10 +48,12 @@ training:
   lambda_kl: 0.0001
   lambda_ctx: 2.0
   lambda_gram: 2.0
+  update_ema: true
+  ema_beta: 0.999
   pretrained_w: './pretrained/wid_iam_new.pth'
   pretrained_r: './pretrained/ocr_iam_new.pth'
-  pretrained_ckpt: ''
-  masking_mode: 'horizontal'
+  pretrained_ckpt: './pretrained/last_randomcrop.pth'
+  masking_mode: 'combined'
 
 
 valid:

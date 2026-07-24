@@ -3,9 +3,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-def _len2mask(length, max_len, dtype=torch.float32):
+def _len2mask(length, max_len=None, dtype=torch.float32):
     assert len(length.shape) == 1, 'Length shape should be 1 dimensional.'
-    max_len = max_len or length.max().item()
+    if length.numel() == 0:
+        return torch.empty((0, 0), device=length.device, dtype=dtype or torch.float32)
+    max_len = max_len or int(length.max().item())
     mask = torch.arange(max_len, device=length.device,
                         dtype=length.dtype).expand(len(length), max_len) < length.unsqueeze(1)
     if dtype is not None:
@@ -35,7 +37,7 @@ def tv_loss(img, img_lens):
 def recn_l1_loss(img1, img2, img_lens):
     mask = _len2mask(img_lens, img1.size(-1)).to(img1.device)
     diff_img = (img1 - img2) * mask.view(mask.size(0), 1, 1, mask.size(1))
-    loss = diff_img.abs().sum() / (diff_img.size(1) * diff_img.size(2) * img_lens.sum())
+    loss = diff_img.abs().sum() / (diff_img.size(1) * diff_img.size(2) * torch.clamp(img_lens.sum(), min=1))
     return loss
 
 
@@ -68,7 +70,7 @@ def KLloss(mu, logvar):
 # Contextual loss
 ##############################################################################
 class CXLoss(nn.Module):
-    def __init__(self, sigma=0.5, b=1.0, similarity="consine"):
+    def __init__(self, sigma=0.5, b=1.0, similarity="cosine"):
         super(CXLoss, self).__init__()
         self.similarity = similarity
         self.sigma = sigma
@@ -76,44 +78,60 @@ class CXLoss(nn.Module):
 
     def center_by_T(self, featureI, featureT):
         # Calculate mean channel vector for feature map.
-        meanT = featureT.mean(0, keepdim=True).mean(2, keepdim=True).mean(3, keepdim=True)
+        meanT = featureT.mean(dim=(0, 2, 3), keepdim=True)
         return featureI - meanT, featureT - meanT
 
     def l2_normalize_channelwise(self, features):
         # Normalize on channel dimension (axis=1)
-        norms = features.norm(p=2, dim=1, keepdim=True)
-        features = features.div(norms + 1e-8)
+        norms = torch.clamp(features.norm(p=2, dim=1, keepdim=True), min=1e-8)
+        features = features.div(norms)
         return features
 
+    def calc_relative_distances(self, raw_dist, axis=1):
+        epsilon = 1e-5
+        # [0] means get the value, torch min will return the index as well
+        div = torch.min(raw_dist, dim=axis, keepdim=True)[0]
+        relative_dist = raw_dist / (div + epsilon)
+        return relative_dist
+
+    def calc_CX(self, dist, axis=1):
+        W = torch.exp((self.b - dist) / self.sigma)
+        W_sum = W.sum(dim=axis, keepdim=True)
+        return W.div(W_sum)
+
     def forward(self, featureT, featureI):
+        '''
+        :param featureT: target
+        :param featureI: inference
+        :return:
+        '''
+
         featureI, featureT = self.center_by_T(featureI, featureT)
+
         featureI = self.l2_normalize_channelwise(featureI)
         featureT = self.l2_normalize_channelwise(featureT)
 
-        B, C, H, W = featureT.shape
-        P = H * W
+        N, C, H_T, W_T = featureT.shape
+        _, _, H_I, W_I = featureI.shape
 
-        # Reshape to (B, C, P)
-        featI_flat = featureI.view(B, C, P)
-        featT_flat = featureT.view(B, C, P)
+        featI_flat = featureI.view(N, C, H_I * W_I)
+        featT_flat = featureT.view(N, C, H_T * W_T)
 
-        # Compute cosine similarity matrix of shape (B, P_T, P_I)
+        # batched matrix multiplication: (N, P_T, C) x (N, C, P_I) -> (N, P_T, P_I)
         dist = torch.bmm(featT_flat.transpose(1, 2), featI_flat)
 
         raw_dist = (1. - dist) / 2.
 
-        epsilon = 1e-5
-        div = torch.min(raw_dist, dim=1, keepdim=True)[0]
-        relative_dist = raw_dist / (div + epsilon)
+        relative_dist = self.calc_relative_distances(raw_dist, axis=1)
 
-        W = torch.exp((self.b - relative_dist) / self.sigma)
-        W_sum = W.sum(dim=1, keepdim=True)
-        CX = W.div(W_sum + 1e-8)
+        CX = self.calc_CX(relative_dist, axis=1)
+        
+        # Take max over spatial dimensions of Inference feature map (dim=2, which is P_I)
+        CX_max = CX.max(dim=2)[0]
+        CX_mean = torch.mean(CX_max, dim=1)
+        CX_loss = torch.mean(-torch.log(CX_mean + 1e-5))
+        return CX_loss
 
-        # Max over P_I (dim=2), then mean over P_T (dim=1)
-        CX = torch.mean(CX.max(dim=2)[0], dim=1)
-        CX = torch.mean(-torch.log(CX + 1e-5))
-        return CX
 
 
 ##############################################################################
@@ -134,33 +152,36 @@ class GramStyleLoss(nn.Module):
 
 class GramMatrix(nn.Module):
     def forward(self, input, feat_len=None):
-        a, b, c, d = input.size()
+        device_type = input.device.type
+        with torch.amp.autocast(device_type, enabled=False):
+            input = input.float()
+            a, b, c, d = input.size()
 
-        if feat_len is not None:
-            # mask for varying lengths
-            mask = _len2mask(feat_len, d).view(a, 1, 1, d)
-            input = input * mask
+            if feat_len is not None:
+                # mask for varying lengths
+                mask = _len2mask(feat_len, d).view(a, 1, 1, d)
+                input = input * mask
+                denom = (c * torch.clamp(feat_len, min=1)).view(a, 1, 1) * b
+            else:
+                denom = float(b * c * d)
 
-        features = input.view(a, b, c * d)
-        G = torch.bmm(features, features.transpose(1, 2))
+            features = input.view(a, b, c * d)
+            G = torch.bmm(features, features.transpose(1, 2))
 
-        return G.div(b * c * d)
+            return G / denom
 
 
 def contrastive_style_loss(fake_styles, real_styles, temperature=0.07):
     """
     Enforces stroke and texture consistency at the latent feature level.
-    fake_styles: (B, 32, style_dim) - Extracted from generated images
-    real_styles: (B, 32, style_dim) - Extracted from input real images
+    fake_styles: (B, 32, style_dim) or (B, style_dim)
+    real_styles: (B, 32, style_dim) or (B, style_dim)
     """
-    # Mean-pool to get style vectors
-    f_s = F.normalize(fake_styles.mean(dim=1), dim=-1) # (B, D)
-    r_s = F.normalize(real_styles.mean(dim=1), dim=-1) # (B, D)
+    _pool = lambda s: s if s.dim() == 2 else s.mean(dim=1)
+    f_s, r_s = F.normalize(_pool(fake_styles), dim=-1), F.normalize(_pool(real_styles), dim=-1)
     
-    # Compute similarity matrix
-    logits = torch.matmul(f_s, r_s.t()) / temperature # (B, B)
-    labels = torch.arange(f_s.size(0)).to(fake_styles.device)
-    
-    # InfoNCE Loss
-    loss = F.cross_entropy(logits, labels)
-    return loss
+    logits = torch.matmul(f_s, r_s.t()) / temperature
+    labels = torch.arange(f_s.size(0), device=fake_styles.device)
+    return F.cross_entropy(logits, labels)
+
+
