@@ -52,7 +52,7 @@ training:
   ema_beta: 0.999
   pretrained_w: './pretrained/wid_iam_new.pth'
   pretrained_r: './pretrained/ocr_iam_new.pth'
-  pretrained_ckpt: './pretrained/last_randomcrop.pth'
+  pretrained_ckpt: ''
   masking_mode: 'combined'
 
 

@@ -1057,8 +1057,6 @@ class GlobalLocalAdversarialModel(AdversarialModel):
         self.ctc_loss = CTCLoss(zero_infinity=True, reduction='mean')
         self.classify_loss = CrossEntropyLoss()
         self.contextual_loss = CXLoss()
-        from networks.loss import GramStyleLoss
-        self.gram_loss = GramStyleLoss()
 
     def train(self):
         self.info()
@@ -1490,7 +1488,7 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                                                                      ret_feats=True)
                     fake_wid_loss = self.classify_loss(recn_wid_logits, real_wids.repeat(2))
 
-                    ###  Contextual Loss and Gram Loss for non-aligned data  ###
+                    ###  Contextual Loss for non-aligned data  ###
                     ctx_loss = torch.tensor(0.0, device=self.device)
                     gram_loss = torch.tensor(0.0, device=self.device)
                     for real_img_feat, fake_img_feat \
@@ -1500,10 +1498,6 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                         ctx_loss += self.contextual_loss(real_img_feat, fake_feat[0])
                         # ctx_loss for recn_imgs
                         ctx_loss += self.contextual_loss(real_img_feat, fake_feat[1])
-
-                        # gram_loss
-                        gram_loss += self.gram_loss(fake_feat[0], real_img_feat)
-                        gram_loss += self.gram_loss(fake_feat[1], real_img_feat)
 
                     kl_loss = KLloss(mu, logvar) if self.vae_mode else torch.tensor(0.0, device=self.device)
 

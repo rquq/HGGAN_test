@@ -7,7 +7,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from . import BigGAN_layers as layers
-from .fusion import StyleContentMamba
+from .fusion import StyleContentFusion
 from networks.utils import init_weights, _len2mask
 
 # Architectures for G
@@ -160,7 +160,7 @@ class Generator(nn.Module):
 
         self.filter_linear = self.which_linear(self.embed_dim,
                                         self.arch['in_channels'][0] * (self.bottom_width * self.bottom_height))
-        self.style_content_mix = StyleContentMamba(self.embed_dim, self.style_dim, vocab_size=self.n_classes)
+        self.style_content_mix = StyleContentFusion(self.embed_dim, self.style_dim, vocab_size=self.n_classes)
         self.mid_fusion_proj = nn.Conv2d(self.embed_dim, self.arch['in_channels'][2], kernel_size=1)
 
         # self.blocks is a doubly-nested list of modules, the outer loop intended

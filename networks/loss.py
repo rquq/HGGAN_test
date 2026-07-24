@@ -49,15 +49,6 @@ def calc_loss_perceptual(hout, hgt, img_lens):
     return loss
 
 
-def gram_matrix(feat):
-    # https://github.com/pytorch/examples/blob/master/fast_neural_style/neural_style/utils.py
-    (b, ch, h, w) = feat.size()
-    feat = feat.view(b, ch, h * w)
-    feat_t = feat.transpose(1, 2)
-    gram = torch.bmm(feat, feat_t) / (ch * h * w)
-    return gram
-
-
 def KLloss(mu, logvar):
     # Handle both 2D [B, D] and 3D [B, L, D] cases
     loss = -0.5 * (1 + logvar - mu ** 2 - logvar.exp())
@@ -67,7 +58,7 @@ def KLloss(mu, logvar):
 
 
 ##############################################################################
-# Contextual loss
+# Contextual loss (Perceptual feature matching without rigid spatial alignment)
 ##############################################################################
 class CXLoss(nn.Module):
     def __init__(self, sigma=0.5, b=1.0, similarity="cosine"):
@@ -89,7 +80,6 @@ class CXLoss(nn.Module):
 
     def calc_relative_distances(self, raw_dist, axis=1):
         epsilon = 1e-5
-        # [0] means get the value, torch min will return the index as well
         div = torch.min(raw_dist, dim=axis, keepdim=True)[0]
         relative_dist = raw_dist / (div + epsilon)
         return relative_dist
@@ -105,7 +95,6 @@ class CXLoss(nn.Module):
         :param featureI: inference
         :return:
         '''
-
         featureI, featureT = self.center_by_T(featureI, featureT)
 
         featureI = self.l2_normalize_channelwise(featureI)
@@ -121,7 +110,6 @@ class CXLoss(nn.Module):
         dist = torch.bmm(featT_flat.transpose(1, 2), featI_flat)
 
         raw_dist = (1. - dist) / 2.
-
         relative_dist = self.calc_relative_distances(raw_dist, axis=1)
 
         CX = self.calc_CX(relative_dist, axis=1)
@@ -133,55 +121,32 @@ class CXLoss(nn.Module):
         return CX_loss
 
 
-
 ##############################################################################
-# Gram style loss
+# Token-Level Contrastive Style Loss (InfoNCE)
 ##############################################################################
-class GramStyleLoss(nn.Module):
-    def __init__(self):
-        super(GramStyleLoss, self).__init__()
-        self.gram = GramMatrix()
-        self.criterion = nn.MSELoss()
-
-    def __call__(self, input_feat, target_feat, feat_len=None):
-        input_gram = self.gram(input_feat, feat_len)
-        target_gram = self.gram(target_feat, feat_len)
-        loss = self.criterion(input_gram, target_gram)
-        return loss
-
-
-class GramMatrix(nn.Module):
-    def forward(self, input, feat_len=None):
-        device_type = input.device.type
-        with torch.amp.autocast(device_type, enabled=False):
-            input = input.float()
-            a, b, c, d = input.size()
-
-            if feat_len is not None:
-                # mask for varying lengths
-                mask = _len2mask(feat_len, d).view(a, 1, 1, d)
-                input = input * mask
-                denom = (c * torch.clamp(feat_len, min=1)).view(a, 1, 1) * b
-            else:
-                denom = float(b * c * d)
-
-            features = input.view(a, b, c * d)
-            G = torch.bmm(features, features.transpose(1, 2))
-
-            return G / denom
-
-
 def contrastive_style_loss(fake_styles, real_styles, temperature=0.07):
     """
     Enforces stroke and texture consistency at the latent feature level.
-    fake_styles: (B, 32, style_dim) or (B, style_dim)
-    real_styles: (B, 32, style_dim) or (B, style_dim)
+    Supports both 2D (B, style_dim) and 3D (B, S, style_dim) multi-token style representations.
+    For 3D token representations, preserves fine-grained token diversity via max-similarity matching.
     """
-    _pool = lambda s: s if s.dim() == 2 else s.mean(dim=1)
-    f_s, r_s = F.normalize(_pool(fake_styles), dim=-1), F.normalize(_pool(real_styles), dim=-1)
-    
-    logits = torch.matmul(f_s, r_s.t()) / temperature
-    labels = torch.arange(f_s.size(0), device=fake_styles.device)
-    return F.cross_entropy(logits, labels)
-
-
+    if fake_styles.dim() == 3:
+        # Token-level matching for multi-token style sequence (B, S, D)
+        f_s = F.normalize(fake_styles, dim=-1) # (B, S, D)
+        r_s = F.normalize(real_styles, dim=-1) # (B, S, D)
+        
+        # Batch-wide pairwise similarity matrix across tokens
+        # f_s: (B, S, D), r_s: (B, S, D) -> logits: (B, B, S, S)
+        logits = torch.einsum('b s d, c t d -> b c s t', f_s, r_s) / temperature
+        
+        # Max-pooled token similarity between batch items
+        token_logits = logits.max(dim=-1)[0].mean(dim=-1) # (B, B)
+        
+        labels = torch.arange(f_s.size(0), device=fake_styles.device)
+        return F.cross_entropy(token_logits, labels)
+    else:
+        f_s = F.normalize(fake_styles, dim=-1)
+        r_s = F.normalize(real_styles, dim=-1)
+        logits = torch.matmul(f_s, r_s.t()) / temperature
+        labels = torch.arange(f_s.size(0), device=fake_styles.device)
+        return F.cross_entropy(logits, labels)
