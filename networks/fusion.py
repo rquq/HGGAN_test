@@ -194,7 +194,7 @@ class StyleContentFusion(nn.Module):
             content_fused = content_fused * mask.to(content_fused.dtype).unsqueeze(-1)
             
         # --- STAGE 4: Global Style Residual Modulation ---
-        style_vec = style_seq.mean(dim=1) # Global mean pool across S style tokens
+        style_vec = torch.mean(style_seq, dim=1) # Global mean pool across S style tokens
         mod_params = self.global_style_mod(style_vec).unsqueeze(1) # (B, 1, D*2)
         scale, shift = mod_params.chunk(2, dim=-1)
         

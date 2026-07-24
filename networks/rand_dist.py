@@ -27,7 +27,7 @@ class Distribution(torch.Tensor):
             self.generator = None
             self.np_rng = None
         if self.dist_type == 'normal':
-            self.mean, self.var = kwargs['mean'], kwargs['var']
+            self.dist_mean, self.var = kwargs['mean'], kwargs['var']
         elif self.dist_type == 'uniform':
             self.low, self.high = kwargs['low'], kwargs['high']
         elif self.dist_type == 'categorical':
@@ -42,10 +42,10 @@ class Distribution(torch.Tensor):
             if self.dim() == 3:
                 B, T, D = self.size()
                 temp = torch.empty((B, 1, D), device=self.device, dtype=self.dtype)
-                temp.normal_(self.mean, self.var, generator=self.generator)
+                temp.normal_(self.dist_mean, self.var, generator=self.generator)
                 self.data.copy_(temp.repeat(1, T, 1))
             else:
-                self.normal_(self.mean, self.var, generator=self.generator)
+                self.normal_(self.dist_mean, self.var, generator=self.generator)
         elif self.dist_type == 'uniform':
             self.uniform_(self.low, self.high, generator=self.generator)
         elif self.dist_type == 'categorical':
@@ -108,7 +108,7 @@ class Distribution(torch.Tensor):
         # Share the numpy RNG instance (device-independent)
         new_obj.np_rng = getattr(self, 'np_rng', None)
         if dist_type == 'normal':
-            new_obj.mean = getattr(self, 'mean', 0)
+            new_obj.dist_mean = getattr(self, 'dist_mean', getattr(self, 'mean', 0))
             new_obj.var = getattr(self, 'var', 1.0)
         elif dist_type == 'uniform':
             new_obj.low = getattr(self, 'low', 0)
