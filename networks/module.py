@@ -109,7 +109,9 @@ class StarBlock2D(nn.Module):
         x = self.norm_dw(self.dwconv(x))
         x1 = self.act(self.f1(x))
         x2 = self.f2(x)
-        x = self.g(x1 * x2) # Star Operation (element-wise multiplication)
+        # Scale Star product by 1/sqrt(hidden_dim) to stabilize polynomial feature magnitude
+        scale = x1.size(1) ** -0.5
+        x = self.g((x1 * x2) * scale) # Scaled Star Operation (element-wise multiplication)
         return res + self.norm_out(x)
 
 
@@ -343,7 +345,7 @@ class StyleEncoder(nn.Module):
         # Cross-attention: queries look at the spatial style keys
         style_seq, _ = self.style_cross_attn(query=style_queries, key=style_keys, value=style_keys)
         
-        style = F.silu(self.linear_style(style_seq))
+        style = self.linear_style(style_seq)
         style_tokens_mu = self.mu(style) # (B, 32, style_dim)
 
         if vae_mode:
