@@ -25,54 +25,88 @@ def G_arch(ch=64, attention='64', ksize='333333', dilation='111111'):
     return arch
 
 
-class BlockSpecificStyleProjection(nn.Module):
+class StarFilter(nn.Module):
     """
-    Learned attention-based pooling for each GBlock in the generator.
-    Avoids destroying spatial style details by letting each block selectively pool style tokens.
+    Star-based projection layer that transforms fused sequence features y_mixed (B, L, embed_dim)
+    into high-dimensional 2D spatial feature canvas via element-wise multiplication (CVPR '24).
+    """
+    def __init__(self, in_dim, out_dim, which_linear=nn.Linear):
+        super().__init__()
+        self.f1 = which_linear(in_dim, out_dim)
+        self.f2 = which_linear(in_dim, out_dim)
+        self.act = nn.ReLU6()
+
+    def forward(self, y_mixed):
+        x1 = self.f1(y_mixed)
+        x2 = self.f2(y_mixed)
+        return self.act(x1) * x2
+
+
+class StarBSSP(nn.Module):
+    """
+    Star-gated Block Specific Style-Content Projection.
+    Pools y_mixed (fused style-content tokens) for each downstream GBlock using Star Operation.
     """
     def __init__(self, style_dim, num_blocks=4, style_chunk_size=32, which_linear=nn.Linear):
         super().__init__()
         self.num_blocks = num_blocks
         self.style_chunk_size = style_chunk_size
         
-        # Attention queries for each block to dynamically pool the style tokens
-        self.pool_queries = nn.ParameterList([
+        # Dual query parameters per block for Star Attention
+        self.pool_queries1 = nn.ParameterList([
+            nn.Parameter(torch.randn(1, 1, style_dim) * 0.02) for _ in range(num_blocks)
+        ])
+        self.pool_queries2 = nn.ParameterList([
             nn.Parameter(torch.randn(1, 1, style_dim) * 0.02) for _ in range(num_blocks)
         ])
         
-        # Block-specific projection layers using which_linear for Spectral Normalization stability
-        self.projections = nn.ModuleList([
+        # Dual projection layers for Star Operation
+        self.projections1 = nn.ModuleList([
             nn.Sequential(
                 which_linear(style_dim, style_chunk_size),
                 nn.SiLU(),
                 which_linear(style_chunk_size, style_chunk_size)
             ) for _ in range(num_blocks)
         ])
+        self.projections2 = nn.ModuleList([
+            nn.Sequential(
+                which_linear(style_dim, style_chunk_size),
+                which_linear(style_chunk_size, style_chunk_size)
+            ) for _ in range(num_blocks)
+        ])
+        self.act = nn.ReLU6()
 
-    def forward(self, z):
+    def forward(self, y_mixed):
         """
         Args:
-            z: (B, S, D) - Style sequence from encoder (S style tokens of dimension D=style_dim)
+            y_mixed: (B, L, D) - Fused sequence features from StyleContentFusion
         Returns:
-            ys: list of style vectors of shape (B, style_chunk_size) modulating each GBlock
+            ys: list of fused style-content condition vectors of shape (B, style_chunk_size)
         """
-        B, S, D = z.shape
+        B, L, D = y_mixed.shape
         ys = []
         for i in range(self.num_blocks):
-            # pool_queries[i] has shape (1, 1, D)
-            # z.transpose(-2, -1) has shape (B, D, S)
-            # Query-Key dot product yields (B, 1, S) compatibility scores
-            scores = torch.matmul(self.pool_queries[i], z.transpose(-2, -1)) / (D ** 0.5)
-            attn_weights = torch.softmax(scores, dim=-1) # (B, 1, S)
+            # Dual query-key compatibility scores
+            s1 = torch.matmul(self.pool_queries1[i], y_mixed.transpose(-2, -1)) / (D ** 0.5)
+            s2 = torch.matmul(self.pool_queries2[i], y_mixed.transpose(-2, -1)) / (D ** 0.5)
             
-            # Weighted average: (B, 1, S) x (B, S, D) -> (B, 1, D) -> (B, D)
-            z_pooled = torch.matmul(attn_weights, z).squeeze(1)
+            # Star attention weighting
+            attn_weights = torch.softmax(self.act(s1) * s2, dim=-1) # (B, 1, L)
             
-            # Project to the CCBN modulation dimension
-            y_block = self.projections[i](z_pooled)
-            ys.append(y_block)
+            # Weighted average across fused sequence length
+            pooled = torch.matmul(attn_weights, y_mixed).squeeze(1) # (B, D)
+            
+            # Dual-branch Star projection to CCBN modulation size
+            p1 = self.act(self.projections1[i](pooled))
+            p2 = self.projections2[i](pooled)
+            ys.append(p1 * p2)
             
         return ys
+
+
+class BlockSpecificStyleProjection(StarBSSP):
+    """Alias for backwards compatibility using StarBSSP."""
+    pass
 
 
 class Generator(nn.Module):
@@ -153,7 +187,7 @@ class Generator(nn.Module):
         else:
             bn_linear = nn.Linear
 
-        self.which_bn = functools.partial(layers.ccbn,
+        self.which_bn = functools.partial(layers.StarCCBN,
                                           which_linear=bn_linear,
                                           cross_replica=self.cross_replica,
                                           mybn=self.mybn,
@@ -161,11 +195,12 @@ class Generator(nn.Module):
                                           norm_style=self.norm_style,
                                           eps=self.BN_eps)
 
-        self.filter_linear = self.which_linear(self.embed_dim,
-                                        self.arch['in_channels'][0] * (self.bottom_width * self.bottom_height))
+        self.filter_linear = StarFilter(self.embed_dim,
+                                        self.arch['in_channels'][0] * (self.bottom_width * self.bottom_height),
+                                        which_linear=self.which_linear)
         self.style_content_mix = StyleContentFusion(self.embed_dim, self.style_dim, vocab_size=self.n_classes)
 
-        self.bssp = BlockSpecificStyleProjection(style_dim=self.style_dim, num_blocks=len(self.arch['in_channels']), style_chunk_size=self.z_chunk_size, which_linear=self.which_linear)
+        self.bssp = StarBSSP(style_dim=self.embed_dim, num_blocks=len(self.arch['in_channels']), style_chunk_size=self.z_chunk_size, which_linear=self.which_linear)
 
         # self.blocks is a doubly-nested list of modules, the outer loop intended
         # to be over blocks at a given resolution (resblocks and/or self-attention)
@@ -202,12 +237,14 @@ class Generator(nn.Module):
 
     def forward(self, z, y, y_lens):
         # z is now a sequence of shape (B, 32, style_dim)
-        # 1. Disentangle Structure vs Texture: Block-Specific Attention Pooling for GBlocks
-        ys = self.bssp(z)
-
         char_ids = y
         y = self.text_embedding(y).float().to(y.device)
         y_mixed = self.style_content_mix(y, z, char_ids=char_ids, y_lens=y_lens)
+
+        # 1. Disentangle Structure vs Texture: Block-Specific Star Attention Pooling over y_mixed
+        ys = self.bssp(y_mixed)
+
+        # 2. StarFilter converts fused features to 2D spatial canvas
         h = self.filter_linear(y_mixed)
 
         # Reshape - when y is not a single class value but rather an array of classes, the reshape is needed to create
@@ -238,6 +275,7 @@ class Generator(nn.Module):
             output = output * mask + (mask - 1)
 
         return output
+
 
     def _info_attention(self):
         attn_index = -1

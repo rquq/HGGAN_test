@@ -345,6 +345,62 @@ class ccbn(nn.Module):
         return s.format(**self.__dict__)
 
 
+class StarCCBN(nn.Module):
+    """
+    Class-Conditional Batch Normalization with Star Operation modulation (Rewrite the Stars, CVPR '24).
+    Uses dual linear gain branches with ReLU6 element-wise multiplication for 2nd-order feature interaction.
+    """
+    def __init__(self, output_size, input_size, which_linear, eps=1e-5, momentum=0.1,
+                 cross_replica=False, mybn=False, norm_style='bn'):
+        super(StarCCBN, self).__init__()
+        self.output_size, self.input_size = output_size, input_size
+        self.gain1 = which_linear(input_size, output_size)
+        self.gain2 = which_linear(input_size, output_size)
+        self.bias  = which_linear(input_size, output_size)
+        self.act   = nn.ReLU6()
+        self.eps   = eps
+        self.momentum = momentum
+        self.cross_replica = cross_replica
+        self.mybn = mybn
+        self.norm_style = norm_style
+
+        if self.cross_replica:
+            self.bn = SyncBN2d(output_size, eps=self.eps, momentum=self.momentum, affine=False)
+        elif self.mybn:
+            self.bn = myBN(output_size, self.eps, self.momentum)
+        elif self.norm_style in ['bn', 'in']:
+            self.register_buffer('stored_mean', torch.zeros(output_size))
+            self.register_buffer('stored_var', torch.ones(output_size))
+
+    def forward(self, x, y):
+        # Calculate Star-modulated class-conditional gains and biases
+        g1 = self.act(self.gain1(y)).view(y.size(0), -1, 1, 1)
+        g2 = self.gain2(y).view(y.size(0), -1, 1, 1)
+        gain = (1 + g1 * g2)
+        bias = self.bias(y).view(y.size(0), -1, 1, 1)
+
+        if self.mybn or self.cross_replica:
+            return self.bn(x, gain=gain, bias=bias)
+        else:
+            if self.norm_style == 'bn':
+                out = F.batch_norm(x, self.stored_mean, self.stored_var, None, None,
+                                   self.training, 0.1, self.eps)
+            elif self.norm_style == 'in':
+                out = F.instance_norm(x, self.stored_mean, self.stored_var, None, None,
+                                      self.training, 0.1, self.eps)
+            elif self.norm_style == 'gn':
+                out = groupnorm(x, self.norm_style)
+            elif self.norm_style == 'nonorm':
+                out = x
+            return out * gain + bias
+
+    def extra_repr(self):
+        s = 'out: {output_size}, in: {input_size},'
+        s += ' cross_replica={cross_replica}'
+        return s.format(**self.__dict__)
+
+
+
 # Normal, non-class-conditional BN
 class bn(nn.Module):
     def __init__(self, output_size, eps=1e-5, momentum=0.1,
