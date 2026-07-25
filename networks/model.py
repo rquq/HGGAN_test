@@ -477,11 +477,19 @@ class AdversarialModel(BaseModel):
     def set_mode(self, mode='eval'):
         super().set_mode(mode)
         if mode == 'train' and self.models is not None:
-            # These pretrained networks are fixed teachers/features. Keeping them
-            # in train mode changed BN statistics even with requires_grad=False.
-            for name in ('R', 'W', 'B'):
+            # W/B are fixed feature teachers and remain entirely in eval mode.
+            for name in ('W', 'B'):
                 if name in self.models:
                     self.models[name].eval()
+
+            if 'R' in self.models:
+                # Keep the recognizer deterministic/frozen, but cuDNN LSTM needs
+                # its own training flag to retain the workspace required for
+                # backward gradients into generated images.
+                recognizer = self.unwrap_model(self.models.R)
+                recognizer.eval()
+                if recognizer.use_rnn:
+                    recognizer.rnn_ctc.train()
 
     def train(self):
         raise NotImplementedError()

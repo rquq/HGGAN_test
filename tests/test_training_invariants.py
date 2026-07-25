@@ -87,3 +87,40 @@ def test_writer_batches_losses_and_ema_buffers():
 
     torch.testing.assert_close(averaged.running_mean, current.running_mean)
     assert torch.equal(averaged.num_batches_tracked, current.num_batches_tracked)
+
+
+def test_recognizer_cudnn_rnn_backward_in_train_mode():
+    if not torch.cuda.is_available():
+        return
+
+    from networks.module import Recognizer
+
+    recognizer = Recognizer(
+        resolution=8, max_dim=32, in_channel=1, n_class=20,
+        rnn_depth=1, bidirectional=True, norm='bn', init='none', dropout=0.0,
+    ).cuda()
+    recognizer.requires_grad_(False)
+    recognizer.eval()
+    recognizer.rnn_ctc.train()
+
+    assert recognizer.rnn_ctc.lstm.training
+    assert all(
+        not module.training for module in recognizer.modules()
+        if isinstance(module, nn.modules.batchnorm._BatchNorm)
+    )
+
+    images = torch.randn(2, 1, 64, 128, device='cuda', requires_grad=True)
+    image_lengths = torch.tensor([96, 128], device='cuda')
+    log_probs = recognizer(images, image_lengths, return_log_probs=True)
+    targets = torch.tensor([[1, 2, 0], [3, 4, 5]], device='cuda')
+    target_lengths = torch.tensor([2, 3], device='cuda')
+    input_lengths = torch.full(
+        (2,), log_probs.size(0), dtype=torch.long, device='cuda'
+    )
+    loss = torch.nn.functional.ctc_loss(
+        log_probs, targets, input_lengths, target_lengths, zero_infinity=True
+    )
+    loss.backward()
+
+    assert images.grad is not None and torch.isfinite(images.grad).all()
+    assert all(parameter.grad is None for parameter in recognizer.parameters())
