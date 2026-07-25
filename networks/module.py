@@ -76,45 +76,6 @@ class HeavyCNNAttention(nn.Module):
         return x + self.gamma * out
 
 
-class StarBlock2D(nn.Module):
-    """
-    2D StarNet Block based on 'Rewrite the Stars' (Ma et al., CVPR 2024).
-    Uses 7x7 Depthwise Conv + Star Operation (f1(x) * f2(x)) to map spatial features
-    into an implicit high-dimensional polynomial feature space O(d^2) without channel expansion.
-    """
-    def __init__(self, in_dim, out_dim=None, mlp_ratio=2, norm='bn'):
-        super().__init__()
-        out_dim = out_dim or in_dim
-        self.dwconv = nn.Conv2d(in_dim, in_dim, kernel_size=7, padding=3, groups=in_dim, bias=False)
-        if norm == 'bn':
-            self.norm_dw = nn.BatchNorm2d(in_dim)
-            self.norm_out = nn.BatchNorm2d(out_dim)
-        elif norm == 'in':
-            self.norm_dw = nn.InstanceNorm2d(in_dim)
-            self.norm_out = nn.InstanceNorm2d(out_dim)
-        else:
-            self.norm_dw = nn.GroupNorm(min(8, in_dim), in_dim)
-            self.norm_out = nn.GroupNorm(min(8, out_dim), out_dim)
-
-        hidden_dim = int(out_dim * mlp_ratio)
-        self.f1 = nn.Conv2d(in_dim, hidden_dim, kernel_size=1)
-        self.f2 = nn.Conv2d(in_dim, hidden_dim, kernel_size=1)
-        self.g  = nn.Conv2d(hidden_dim, out_dim, kernel_size=1)
-        self.act = nn.ReLU6()
-
-        self.shortcut = nn.Conv2d(in_dim, out_dim, kernel_size=1) if in_dim != out_dim else nn.Identity()
-
-    def forward(self, x):
-        res = self.shortcut(x)
-        x = self.norm_dw(self.dwconv(x))
-        x1 = self.act(self.f1(x))
-        x2 = self.f2(x)
-        # Scale Star product by 1/sqrt(hidden_dim) to stabilize polynomial feature magnitude
-        scale = x1.size(1) ** -0.5
-        x = self.g((x1 * x2) * scale) # Scaled Star Operation (element-wise multiplication)
-        return res + self.norm_out(x)
-
-
 class StyleBackbone(nn.Module):
     def __init__(self, resolution=16, max_dim=256, in_channel=1, init='N02', dropout=0.0, norm='bn'):
         super(StyleBackbone, self).__init__()
@@ -126,9 +87,9 @@ class StyleBackbone(nn.Module):
                              activation='none')]
         for i in range(2):
             nf_out = min([int(nf * 2), max_dim])
-            cnn_f += [StarBlock2D(nf, nf, norm=norm)]
+            cnn_f += [ActFirstResBlock(nf, nf, None, 'relu', norm, 'zero', dropout=dropout / 2)]
             cnn_f += [nn.ZeroPad2d((1, 1, 0, 0))]
-            cnn_f += [StarBlock2D(nf, nf_out, norm=norm)]
+            cnn_f += [ActFirstResBlock(nf, nf_out, None, 'relu', norm, 'zero', dropout=dropout / 2)]
             cnn_f += [nn.ZeroPad2d(1)]
             cnn_f += [nn.MaxPool2d(kernel_size=3, stride=2)]
             nf = min([nf_out, max_dim])
@@ -136,8 +97,8 @@ class StyleBackbone(nn.Module):
         df = nf
         for i in range(2):
             df_out = min([int(df * 2), max_dim])
-            cnn_f += [StarBlock2D(df, df, norm=norm)]
-            cnn_f += [StarBlock2D(df, df_out, norm=norm)]
+            cnn_f += [ActFirstResBlock(df, df, None, 'relu', norm, 'zero', dropout=dropout)]
+            cnn_f += [ActFirstResBlock(df, df_out, None, 'relu', norm, 'zero', dropout=dropout)]
             if i < 1:
                 cnn_f += [nn.MaxPool2d(kernel_size=3, stride=2)]
             else:

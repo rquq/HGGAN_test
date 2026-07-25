@@ -21,7 +21,7 @@ from lib.datasets import get_dataset, get_collect_fn, Hdf5Dataset
 from lib.alphabet import strLabelConverter, get_lexicon, get_true_alphabet, Alphabets
 from lib.utils import draw_image, get_logger, AverageMeterManager, option_to_string, AverageMeter, plot_heatmap
 from networks.rand_dist import prepare_z_dist, prepare_y_dist
-from networks.loss import recn_l1_loss, CXLoss, KLloss, contrastive_style_loss
+from networks.loss import recn_l1_loss, CXLoss, KLloss, contrastive_style_loss, GramStyleLoss
 from networks.masking import apply_vertical_stripe_mask, apply_horizontal_stripe_mask, apply_combined_stripe_mask, apply_light_mixed_patch_mask
 
 
@@ -1057,6 +1057,7 @@ class GlobalLocalAdversarialModel(AdversarialModel):
         self.ctc_loss = CTCLoss(zero_infinity=True, reduction='mean')
         self.classify_loss = CrossEntropyLoss()
         self.contextual_loss = CXLoss()
+        self.gram_loss = GramStyleLoss()
 
     def train(self):
         self.info()
@@ -1246,7 +1247,7 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                                                     'fake_ctc_loss', 'info_loss',
                                                     'style_contrastive_loss',
                                                     'fake_wid_loss', 'ctx_loss',
-                                                    'kl_loss', 'gp_ctc', 'gp_info',
+                                                    'kl_loss', 'gram_loss', 'gp_ctc', 'gp_info',
                                                     'gp_wid', 'gp_recn'])
         device = self.device
 
@@ -1488,8 +1489,9 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                                                                      ret_feats=True)
                     fake_wid_loss = self.classify_loss(recn_wid_logits, real_wids.repeat(2))
 
-                    ###  Contextual Loss for non-aligned data  ###
+                    ###  Contextual Loss and Gram Loss for non-aligned data  ###
                     ctx_loss = torch.tensor(0.0, device=self.device)
+                    gram_loss = torch.tensor(0.0, device=self.device)
                     for real_img_feat, fake_img_feat \
                             in zip(real_img_feats, fake_imgs_feats):
                         fake_feat = fake_img_feat.chunk(2, dim=0)
@@ -1497,6 +1499,10 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                         ctx_loss += self.contextual_loss(real_img_feat, fake_feat[0])
                         # ctx_loss for recn_imgs
                         ctx_loss += self.contextual_loss(real_img_feat, fake_feat[1])
+
+                        # gram_loss
+                        gram_loss += self.gram_loss(fake_feat[0], real_img_feat)
+                        gram_loss += self.gram_loss(fake_feat[1], real_img_feat)
 
                     kl_loss = KLloss(mu, logvar) if self.vae_mode else torch.tensor(0.0, device=self.device)
 
@@ -1527,6 +1533,7 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                              gp_wid * fake_wid_loss + \
                              gp_recn * recn_loss + \
                              self.opt.training.lambda_ctx * ctx_loss + \
+                             self.opt.training.lambda_gram * gram_loss + \
                              self.opt.training.lambda_kl * kl_loss
                     
                     g_loss.backward()
@@ -1538,6 +1545,7 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                     self.averager_meters.update('fake_wid_loss', fake_wid_loss.item())
                     self.averager_meters.update('recn_loss', recn_loss.item())
                     self.averager_meters.update('ctx_loss', ctx_loss.item())
+                    self.averager_meters.update('gram_loss', gram_loss.item())
                     self.averager_meters.update('kl_loss', kl_loss.item())
                     self.optimizers.G.step()
                     if self.use_ema:
@@ -1551,7 +1559,7 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                     self.averager_meters.reset_all()
                     info = "[%3d|%3d]-[%4d|%4d] G:%.4f G-p:%.4f D-fake:%.4f D-real:%.4f " \
                            "D-fake-p:%.4f D-real-p:%.4f CTC-fake:%.4f Wid-fake:%.4f " \
-                           "Recn-z:%.4f Cont-z:%.4f Recn-c:%.4f Ctx:%.4f Kl:%.4f" \
+                           "Recn-z:%.4f Cont-z:%.4f Recn-c:%.4f Ctx:%.4f Gram:%.4f Kl:%.4f" \
                            % (epoch, self.opt.training.epochs,
                               iter_count % len(self.train_loader), len(self.train_loader),
                               meter_vals['adv_loss'], meter_vals['adv_loss_patch'],
@@ -1559,7 +1567,7 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                               meter_vals['fake_disc_loss_patch'], meter_vals['real_disc_loss_patch'],
                               meter_vals['fake_ctc_loss'], meter_vals['fake_wid_loss'], meter_vals['info_loss'],
                               meter_vals['style_contrastive_loss'], meter_vals['recn_loss'], meter_vals['ctx_loss'],
-                              meter_vals['kl_loss'])
+                              meter_vals['gram_loss'], meter_vals['kl_loss'])
                     self.print(info) if self.local_rank < 1 else None
 
                     if _is_master:

@@ -25,7 +25,7 @@ training:
   sample_iter_val: 200
   print_iter_val: 20
   start_save_epoch_val: 0
-  eval_epoch_val: 0.01
+  eval_epoch_val: 1
   save_epoch_val: 1
   # val_iter: 6500
   sample_dir: 'imgs'
@@ -36,9 +36,9 @@ training:
   capitalize_ratio: 0.5
   blank_ratio: 0.
   sort_input: true
-  num_critic_train: 1
+  num_critic_train: 4
   vae_mode: true
-  lambda_kl: 0.001
+  lambda_kl: 0.0001
   lambda_ctx: 2.0
   lambda_gram: 2.0
   update_ema: true

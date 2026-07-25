@@ -153,15 +153,19 @@ class Generator(nn.Module):
         else:
             bn_linear = nn.Linear
 
-        self.which_bn = functools.partial(layers.bn,
+        self.which_bn = functools.partial(layers.ccbn,
+                                          which_linear=bn_linear,
                                           cross_replica=self.cross_replica,
                                           mybn=self.mybn,
+                                          input_size=self.z_chunk_size,
+                                          norm_style=self.norm_style,
                                           eps=self.BN_eps)
 
         self.filter_linear = self.which_linear(self.embed_dim,
                                         self.arch['in_channels'][0] * (self.bottom_width * self.bottom_height))
         self.style_content_mix = StyleContentFusion(self.embed_dim, self.style_dim, vocab_size=self.n_classes)
-        self.mid_fusion_proj = nn.Conv2d(self.embed_dim, self.arch['in_channels'][2], kernel_size=1)
+
+        self.bssp = BlockSpecificStyleProjection(style_dim=self.style_dim, num_blocks=len(self.arch['in_channels']), style_chunk_size=self.z_chunk_size, which_linear=self.which_linear)
 
         # self.blocks is a doubly-nested list of modules, the outer loop intended
         # to be over blocks at a given resolution (resblocks and/or self-attention)
@@ -197,9 +201,12 @@ class Generator(nn.Module):
             init_weights(self, self.init)
 
     def forward(self, z, y, y_lens):
+        # z is now a sequence of shape (B, 32, style_dim)
+        # 1. Disentangle Structure vs Texture: Block-Specific Attention Pooling for GBlocks
+        ys = self.bssp(z)
+
         char_ids = y
         y = self.text_embedding(y).float().to(y.device)
-        # 1. Primary Engine: Fusion handles 100% of style + content alignment
         y_mixed = self.style_content_mix(y, z, char_ids=char_ids, y_lens=y_lens)
         h = self.filter_linear(y_mixed)
 
@@ -212,18 +219,12 @@ class Generator(nn.Module):
         len_scale = 1
         x_lens = y_lens * self.bottom_width
         for index, blocklist in enumerate(self.blocks):
-            if index == 2:
-                # Multi-stage fusion injection into intermediate resolution block (16x32)
-                y_trans = y_mixed.transpose(1, 2).unsqueeze(2)
-                y_spatial = F.interpolate(y_trans, size=(h.size(2), h.size(3)), mode='nearest')
-                h = h + self.mid_fusion_proj(y_spatial)
-
             # Second inner loop in case block has multiple layers
             for block in blocklist:
                 if isinstance(block, layers.Attention):
                     h = block(h, x_lens=x_lens * len_scale)
                 else:
-                    h = block(h)
+                    h = block(h, y=ys[index])
             len_scale *= self.arch['upsample'][index][1]
 
         # Apply batchnorm-relu-conv-tanh at output
