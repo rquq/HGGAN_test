@@ -59,11 +59,10 @@ def gram_matrix(feat):
 
 
 def KLloss(mu, logvar):
-    # Handle both 2D [B, D] and 3D [B, L, D] cases
+    # Mean, rather than sum, makes this weight independent of token count and
+    # style dimension and prevents KL from abruptly dominating the generator.
     loss = -0.5 * (1 + logvar - mu ** 2 - logvar.exp())
-    # Sum over all dimensions except batch, then mean over batch
-    loss = loss.view(loss.size(0), -1).sum(dim=1)
-    return torch.mean(loss)
+    return loss.flatten(1).mean(dim=1).mean()
 
 
 ##############################################################################
@@ -171,17 +170,41 @@ class GramMatrix(nn.Module):
             return G / denom
 
 
+def _global_style(style):
+    return style if style.dim() == 2 else style[:, 0]
+
+
 def contrastive_style_loss(fake_styles, real_styles, temperature=0.07):
-    """
-    Enforces stroke and texture consistency at the latent feature level.
-    fake_styles: (B, 32, style_dim) or (B, style_dim)
-    real_styles: (B, 32, style_dim) or (B, style_dim)
-    """
-    _pool = lambda s: s if s.dim() == 2 else torch.mean(s, dim=1)
-    f_s, r_s = F.normalize(_pool(fake_styles), dim=-1), F.normalize(_pool(real_styles), dim=-1)
-    
-    logits = torch.matmul(f_s, r_s.t()) / temperature
-    labels = torch.arange(f_s.size(0), device=fake_styles.device)
+    """Match corresponding samples using the explicit global style token."""
+    fake_global = F.normalize(_global_style(fake_styles), dim=-1)
+    real_global = F.normalize(_global_style(real_styles), dim=-1)
+    logits = torch.matmul(fake_global, real_global.t()) / temperature
+    labels = torch.arange(fake_global.size(0), device=fake_styles.device)
     return F.cross_entropy(logits, labels)
+
+
+def supervised_contrastive_style_loss(styles, writer_ids, temperature=0.1):
+    """Pull same-writer global style tokens together and repel other writers."""
+    features = F.normalize(_global_style(styles), dim=-1)
+    writer_ids = writer_ids.view(-1)
+    count = features.size(0)
+    if count < 2:
+        return features.sum() * 0.0
+
+    self_mask = torch.eye(count, dtype=torch.bool, device=features.device)
+    positive_mask = writer_ids[:, None].eq(writer_ids[None, :]) & ~self_mask
+    valid_anchors = positive_mask.any(dim=1)
+    if not valid_anchors.any():
+        return features.sum() * 0.0
+
+    logits = torch.matmul(features, features.t()) / temperature
+    logits = logits - logits.max(dim=1, keepdim=True).values.detach()
+    exp_logits = torch.exp(logits).masked_fill(self_mask, 0.0)
+    log_prob = logits - torch.log(exp_logits.sum(dim=1, keepdim=True).clamp_min(1e-8))
+    mean_positive_log_prob = (
+        (log_prob * positive_mask.to(log_prob.dtype)).sum(dim=1)
+        / positive_mask.sum(dim=1).clamp_min(1)
+    )
+    return -mean_positive_log_prob[valid_anchors].mean()
 
 

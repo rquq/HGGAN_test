@@ -174,159 +174,199 @@ def get_2d_sinusoidal_embeddings(height, width, dim, device):
     return pe
 
 
+class _GradientReverse(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, x, scale):
+        ctx.scale = scale
+        return x.view_as(x)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        return -ctx.scale * grad_output, None
+
+
+def _gradient_reverse(x, scale):
+    return _GradientReverse.apply(x, scale)
+
+
 class StyleEncoder(nn.Module):
-    def __init__(self, style_dim=32, in_dim=256, init='N02', **kwargs):
+    def __init__(self, style_dim=32, in_dim=256, init='N02', num_style_tokens=8,
+                 backbone_channels=(64, 128, 256), n_class=80, content_grl=1.0,
+                 **kwargs):
         super(StyleEncoder, self).__init__()
         self.style_dim = style_dim
+        self._in_dim = in_dim
+        self.num_style_tokens = num_style_tokens
+        self.content_grl = content_grl
+        if num_style_tokens < 1:
+            raise ValueError('num_style_tokens must be at least 1')
 
-        ######################################
-        # Construct StyleEncoder
-        ######################################
         self.linear_style = nn.Sequential(
             nn.Linear(in_dim, in_dim),
             nn.LeakyReLU(),
             nn.Linear(in_dim, in_dim),
             nn.LeakyReLU(),
         )
-
         self.mu = nn.Linear(in_dim, style_dim)
         self.logvar = nn.Linear(in_dim, style_dim)
-        
-        # ADD: Heavy CNN to capture global word geometry (slant, spacing, ratio)
         self.sequence_model = HeavyCNNAttention(in_dim)
-        
-        # Projection layers for multi-scale CNN backbone features — pre-built with default
-        # channels [64, 128, 256] matching StyleBackbone, dynamically adaptable if needed.
-        self._in_dim = in_dim
+
+        # Build every trainable projection before the optimizer is created. The old
+        # forward-time replacement silently left new parameters unoptimised.
         self.proj_layers = nn.ModuleList([
-            nn.Conv2d(64, in_dim, kernel_size=1),
-            nn.Conv2d(128, in_dim, kernel_size=1),
-            nn.Conv2d(256, in_dim, kernel_size=1),
+            nn.Conv2d(channels, in_dim, kernel_size=1)
+            for channels in backbone_channels
         ])
         for layer in self.proj_layers:
             nn.init.normal_(layer.weight, 0.0, 0.02)
             if layer.bias is not None:
                 nn.init.zeros_(layer.bias)
-        
-        # Learned style query tokens (style_dim tokens, each of size in_dim)
-        self.num_style_tokens = style_dim  # one query per style-dim slot
-        self.style_queries = nn.Parameter(torch.randn(1, self.num_style_tokens, in_dim) * 0.02)
-        self.style_cross_attn = nn.MultiheadAttention(embed_dim=in_dim, num_heads=4, batch_first=True)
-        
+
+        # Token zero is an explicit global style summary. The remaining compact
+        # query set captures local stroke details without a 32x32 content-rich code.
+        self.style_queries = nn.Parameter(
+            torch.randn(1, num_style_tokens - 1, in_dim) * 0.02
+        )
+        self.style_cross_attn = nn.MultiheadAttention(
+            embed_dim=in_dim, num_heads=4, batch_first=True
+        )
+        self.content_probe = nn.Linear(style_dim, n_class)
+
         if init != 'none':
             init_weights(self, init)
-
-        # Initialize log-variance weights to 0.0 and bias to -10.0 to start training almost deterministically
         nn.init.constant_(self.logvar.weight, 0.)
         nn.init.constant_(self.logvar.bias, -10.)
 
-    def _load_from_state_dict(self, state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs):
-        proj_keys = [k for k in state_dict.keys() if k.startswith(prefix + 'proj_layers.')]
-        if len(proj_keys) > 0:
-            prefix_len = len(prefix)
-            layer_indices = sorted(list(set(
-                int(k[prefix_len:].split('.')[1])
-                for k in proj_keys
-                if k[prefix_len:].startswith('proj_layers.') and k[prefix_len:].split('.')[1].isdigit()
-            )))
-            if self.proj_layers is None or len(self.proj_layers) != len(layer_indices):
-                layers = []
-                for idx in layer_indices:
-                    w_key = f"{prefix}proj_layers.{idx}.weight"
-                    if w_key in state_dict:
-                        in_ch = state_dict[w_key].shape[1]
-                        layers.append(nn.Conv2d(in_ch, self._in_dim, kernel_size=1))
-                if len(layers) > 0:
-                    self.proj_layers = nn.ModuleList(layers)
-        super()._load_from_state_dict(state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs)
+    def _load_from_state_dict(self, state_dict, prefix, local_metadata, strict,
+                              missing_keys, unexpected_keys, error_msgs):
+        query_key = prefix + 'style_queries'
+        if query_key in state_dict and state_dict[query_key].shape != self.style_queries.shape:
+            old_queries = state_dict[query_key]
+            adapted = self.style_queries.detach().clone()
+            count = min(old_queries.size(1), adapted.size(1))
+            if count:
+                adapted[:, :count].copy_(old_queries[:, :count])
+            state_dict[query_key] = adapted
+        super()._load_from_state_dict(
+            state_dict, prefix, local_metadata, strict, missing_keys,
+            unexpected_keys, error_msgs
+        )
 
-    def _build_proj_layers(self, all_feats):
-        """Build projection Conv2d layers matching the actual backbone feature channels."""
-        if self.proj_layers is not None and len(self.proj_layers) == len(all_feats):
-            channels_match = all(
-                layer.weight.shape[1] == f.size(1) 
-                for layer, f in zip(self.proj_layers, all_feats)
-            )
-            if channels_match:
-                self.proj_layers = self.proj_layers.to(all_feats[0].device)
-                return
+    @staticmethod
+    def _width_mask(img_len, source_width, target_width):
+        if img_len is None:
+            return None, None
+        scaled_len = torch.ceil(
+            img_len.to(dtype=torch.float32) * (float(target_width) / float(source_width))
+        ).long().clamp_(min=1, max=target_width)
+        positions = torch.arange(target_width, device=img_len.device).unsqueeze(0)
+        return positions < scaled_len.unsqueeze(1), scaled_len
 
-        layers = []
-        for f in all_feats:
-            layers.append(nn.Conv2d(f.size(1), self._in_dim, kernel_size=1))
-        self.proj_layers = nn.ModuleList(layers).to(all_feats[0].device)
-        # Apply same init as rest of the module
-        for layer in self.proj_layers:
-            nn.init.normal_(layer.weight, 0.0, 0.02)
-            if layer.bias is not None:
-                nn.init.zeros_(layer.bias)
+    @staticmethod
+    def global_token(style_tokens):
+        return style_tokens[:, 0]
+
+    def predict_content(self, style_tokens, reverse=True):
+        style_global = self.global_token(style_tokens)
+        if reverse:
+            style_global = _gradient_reverse(style_global, self.content_grl)
+        return self.content_probe(style_global)
 
     def forward(self, img, img_len, cnn_backbone=None, ret_feats=False, vae_mode=False):
-        # Always request intermediate features to capture local details
         feat, all_feats = cnn_backbone(img, ret_feats=True)
-        
-        # Build/adapt projection layers if needed
-        if self.proj_layers is None or len(self.proj_layers) != len(all_feats):
-            self._build_proj_layers(all_feats)
+        if len(self.proj_layers) != len(all_feats):
+            raise RuntimeError(
+                f'StyleEncoder expected {len(self.proj_layers)} backbone feature maps, '
+                f'but received {len(all_feats)}. Set EncModel.backbone_channels explicitly.'
+            )
+        for index, (proj_layer, feature) in enumerate(zip(self.proj_layers, all_feats)):
+            if proj_layer.in_channels != feature.size(1):
+                raise RuntimeError(
+                    f'Backbone feature {index} has {feature.size(1)} channels, but the '
+                    f'configured projection expects {proj_layer.in_channels}.'
+                )
+
+        feat_mask, feat_len = self._width_mask(img_len, img.size(-1), feat.size(-1))
+        feat_mask_f = feat_mask.unsqueeze(1).to(feat.dtype) if feat_mask is not None else 1.0
+        feat_m = self.sequence_model(feat * feat_mask_f) * feat_mask_f
+        if feat_mask is None:
+            global_context = feat_m.mean(dim=-1)
         else:
-            self.proj_layers = self.proj_layers.to(all_feats[0].device)
-        
-        # 1. Global context from main feature using Heavy CNN
-        feat_m = self.sequence_model(feat) # feat is (B, C, W), feat_m is (B, C, W)
-        
-        # Transpose and add 1D sinusoidal positional embedding
-        feat_m_trans = feat_m.transpose(1, 2) # (B, W, in_dim)
-        pe_1d = get_1d_sinusoidal_embeddings(feat_m_trans.size(1), self._in_dim, feat_m_trans.device)
+            global_context = feat_m.sum(dim=-1) / feat_len.unsqueeze(1).to(feat.dtype)
+
+        feat_m_trans = feat_m.transpose(1, 2)
+        pe_1d = get_1d_sinusoidal_embeddings(
+            feat_m_trans.size(1), self._in_dim, feat_m_trans.device
+        )
         feat_m_trans = feat_m_trans + pe_1d.unsqueeze(0)
-        
-        # 2. Project and pool each intermediate feature map dynamically
-        spatial_tokens = [feat_m_trans] # Start with global sequence (B, W, in_dim)
-        for proj_layer, f in zip(self.proj_layers, all_feats):
-            f_proj = proj_layer(f) # (B, in_dim, H_f, W_f)
-            # Pool height to 4 to condense vertical dimension while retaining full horizontal resolution
-            f_pooled = F.adaptive_avg_pool2d(f_proj, (4, f.size(-1))) # (B, in_dim, 4, W_f)
-            # Add 2D sinusoidal positional embedding
-            H_p, W_p = f_pooled.size(2), f_pooled.size(3)
-            pe_2d = get_2d_sinusoidal_embeddings(H_p, W_p, self._in_dim, f_pooled.device)
-            f_pooled = f_pooled + pe_2d.permute(2, 0, 1).unsqueeze(0)
-            
-            f_flat = f_pooled.flatten(2).transpose(1, 2) # (B, 4 * W_f, in_dim)
-            spatial_tokens.append(f_flat)
-            
-        # Concatenate all spatial/global tokens
-        style_keys = torch.cat(spatial_tokens, dim=1) # (B, total_tokens, in_dim)
-        
-        # 3. Query style sequence dynamically using learned style query tokens
-        B = img.size(0)
-        style_queries = self.style_queries.expand(B, -1, -1) # (B, num_style_tokens, in_dim)
-        # Add 1D sinusoidal positional embedding to queries to distinguish query slots chronologically
-        pe_queries = get_1d_sinusoidal_embeddings(self.num_style_tokens, self._in_dim, style_queries.device)
-        style_queries = style_queries + pe_queries.unsqueeze(0)
-        
-        # Cross-attention: queries look at the spatial style keys
-        style_seq, _ = self.style_cross_attn(query=style_queries, key=style_keys, value=style_keys)
-        
-        style = self.linear_style(style_seq)
-        style_tokens_mu = self.mu(style) # (B, 32, style_dim)
+        if feat_mask is not None:
+            feat_m_trans = feat_m_trans * feat_mask.unsqueeze(-1).to(feat_m_trans.dtype)
+
+        spatial_tokens = [feat_m_trans]
+        padding_masks = [~feat_mask] if feat_mask is not None else []
+        masked_all_feats = []
+        for proj_layer, feature in zip(self.proj_layers, all_feats):
+            width_mask, _ = self._width_mask(img_len, img.size(-1), feature.size(-1))
+            width_mask_f = (
+                width_mask[:, None, None, :].to(feature.dtype)
+                if width_mask is not None else 1.0
+            )
+            feature_masked = feature * width_mask_f
+            masked_all_feats.append(feature_masked)
+            feature_projected = proj_layer(feature_masked)
+            feature_pooled = F.adaptive_avg_pool2d(
+                feature_projected, (4, feature.size(-1))
+            )
+            height, width = feature_pooled.shape[-2:]
+            pe_2d = get_2d_sinusoidal_embeddings(
+                height, width, self._in_dim, feature_pooled.device
+            )
+            feature_pooled = feature_pooled + pe_2d.permute(2, 0, 1).unsqueeze(0)
+            if width_mask is not None:
+                feature_pooled = feature_pooled * width_mask[:, None, None, :].to(
+                    feature_pooled.dtype
+                )
+            spatial_tokens.append(feature_pooled.flatten(2).transpose(1, 2))
+            if width_mask is not None:
+                padding_masks.append(
+                    ~width_mask[:, None, :].expand(-1, height, -1).reshape(feature.size(0), -1)
+                )
+
+        style_keys = torch.cat(spatial_tokens, dim=1)
+        key_padding_mask = torch.cat(padding_masks, dim=1) if padding_masks else None
+
+        batch_size = img.size(0)
+        style_queries = self.style_queries.expand(batch_size, -1, -1)
+        if style_queries.size(1):
+            pe_queries = get_1d_sinusoidal_embeddings(
+                style_queries.size(1), self._in_dim, style_queries.device
+            )
+            style_queries = style_queries + pe_queries.unsqueeze(0)
+            local_style, _ = self.style_cross_attn(
+                query=style_queries,
+                key=style_keys,
+                value=style_keys,
+                key_padding_mask=key_padding_mask,
+            )
+            local_style = self.linear_style(local_style)
+        else:
+            local_style = style_queries
+
+        global_style = self.linear_style(global_context).unsqueeze(1)
+        style = torch.cat([global_style, local_style], dim=1)
+        style_tokens_mu = self.mu(style)
 
         if vae_mode:
-            logvar = self.logvar(style)
-            # Clamp logvar to prevent exponential exploding values and training instability
-            logvar = torch.clamp(logvar, min=-14.0, max=4.0)
+            logvar = torch.clamp(self.logvar(style), min=-14.0, max=4.0)
             std = torch.exp(0.5 * logvar)
-            eps = torch.randn_like(std)
-            style_tokens_sampled = eps * std + style_tokens_mu
-
-
-        if vae_mode:
+            style_tokens_sampled = torch.randn_like(std) * std + style_tokens_mu
             style_tokens = (style_tokens_sampled, style_tokens_mu, logvar)
         else:
             style_tokens = style_tokens_mu
 
         if ret_feats:
-            return style_tokens, all_feats
-        else:
-            return style_tokens
+            return style_tokens, masked_all_feats
+        return style_tokens
 
 
 class WriterIdentifier(nn.Module):
@@ -427,7 +467,7 @@ class Recognizer(nn.Module):
         if init != 'none':
             init_weights(self, init)
 
-    def forward(self, x, x_len=None):
+    def forward(self, x, x_len=None, return_log_probs=None):
         cnn_feat = self.cnn_backbone(x)
         cnn_feat2 = self.cnn_ctc(cnn_feat)
         ctc_feat = cnn_feat2.squeeze(-2).transpose(1, 2)
@@ -438,11 +478,15 @@ class Recognizer(nn.Module):
                 ctc_len = torch.clamp(torch.div(x_len, self.len_scale, rounding_mode='trunc'), min=1)
             else:
                 ctc_len = None
-            ctc_feat = self.rnn_ctc(ctc_feat, ctc_len.cpu() if isinstance(ctc_len, torch.Tensor) else ctc_len)
+            ctc_feat = self.rnn_ctc(
+                ctc_feat,
+                ctc_len.cpu() if isinstance(ctc_len, torch.Tensor) else ctc_len,
+            )
         logits = self.ctc_cls(ctc_feat)
-        if self.training:
-            logits = logits.transpose(0, 1).log_softmax(2)
-            logits.requires_grad_(True)
+        if return_log_probs is None:
+            return_log_probs = self.training
+        if return_log_probs:
+            return logits.transpose(0, 1).log_softmax(2)
         return logits
 
     def frozen_bn(self):

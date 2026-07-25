@@ -29,7 +29,11 @@ class RandomClip:
                 crop_width = max(self.min_clip_width, crop_width)
             crop_width = min(width, crop_width)
             max_pos = width - crop_width
-            rand_pos = int(np.random.randint(0, max_pos)) if max_pos > 0 else 0
+            if max_pos > 0 and self.align_scale is not None:
+                max_unit = max_pos // self.align_scale
+                rand_pos = int(np.random.randint(0, max_unit + 1)) * self.align_scale
+            else:
+                rand_pos = int(np.random.randint(0, max_pos + 1)) if max_pos > 0 else 0
             pic = pic.crop((rand_pos, 0, rand_pos + crop_width, height))
         return pic
 

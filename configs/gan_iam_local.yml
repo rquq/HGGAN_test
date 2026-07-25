@@ -19,13 +19,14 @@ training:
   sample_nrow: 3
   # optimization:
   lr: 2.0e-4
+  d_lr: 1.0e-4
   adam_b1: 0.5
   adam_b2: 0.999
   # sampling and saving
   sample_iter_val: 200
   print_iter_val: 20
   start_save_epoch_val: 0
-  eval_epoch_val: 1
+  eval_epoch_val: 0.01
   save_epoch_val: 1
   # val_iter: 6500
   sample_dir: 'imgs'
@@ -36,11 +37,26 @@ training:
   capitalize_ratio: 0.5
   blank_ratio: 0.
   sort_input: true
-  num_critic_train: 4
+  num_critic_train: 1
+  content_warmup_steps: 2000
+  writer_balanced_batches: true
+  samples_per_writer: 2
   vae_mode: true
-  lambda_kl: 0.0001
-  lambda_ctx: 2.0
-  lambda_gram: 2.0
+  lambda_ctc: 1.0
+  lambda_info: 1.0
+  lambda_wid: 1.0
+  lambda_recn: 10.0
+  lambda_style_contrastive: 0.25
+  lambda_writer_contrastive: 0.25
+  lambda_style_cycle: 1.0
+  lambda_content_adv: 0.05
+  style_temperature: 0.1
+  lambda_kl: 0.1
+  lambda_ctx: 0.5
+  lambda_gram: 0.1
+  grad_clip: 5.0
+  r1_interval: 16
+  lambda_r1: 0.01
   update_ema: true
   ema_beta: 0.999
   pretrained_w: './pretrained/wid_iam_new.pth'
@@ -52,7 +68,7 @@ training:
 valid:
   dset_name: 'iam_word_org'
   dset_split: 'test'
-  validate_ocr: false
+  validate_ocr: true
   validate_fid: true
   validate_kid: true
   validate_is: false
@@ -176,6 +192,10 @@ StyBackbone:
 EncModel:
   style_dim: 32
   in_dim: 256
+  num_style_tokens: 8
+  backbone_channels: [64, 128, 256]
+  n_class: 80
+  content_grl: 1.0
   init: 'none'
 
 

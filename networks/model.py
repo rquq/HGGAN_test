@@ -17,11 +17,13 @@ from networks.utils import _info, set_requires_grad, get_scheduler, idx_to_words
                             words_to_images, ctc_greedy_decoder, extract_all_patches, frozen_bn
 from networks.BigGAN_networks import Generator, Discriminator, PatchDiscriminator
 from networks.module import Recognizer, WriterIdentifier, StyleEncoder, StyleBackbone
-from lib.datasets import get_dataset, get_collect_fn, Hdf5Dataset
+from lib.datasets import (get_dataset, get_collect_fn, Hdf5Dataset,
+                          WriterBalancedBatchSampler)
 from lib.alphabet import strLabelConverter, get_lexicon, get_true_alphabet, Alphabets
 from lib.utils import draw_image, get_logger, AverageMeterManager, option_to_string, AverageMeter, plot_heatmap
 from networks.rand_dist import prepare_z_dist, prepare_y_dist
-from networks.loss import recn_l1_loss, CXLoss, KLloss, contrastive_style_loss, GramStyleLoss
+from networks.loss import (recn_l1_loss, CXLoss, KLloss, r1_reg,
+                           contrastive_style_loss, supervised_contrastive_style_loss)
 from networks.masking import apply_vertical_stripe_mask, apply_horizontal_stripe_mask, apply_combined_stripe_mask, apply_light_mixed_patch_mask
 
 
@@ -31,16 +33,22 @@ class EMA(object):
         self.beta = beta
         self.step = 0
 
+    @torch.no_grad()
     def update_model_average(self, ma_model, current_model, beta):
-        curr_model_unwrapped = getattr(current_model, 'module', current_model)
-        for current_params, ma_params in zip(curr_model_unwrapped.parameters(), ma_model.parameters()):
-            old_weight, up_weight = ma_params.data, current_params.data
-            ma_params.data = old_weight * beta + (1 - beta) * up_weight
+        current = getattr(current_model, 'module', current_model)
+        ema_parameters = dict(ma_model.named_parameters())
+        for name, parameter in current.named_parameters():
+            ema_parameters[name].mul_(beta).add_(parameter, alpha=1.0 - beta)
+        # Running means, variances, spectral-norm buffers, and counters must match
+        # the current model; parameter-only EMA left these buffers stale.
+        ema_buffers = dict(ma_model.named_buffers())
+        for name, buffer in current.named_buffers():
+            ema_buffers[name].copy_(buffer)
 
     def step_ema(self, ema_model, model, step_start_ema=0):
         if self.step < step_start_ema:
-            curr_model_unwrapped = getattr(model, 'module', model)
-            ema_model.load_state_dict(curr_model_unwrapped.state_dict())
+            current = getattr(model, 'module', model)
+            ema_model.load_state_dict(current.state_dict())
             return
         beta = min(self.beta, (1 + self.step) / (10 + self.step))
         self.update_model_average(ema_model, model, beta)
@@ -329,32 +337,13 @@ class BaseModel(object):
                             if isinstance(v_s, torch.Tensor):
                                 state[k_s] = v_s.to(self.device)
                     self.print(f'Loaded optimizer state for OPT.{key}')
-                except Exception as e:
-                    # Fallback for legacy checkpoints: verify shape matching for each parameter
-                    try:
-                        import copy
-                        adapted_opt_dict = copy.deepcopy(ckpt_data[opt_key])
-                        curr_params = self.optimizers[key].param_groups[0]['params']
-                        saved_param_ids = adapted_opt_dict['param_groups'][0]['params']
-                        adapted_opt_dict['param_groups'][0]['params'] = list(range(len(curr_params)))
-                        new_state = {}
-                        for idx, p_curr in enumerate(curr_params):
-                            curr_shape = tuple(p_curr.shape)
-                            if idx < len(saved_param_ids):
-                                p_id = saved_param_ids[idx]
-                                if p_id in ckpt_data[opt_key].get('state', {}):
-                                    item = ckpt_data[opt_key]['state'][p_id]
-                                    if 'exp_avg' in item and tuple(item['exp_avg'].shape) == curr_shape:
-                                        new_state[idx] = item
-                        adapted_opt_dict['state'] = new_state
-                        self.optimizers[key].load_state_dict(adapted_opt_dict)
-                        for state in self.optimizers[key].state.values():
-                            for k_s, v_s in state.items():
-                                if isinstance(v_s, torch.Tensor):
-                                    state[k_s] = v_s.to(self.device)
-                        self.print(f'Loaded adapted optimizer state for OPT.{key} (legacy checkpoint compatibility)')
-                    except Exception as inner_e:
-                        self.print(f'Load OPT.{key} failed: {inner_e}')
+                except Exception as error:
+                    # Parameter-order adaptation can attach Adam moments to an
+                    # unrelated layer when architecture changes. Start this
+                    # optimizer fresh instead of silently corrupting training.
+                    self.print(
+                        f'Load OPT.{key} skipped after architecture change: {error}'
+                    )
 
         if hasattr(self, 'lr_schedulers') and self.lr_schedulers:
             for key in self.lr_schedulers.keys():
@@ -397,11 +386,9 @@ class BaseModel(object):
             else:
                 raise NotImplementedError()
         if hasattr(self, 'models_ema') and self.models_ema:
+            # EMA is an inference snapshot and must never update dropout/BN state.
             for model_ema in self.models_ema.values():
-                if mode == 'eval':
-                    model_ema.eval()
-                elif mode == 'train':
-                    model_ema.train()
+                model_ema.eval()
 
     def validate(self, *args, **kwargs):
         raise NotImplementedError()
@@ -425,26 +412,47 @@ class AdversarialModel(BaseModel):
         self.valid_real_stats = None
         dataset = get_dataset(opt.dataset, opt.training.dset_split,
                               recogn_aug=True, wid_aug=True, process_style=True)
-        if self.local_rank > -1:
-            from torch.utils.data.distributed import DistributedSampler
-            self.train_sampler = DistributedSampler(dataset, num_replicas=None, rank=self.local_rank, shuffle=True)
-            shuffle = False
+        use_writer_batches = getattr(opt.training, 'writer_balanced_batches', True)
+        if use_writer_batches:
+            rank = dist.get_rank() if dist.is_available() and dist.is_initialized() else max(self.local_rank, 0)
+            self.train_sampler = WriterBalancedBatchSampler(
+                dataset.wids,
+                batch_size=opt.training.batch_size,
+                samples_per_writer=getattr(opt.training, 'samples_per_writer', 2),
+                seed=opt.seed,
+                rank=rank,
+            )
+            self.train_loader = DataLoader(
+                dataset,
+                batch_sampler=self.train_sampler,
+                collate_fn=self.collect_fn,
+                num_workers=4,
+                pin_memory=(self.device.type == 'cuda'),
+                persistent_workers=True,
+                worker_init_fn=seed_worker,
+            )
         else:
-            self.train_sampler = None
-            shuffle = True
-
-        self.train_loader = DataLoader(
-            dataset,
-            batch_size=opt.training.batch_size,
-            shuffle=shuffle,
-            sampler=self.train_sampler,
-            collate_fn=self.collect_fn,
-            num_workers=4,
-            drop_last=True,
-            pin_memory=(self.device.type == 'cuda'),
-            persistent_workers=True,
-            worker_init_fn=seed_worker
-        )
+            if self.local_rank > -1:
+                from torch.utils.data.distributed import DistributedSampler
+                self.train_sampler = DistributedSampler(
+                    dataset, num_replicas=None, rank=self.local_rank, shuffle=True
+                )
+                shuffle = False
+            else:
+                self.train_sampler = None
+                shuffle = True
+            self.train_loader = DataLoader(
+                dataset,
+                batch_size=opt.training.batch_size,
+                shuffle=shuffle,
+                sampler=self.train_sampler,
+                collate_fn=self.collect_fn,
+                num_workers=4,
+                drop_last=True,
+                pin_memory=(self.device.type == 'cuda'),
+                persistent_workers=True,
+                worker_init_fn=seed_worker,
+            )
 
         self.tst_loader = DataLoader(
             get_dataset(opt.dataset, opt.valid.dset_split,
@@ -466,6 +474,15 @@ class AdversarialModel(BaseModel):
 
         self.models = None
 
+    def set_mode(self, mode='eval'):
+        super().set_mode(mode)
+        if mode == 'train' and self.models is not None:
+            # These pretrained networks are fixed teachers/features. Keeping them
+            # in train mode changed BN statistics even with requires_grad=False.
+            for name in ('R', 'W', 'B'):
+                if name in self.models:
+                    self.models[name].eval()
+
     def train(self):
         raise NotImplementedError()
 
@@ -478,7 +495,11 @@ class AdversarialModel(BaseModel):
         batch = Hdf5Dataset.merge_batch(batchA, batchB, device)
 
         real_imgs, real_img_lens = batch['style_imgs'], batch['style_img_lens']
+        style_refs, style_ref_lens = batch['org_imgs'], batch['org_img_lens']
         real_lbs, real_lb_lens = batch['lbs'], batch['lb_lens']
+        use_ema = getattr(self, 'use_ema', False)
+        generator = self.models_ema.G if use_ema else self.models.G
+        encoder = self.models_ema.E if use_ema else self.models.E
 
         with torch.no_grad():
             self.eval_z.sample_()
@@ -486,10 +507,10 @@ class AdversarialModel(BaseModel):
 
             recn_imgs = None
             if 'E' in self.models:
-                enc_z = self.models.E(real_imgs, real_img_lens, self.models.B)
-                recn_imgs = self.models.G(enc_z, real_lbs, real_lb_lens)
+                enc_z = encoder(style_refs, style_ref_lens, self.models.B)
+                recn_imgs = generator(enc_z, real_lbs, real_lb_lens)
 
-            fake_real_imgs = self.models.G(eval_z_in, real_lbs, real_lb_lens)
+            fake_real_imgs = generator(eval_z_in, real_lbs, real_lb_lens)
 
             self.eval_y.sample_()
             sampled_words = idx_to_words(self.eval_y, self.lexicon, 0,
@@ -498,8 +519,8 @@ class AdversarialModel(BaseModel):
             sampled_words[-2] = sampled_words[-1]
             fake_lbs, fake_lb_lens = self.label_converter.encode(sampled_words)
             fake_lbs, fake_lb_lens = fake_lbs.to(device), fake_lb_lens.to(device)
-            fake_imgs = self.models.G(eval_z_in, fake_lbs, fake_lb_lens)
-            style_imgs = self.models.G(enc_z, fake_lbs, fake_lb_lens)
+            fake_imgs = generator(eval_z_in, fake_lbs, fake_lb_lens)
+            style_imgs = generator(enc_z, fake_lbs, fake_lb_lens)
 
             tensors_to_pad = [real_imgs, fake_real_imgs, fake_imgs, style_imgs]
             if recn_imgs is not None:
@@ -553,7 +574,9 @@ class AdversarialModel(BaseModel):
             for _ in range(n_repeats):
                 for batch in style_dloader:
                     fake_batch = {}
-                    style_imgs, style_img_lens = batch['style_imgs'].to(device), batch['style_img_lens'].to(device)
+                    style_imgs = batch['style_imgs'].to(device)
+                    style_refs = batch['org_imgs'].to(device)
+                    style_ref_lens = batch['org_img_lens'].to(device)
                     style_lbs, style_lb_lens = batch['lbs'].to(device), batch['lb_lens'].to(device)
                     if use_rand_corpus:
                         word_idx_sampler.sample_()
@@ -564,12 +587,18 @@ class AdversarialModel(BaseModel):
                     else:
                         content_lbs, content_lb_lens = style_lbs, style_lb_lens
 
-                    fake_batch['lbs'], fake_batch['lb_lens'] = content_lbs.to(device), content_lb_lens.to(device)
+                    content_lbs = content_lbs.to(device)
+                    content_lb_lens = content_lb_lens.to(device)
+                    fake_batch['lbs'], fake_batch['lb_lens'] = content_lbs, content_lb_lens
 
                     if style_guided:
-                        enc_z = self.models.E(style_imgs.to(device), style_img_lens.to(device), self.models.B)
+                        enc_z = self.models.E(style_refs, style_ref_lens, self.models.B)
                     else:
-                        enc_z = torch.randn(style_lb_lens.size(0), self.models.G.style_dim, self.models.G.style_dim).to(device)
+                        num_tokens = getattr(self.opt.EncModel, 'num_style_tokens', 8)
+                        enc_z = torch.randn(
+                            style_lb_lens.size(0), num_tokens, self.models.G.style_dim,
+                            device=device,
+                        )
 
                     fake_batch['style_imgs'] = self.models.G(enc_z, content_lbs, content_lb_lens)
                     fake_batch['style_img_lens'] = fake_batch['lb_lens'] * self.opt.char_width
@@ -587,10 +616,8 @@ class AdversarialModel(BaseModel):
         if use_ema:
             active_G = self.models.G
             active_E = self.models.E
-            active_B = self.models.B
             self.models.G = self.models_ema.G
             self.models.E = self.models_ema.E
-            self.models.B = self.models_ema.B
 
         self.set_mode('eval')
 
@@ -763,7 +790,6 @@ class AdversarialModel(BaseModel):
             if use_ema:
                 self.models.G = active_G
                 self.models.E = active_E
-                self.models.B = active_B
 
         return res
 
@@ -905,11 +931,11 @@ class AdversarialModel(BaseModel):
                 ncol = len(texts)
                 batch = next(iter(tst_loader))
                 imgs, img_lens, lbs, lb_lens = \
-                    batch['style_imgs'], batch['style_img_lens'], batch['lbs'], batch['lb_lens']
+                    batch['org_imgs'], batch['org_img_lens'], batch['lbs'], batch['lb_lens']
                 real_imgs, real_img_lens = imgs.to(self.device), img_lens.to(self.device)
                 fake_lbs, fake_lb_lens = self.label_converter.encode(texts)
 
-                nrow = batch['style_imgs'].size(0)
+                nrow = batch['org_imgs'].size(0)
                 fake_lbs = fake_lbs.repeat(nrow, 1).to(self.device)
                 fake_lb_lens = fake_lb_lens.repeat(nrow,).to(self.device)
                 enc_styles = self.models.E(real_imgs, real_img_lens, self.models.B)
@@ -946,7 +972,7 @@ class AdversarialModel(BaseModel):
 
         with torch.no_grad():
             nrow, ncol = self.opt.test.nrow, 2
-            rand_z = prepare_z_dist(nrow, self.opt.EncModel.style_dim, self.device, num_tokens=self.opt.EncModel.style_dim)
+            rand_z = prepare_z_dist(nrow, self.opt.EncModel.style_dim, self.device, num_tokens=getattr(self.opt.EncModel, 'num_style_tokens', 8))
             while True:
                 text = input('input text: ')
                 if len(text) == 0:
@@ -998,7 +1024,7 @@ class AdversarialModel(BaseModel):
                     break
 
                 batch = next(iter(tst_loader))
-                real_imgs, real_img_lens = batch['style_imgs'].to(self.device), batch['style_img_lens'].to(self.device)
+                real_imgs, real_img_lens = batch['org_imgs'].to(self.device), batch['org_img_lens'].to(self.device)
                 fake_lbs = self.label_converter.encode(text)
                 fake_lbs = torch.LongTensor(fake_lbs)
                 fake_lb_lens = torch.IntTensor([len(text)])
@@ -1057,6 +1083,7 @@ class GlobalLocalAdversarialModel(AdversarialModel):
         self.ctc_loss = CTCLoss(zero_infinity=True, reduction='mean')
         self.classify_loss = CrossEntropyLoss()
         self.contextual_loss = CXLoss()
+        from networks.loss import GramStyleLoss
         self.gram_loss = GramStyleLoss()
 
     def train(self):
@@ -1137,12 +1164,17 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                 self.print(f"WandB initialization skipped or failed: {e}")
 
         opt = self.opt
-        self.z = prepare_z_dist(opt.training.batch_size, opt.EncModel.style_dim, self.device,
-                                seed=self.opt.seed, num_tokens=opt.EncModel.style_dim)
+        num_style_tokens = getattr(opt.EncModel, 'num_style_tokens', 8)
+        self.z = prepare_z_dist(
+            opt.training.batch_size, opt.EncModel.style_dim, self.device,
+            seed=self.opt.seed, num_tokens=num_style_tokens,
+        )
         self.y = prepare_y_dist(opt.training.batch_size, len(self.lexicon), self.device, seed=self.opt.seed)
 
-        self.eval_z = prepare_z_dist(opt.training.eval_batch_size, opt.EncModel.style_dim, self.device,
-                                     seed=self.opt.seed, num_tokens=opt.EncModel.style_dim)
+        self.eval_z = prepare_z_dist(
+            opt.training.eval_batch_size, opt.EncModel.style_dim, self.device,
+            seed=self.opt.seed, num_tokens=num_style_tokens,
+        )
         self.eval_y = prepare_y_dist(opt.training.eval_batch_size, len(self.lexicon), self.device,
                                      seed=self.opt.seed)
 
@@ -1150,22 +1182,21 @@ class GlobalLocalAdversarialModel(AdversarialModel):
             G=torch.optim.Adam(chain(self.models.G.parameters(), self.models.E.parameters()),
                                lr=opt.training.lr, betas=(opt.training.adam_b1, opt.training.adam_b2)),
             D=torch.optim.Adam(chain(self.models.D.parameters(), self.models.P.parameters()),
-                               lr=opt.training.lr,
+                               lr=getattr(opt.training, 'd_lr', opt.training.lr),
                                betas=(opt.training.adam_b1, opt.training.adam_b2)),
         )
 
-        # Initialize EMA models
+        # EMA only trainable generation modules. The frozen pretrained backbone
+        # remains the single source of style features.
         self.use_ema = getattr(opt.training, 'update_ema', False)
         if self.use_ema:
             import copy
             self.ema_beta = getattr(opt.training, 'ema_beta', 0.999)
             self.print(f"EMA is enabled with beta={self.ema_beta}. Initializing EMA models...")
-            self.models_ema.G = copy.deepcopy(self.models.G)
-            self.models_ema.E = copy.deepcopy(self.models.E)
-            self.models_ema.B = copy.deepcopy(self.models.B)
-            self.models_ema.G.requires_grad_(False)
-            self.models_ema.E.requires_grad_(False)
-            self.models_ema.B.requires_grad_(False)
+            self.models_ema.G = copy.deepcopy(self.models.G).requires_grad_(False)
+            self.models_ema.E = copy.deepcopy(self.models.E).requires_grad_(False)
+            self.models_ema.G.eval()
+            self.models_ema.E.eval()
             self.ema_tracker = EMA(self.ema_beta)
 
         epoch_done = 1
@@ -1240,15 +1271,14 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                     broadcast_buffers=False
                 )
 
-        self.averager_meters = AverageMeterManager(['adv_loss', 'fake_disc_loss',
-                                                    'real_disc_loss', 'adv_loss_patch',
-                                                    'fake_disc_loss_patch',
-                                                    'real_disc_loss_patch', 'recn_loss',
-                                                    'fake_ctc_loss', 'info_loss',
-                                                    'style_contrastive_loss',
-                                                    'fake_wid_loss', 'ctx_loss',
-                                                    'kl_loss', 'gram_loss', 'gp_ctc', 'gp_info',
-                                                    'gp_wid', 'gp_recn'])
+        self.averager_meters = AverageMeterManager([
+            'adv_loss', 'fake_disc_loss', 'real_disc_loss', 'adv_loss_patch',
+            'fake_disc_loss_patch', 'real_disc_loss_patch', 'recn_loss',
+            'fake_ctc_loss', 'info_loss', 'style_contrastive_loss',
+            'writer_contrastive_loss', 'style_cycle_loss', 'content_adv_loss',
+            'fake_wid_loss', 'ctx_loss', 'kl_loss', 'gram_loss',
+            'gp_ctc', 'gp_info', 'gp_wid', 'gp_recn', 'r1_loss',
+        ])
         device = self.device
 
         ctc_len_scale = self.unwrap_model(self.models.R).len_scale
@@ -1284,12 +1314,24 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                 # Prepare inputs & Network Forward
                 #############################
                 self.set_mode('train')
-                real_imgs, real_img_lens, real_wids = batch['style_imgs'].to(device, non_blocking=True), \
-                                                      batch['style_img_lens'].to(device, non_blocking=True), \
-                                                      batch['wids'].to(device, non_blocking=True)
-                real_aug_imgs, real_aug_img_lens = batch['aug_imgs'].to(device, non_blocking=True), batch['aug_img_lens'].to(device, non_blocking=True)
-                real_lbs, real_lb_lens = batch['lbs'].to(device, non_blocking=True), batch['lb_lens'].to(device, non_blocking=True)
+                real_imgs = batch['style_imgs'].to(device, non_blocking=True)
+                real_img_lens = batch['style_img_lens'].to(device, non_blocking=True)
+                style_refs = batch['org_imgs'].to(device, non_blocking=True)
+                style_ref_lens = batch['org_img_lens'].to(device, non_blocking=True)
+                real_wids = batch['wids'].to(device, non_blocking=True)
+                real_aug_imgs = batch['aug_imgs'].to(device, non_blocking=True)
+                real_aug_img_lens = batch['aug_img_lens'].to(device, non_blocking=True)
+                real_lbs = batch['lbs'].to(device, non_blocking=True)
+                real_lb_lens = batch['lb_lens'].to(device, non_blocking=True)
                 max_label_len = real_lbs.size(-1)
+                adversarial_weight = float(
+                    iter_count >= getattr(self.opt.training, 'content_warmup_steps', 0)
+                )
+                for group in self.optimizers.D.param_groups:
+                    if adversarial_weight == 0.0:
+                        group['lr'] = 0.0
+                    elif group['lr'] == 0.0:
+                        group['lr'] = getattr(self.opt.training, 'd_lr', self.opt.training.lr)
 
                 #############################
                 # Optimizing Discriminator
@@ -1311,9 +1353,13 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                     z_in = self.z
 
                     if self.vae_mode:
-                        enc_z, _, _ = self.models.E(real_imgs, real_img_lens, self.models.B, vae_mode=True)
+                        enc_z, _, _ = self.models.E(
+                            style_refs, style_ref_lens, self.models.B, vae_mode=True
+                        )
                     else:
-                        enc_z = self.models.E(real_imgs, real_img_lens, self.models.B, vae_mode=False)
+                        enc_z = self.models.E(
+                            style_refs, style_ref_lens, self.models.B, vae_mode=False
+                        )
 
                     # Batch forward all fake/generated types to avoid multiple GPU kernel launches
                     cat_z = torch.cat([z_in, enc_z, enc_z], dim=0)
@@ -1354,12 +1400,21 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                                         torch.mean(F.relu(1.0 + p_style)) + 
                                         torch.mean(F.relu(1.0 + p_recn))) / 3
 
-                # real_imgs.requires_grad_()
-                real_disc = self.models.D(real_imgs, real_img_lens, real_lb_lens)
-                real_aug_lb_lens = real_lb_lens * (real_aug_img_lens.float() / torch.clamp(real_img_lens.float(), min=1.0))
-                real_disc_aug = self.models.D(real_aug_imgs, real_aug_img_lens, real_aug_lb_lens)
-                real_disc_loss = (torch.mean(F.relu(1.0 - real_disc)) +
-                                  torch.mean(F.relu(1.0 - real_disc_aug))) / 2
+                # Random crops are local views, not complete word samples. Feeding
+                # them to the global discriminator taught D that truncated words
+                # were real; keep them exclusively for the patch discriminator.
+                r1_interval = int(getattr(self.opt.training, 'r1_interval', 16))
+                apply_r1 = bool(adversarial_weight) and iter_count % r1_interval == 0
+                real_for_disc = real_imgs.detach().requires_grad_(apply_r1)
+                real_disc = self.models.D(real_for_disc, real_img_lens, real_lb_lens)
+                real_disc_loss = torch.mean(F.relu(1.0 - real_disc))
+                if apply_r1:
+                    r1_loss = (
+                        getattr(self.opt.training, 'lambda_r1', 0.01)
+                        * r1_interval * r1_reg(real_disc, real_for_disc)
+                    )
+                else:
+                    r1_loss = real_disc_loss.new_zeros(())
 
                 real_img_patches = extract_all_patches(real_imgs, real_img_lens, plot=False)
                 real_aug_imgs_patches = extract_all_patches(real_aug_imgs, real_aug_img_lens)
@@ -1369,14 +1424,17 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                 real_disc_patches = self.models.P(real_patches_cat)
                 real_disc_loss_patch = torch.mean(F.relu(1.0 - real_disc_patches))
 
-                disc_loss = real_disc_loss + fake_disc_loss + real_disc_loss_patch + fake_disc_loss_patch
+                disc_loss = (real_disc_loss + fake_disc_loss + real_disc_loss_patch
+                             + fake_disc_loss_patch + r1_loss)
                 self.averager_meters.update('real_disc_loss', real_disc_loss.item())
                 self.averager_meters.update('fake_disc_loss', fake_disc_loss.item())
                 self.averager_meters.update('real_disc_loss_patch', real_disc_loss_patch.item())
                 self.averager_meters.update('fake_disc_loss_patch', fake_disc_loss_patch.item())
+                self.averager_meters.update('r1_loss', r1_loss.item())
 
-                disc_loss.backward()
-                self.optimizers.D.step()
+                if adversarial_weight:
+                    disc_loss.backward()
+                    self.optimizers.D.step()
 
                 #############################
                 # Optimizing Generator
@@ -1405,11 +1463,15 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                     # Keep style encoder inputs clean as masking is applied strictly to local patches
                     masking_mode = getattr(self.opt.training, 'masking_mode', 'none')
                     if self.vae_mode:
-                        (enc_z, mu, logvar), real_img_feats = self.models.E(real_imgs, real_img_lens, self.models.B,
-                                                                            ret_feats=True, vae_mode=True)
+                        (enc_z, mu, logvar), real_img_feats = self.models.E(
+                            style_refs, style_ref_lens, self.models.B,
+                            ret_feats=True, vae_mode=True,
+                        )
                     else:
-                        enc_z, real_img_feats = self.models.E(real_imgs, real_img_lens, self.models.B,
-                                                              ret_feats=True, vae_mode=False)
+                        enc_z, real_img_feats = self.models.E(
+                            style_refs, style_ref_lens, self.models.B,
+                            ret_feats=True, vae_mode=False,
+                        )
 
                     # Batch forward all fake/generated types through G to avoid multiple GPU kernel launches
                     cat_z = torch.cat([z_in, enc_z, enc_z], dim=0)
@@ -1455,7 +1517,9 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                     recn_img_lens = real_lb_lens * self.opt.char_width
 
                     # Batch forward all generated types through R to avoid multiple GPU kernel launches
-                    cat_fake_ctc = self.models.R(cat_fake_imgs, cat_fake_img_lens)
+                    cat_fake_ctc = self.models.R(
+                        cat_fake_imgs, cat_fake_img_lens, return_log_probs=True
+                    )
                     fake_ctc_rand, fake_ctc_style, fake_ctc_recn = torch.chunk(cat_fake_ctc, 3, dim=1)
 
                     fake_ctc_loss_rand = self.ctc_loss(fake_ctc_rand, fake_lbs,
@@ -1472,10 +1536,35 @@ class GlobalLocalAdversarialModel(AdversarialModel):
 
                     fake_ctc_loss = fake_ctc_loss_rand + fake_ctc_loss_recn + fake_ctc_loss_style
 
-                    ### Style Reconstruction & Contrastive Loss ###
-                    styles = self.models.E(fake_imgs, fake_lb_lens * self.opt.char_width, self.models.B)
+                    ### Style Reconstruction, Transfer Cycle, and Disentanglement ###
+                    styles = self.models.E(
+                        fake_imgs, fake_lb_lens * self.opt.char_width, self.models.B
+                    )
+                    transferred_styles = self.models.E(
+                        style_imgs, style_img_lens, self.models.B
+                    )
                     info_loss = torch.mean(torch.abs(styles - z_in.detach()))
                     style_contrastive_loss = contrastive_style_loss(styles, z_in.detach())
+                    real_style_for_loss = mu if self.vae_mode else enc_z
+                    style_cycle_loss = F.l1_loss(
+                        transferred_styles[:, 0], real_style_for_loss[:, 0].detach()
+                    )
+                    writer_contrastive_loss = supervised_contrastive_style_loss(
+                        torch.cat([real_style_for_loss, transferred_styles], dim=0),
+                        real_wids.repeat(2),
+                        temperature=getattr(self.opt.training, 'style_temperature', 0.1),
+                    )
+
+                    encoder = self.unwrap_model(self.models.E)
+                    content_logits = encoder.predict_content(enc_z, reverse=True)
+                    content_targets = torch.zeros_like(content_logits)
+                    content_targets.scatter_(
+                        1, real_lbs.clamp(0, content_logits.size(1) - 1), 1.0
+                    )
+                    content_targets[:, 0] = 0.0
+                    content_adv_loss = F.binary_cross_entropy_with_logits(
+                        content_logits, content_targets
+                    )
 
                     ### Content Restruction ###
                     recn_loss = recn_l1_loss(recn_imgs, real_imgs, real_img_lens)
@@ -1506,42 +1595,50 @@ class GlobalLocalAdversarialModel(AdversarialModel):
 
                     kl_loss = KLloss(mu, logvar) if self.vae_mode else torch.tensor(0.0, device=self.device)
 
-                    grad_cat_fake_adv = torch.autograd.grad(adv_loss, cat_fake_imgs, create_graph=False, retain_graph=True)[0]
-                    grad_fake_adv = torch.chunk(grad_cat_fake_adv, 3, dim=0)[0]
-                    grad_fake_OCR = torch.autograd.grad(fake_ctc_loss_rand, fake_ctc_rand, create_graph=False, retain_graph=True)[0]
-                    grad_fake_info = torch.autograd.grad(info_loss, fake_imgs, create_graph=False, retain_graph=True)[0]
-                    grad_fake_wid = torch.autograd.grad(fake_wid_loss, recn_wid_logits, create_graph=False, retain_graph=True)[0]
-                    grad_fake_recn = torch.autograd.grad(recn_loss, enc_z, create_graph=False, retain_graph=True)[0]
+                    # Fixed, interpretable weights are substantially more stable than
+                    # ratios of gradients taken with respect to unrelated tensors.
+                    gp_ctc = float(getattr(self.opt.training, 'lambda_ctc', 1.0))
+                    gp_info = float(getattr(self.opt.training, 'lambda_info', 1.0))
+                    gp_wid = float(getattr(self.opt.training, 'lambda_wid', 1.0))
+                    gp_recn = float(getattr(self.opt.training, 'lambda_recn', 10.0))
 
-                    std_grad_adv = torch.std(grad_fake_adv)
-                    gp_ctc = torch.div(std_grad_adv, torch.std(grad_fake_OCR) + 1e-8).detach() + 1
-                    gp_ctc.clamp_max_(100)
-                    gp_ctc = gp_ctc * getattr(self.opt.training, 'lambda_ctc', 1.0)
-                    gp_info = torch.div(std_grad_adv, torch.std(grad_fake_info) + 1e-8).detach() + 1
-                    gp_wid = torch.div(std_grad_adv, torch.std(grad_fake_wid) + 1e-8).detach() + 1
-                    gp_wid.clamp_max_(10)
-                    gp_recn = torch.div(std_grad_adv, torch.std(grad_fake_recn) + 1e-8).detach() + 1
+                    self.averager_meters.update('gp_ctc', gp_ctc)
+                    self.averager_meters.update('gp_info', gp_info)
+                    self.averager_meters.update('gp_wid', gp_wid)
+                    self.averager_meters.update('gp_recn', gp_recn)
 
-                    self.averager_meters.update('gp_ctc', gp_ctc.item())
-                    self.averager_meters.update('gp_info', gp_info.item())
-                    self.averager_meters.update('gp_wid', gp_wid.item())
-                    self.averager_meters.update('gp_recn', gp_recn.item())
+                    g_loss = (
+                        adversarial_weight * (adv_loss + adv_loss_patch)
+                        + gp_ctc * fake_ctc_loss
+                        + gp_info * info_loss
+                        + getattr(self.opt.training, 'lambda_style_contrastive', 0.25)
+                          * style_contrastive_loss
+                        + getattr(self.opt.training, 'lambda_writer_contrastive', 0.25)
+                          * writer_contrastive_loss
+                        + getattr(self.opt.training, 'lambda_style_cycle', 1.0)
+                          * style_cycle_loss
+                        + getattr(self.opt.training, 'lambda_content_adv', 0.05)
+                          * content_adv_loss
+                        + gp_wid * fake_wid_loss
+                        + gp_recn * recn_loss
+                        + self.opt.training.lambda_ctx * ctx_loss
+                        + self.opt.training.lambda_gram * gram_loss
+                        + self.opt.training.lambda_kl * kl_loss
+                    )
 
-                    g_loss = adv_loss + adv_loss_patch +\
-                             gp_ctc * fake_ctc_loss + \
-                             gp_info * (info_loss + style_contrastive_loss) + \
-                             gp_wid * fake_wid_loss + \
-                             gp_recn * recn_loss + \
-                             self.opt.training.lambda_ctx * ctx_loss + \
-                             self.opt.training.lambda_gram * gram_loss + \
-                             self.opt.training.lambda_kl * kl_loss
-                    
                     g_loss.backward()
+                    torch.nn.utils.clip_grad_norm_(
+                        chain(self.models.G.parameters(), self.models.E.parameters()),
+                        getattr(self.opt.training, 'grad_clip', 5.0),
+                    )
                     self.averager_meters.update('adv_loss', adv_loss.item())
                     self.averager_meters.update('adv_loss_patch', adv_loss_patch.item())
                     self.averager_meters.update('fake_ctc_loss', fake_ctc_loss.item())
                     self.averager_meters.update('info_loss', info_loss.item())
                     self.averager_meters.update('style_contrastive_loss', style_contrastive_loss.item())
+                    self.averager_meters.update('writer_contrastive_loss', writer_contrastive_loss.item())
+                    self.averager_meters.update('style_cycle_loss', style_cycle_loss.item())
+                    self.averager_meters.update('content_adv_loss', content_adv_loss.item())
                     self.averager_meters.update('fake_wid_loss', fake_wid_loss.item())
                     self.averager_meters.update('recn_loss', recn_loss.item())
                     self.averager_meters.update('ctx_loss', ctx_loss.item())
@@ -1551,7 +1648,6 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                     if self.use_ema:
                         self.ema_tracker.step_ema(self.models_ema.G, self.models.G)
                         self.ema_tracker.step_ema(self.models_ema.E, self.models.E)
-                        self.ema_tracker.step_ema(self.models_ema.B, self.models.B)
                         self.ema_tracker.step += 1
 
                 if iter_count % self.opt.training.print_iter_val == 0:
