@@ -22,8 +22,7 @@ from lib.datasets import (get_dataset, get_collect_fn, Hdf5Dataset,
 from lib.alphabet import strLabelConverter, get_lexicon, get_true_alphabet, Alphabets
 from lib.utils import draw_image, get_logger, AverageMeterManager, option_to_string, AverageMeter, plot_heatmap
 from networks.rand_dist import prepare_z_dist, prepare_y_dist
-from networks.loss import (recn_l1_loss, CXLoss, KLloss, r1_reg,
-                           contrastive_style_loss, supervised_contrastive_style_loss)
+from networks.loss import recn_l1_loss, CXLoss, KLloss, r1_reg
 from networks.masking import apply_vertical_stripe_mask, apply_horizontal_stripe_mask, apply_combined_stripe_mask, apply_light_mixed_patch_mask
 
 
@@ -1280,12 +1279,12 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                 )
 
         self.averager_meters = AverageMeterManager([
-            'adv_loss', 'fake_disc_loss', 'real_disc_loss', 'adv_loss_patch',
-            'fake_disc_loss_patch', 'real_disc_loss_patch', 'recn_loss',
-            'fake_ctc_loss', 'info_loss', 'style_contrastive_loss',
-            'writer_contrastive_loss', 'style_cycle_loss', 'content_adv_loss',
-            'fake_wid_loss', 'ctx_loss', 'kl_loss', 'gram_loss',
-            'gp_ctc', 'gp_info', 'gp_wid', 'gp_recn', 'r1_loss',
+            'g_total', 'd_total', 'g_adv', 'g_ctc', 'g_writer',
+            'g_recn', 'g_style', 'g_perceptual', 'g_kl',
+            'd_global', 'd_patch', 'r1_loss',
+            'ctc_raw', 'writer_raw', 'info_raw', 'style_cycle_raw',
+            'content_adv_raw', 'ctx_raw', 'gram_raw', 'kl_raw',
+            'adversarial_weight', 'fusion_strength',
         ])
         device = self.device
 
@@ -1332,14 +1331,13 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                 real_lbs = batch['lbs'].to(device, non_blocking=True)
                 real_lb_lens = batch['lb_lens'].to(device, non_blocking=True)
                 max_label_len = real_lbs.size(-1)
-                adversarial_weight = float(
-                    iter_count >= getattr(self.opt.training, 'content_warmup_steps', 0)
+                adversarial_ramp_steps = int(
+                    getattr(self.opt.training, 'adversarial_ramp_steps', 0)
                 )
-                for group in self.optimizers.D.param_groups:
-                    if adversarial_weight == 0.0:
-                        group['lr'] = 0.0
-                    elif group['lr'] == 0.0:
-                        group['lr'] = getattr(self.opt.training, 'd_lr', self.opt.training.lr)
+                adversarial_weight = (
+                    1.0 if adversarial_ramp_steps <= 0
+                    else min(1.0, float(iter_count + 1) / adversarial_ramp_steps)
+                )
 
                 #############################
                 # Optimizing Discriminator
@@ -1412,7 +1410,7 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                 # them to the global discriminator taught D that truncated words
                 # were real; keep them exclusively for the patch discriminator.
                 r1_interval = int(getattr(self.opt.training, 'r1_interval', 16))
-                apply_r1 = bool(adversarial_weight) and iter_count % r1_interval == 0
+                apply_r1 = iter_count % r1_interval == 0
                 real_for_disc = real_imgs.detach().requires_grad_(apply_r1)
                 real_disc = self.models.D(real_for_disc, real_img_lens, real_lb_lens)
                 real_disc_loss = torch.mean(F.relu(1.0 - real_disc))
@@ -1434,15 +1432,17 @@ class GlobalLocalAdversarialModel(AdversarialModel):
 
                 disc_loss = (real_disc_loss + fake_disc_loss + real_disc_loss_patch
                              + fake_disc_loss_patch + r1_loss)
-                self.averager_meters.update('real_disc_loss', real_disc_loss.item())
-                self.averager_meters.update('fake_disc_loss', fake_disc_loss.item())
-                self.averager_meters.update('real_disc_loss_patch', real_disc_loss_patch.item())
-                self.averager_meters.update('fake_disc_loss_patch', fake_disc_loss_patch.item())
+                self.averager_meters.update('d_total', disc_loss.item())
+                self.averager_meters.update(
+                    'd_global', (real_disc_loss + fake_disc_loss).item()
+                )
+                self.averager_meters.update(
+                    'd_patch', (real_disc_loss_patch + fake_disc_loss_patch).item()
+                )
                 self.averager_meters.update('r1_loss', r1_loss.item())
 
-                if adversarial_weight:
-                    disc_loss.backward()
-                    self.optimizers.D.step()
+                disc_loss.backward()
+                self.optimizers.D.step()
 
                 #############################
                 # Optimizing Generator
@@ -1552,15 +1552,9 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                         style_imgs, style_img_lens, self.models.B
                     )
                     info_loss = torch.mean(torch.abs(styles - z_in.detach()))
-                    style_contrastive_loss = contrastive_style_loss(styles, z_in.detach())
                     real_style_for_loss = mu if self.vae_mode else enc_z
                     style_cycle_loss = F.l1_loss(
                         transferred_styles[:, 0], real_style_for_loss[:, 0].detach()
-                    )
-                    writer_contrastive_loss = supervised_contrastive_style_loss(
-                        torch.cat([real_style_for_loss, transferred_styles], dim=0),
-                        real_wids.repeat(2),
-                        temperature=getattr(self.opt.training, 'style_temperature', 0.1),
                     )
 
                     encoder = self.unwrap_model(self.models.E)
@@ -1610,28 +1604,28 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                     gp_wid = float(getattr(self.opt.training, 'lambda_wid', 1.0))
                     gp_recn = float(getattr(self.opt.training, 'lambda_recn', 10.0))
 
-                    self.averager_meters.update('gp_ctc', gp_ctc)
-                    self.averager_meters.update('gp_info', gp_info)
-                    self.averager_meters.update('gp_wid', gp_wid)
-                    self.averager_meters.update('gp_recn', gp_recn)
 
-                    g_loss = (
-                        adversarial_weight * (adv_loss + adv_loss_patch)
-                        + gp_ctc * fake_ctc_loss
-                        + gp_info * info_loss
-                        + getattr(self.opt.training, 'lambda_style_contrastive', 0.25)
-                          * style_contrastive_loss
-                        + getattr(self.opt.training, 'lambda_writer_contrastive', 0.25)
-                          * writer_contrastive_loss
+                    # Optimize and log weighted contributions. Raw loss values
+                    # alone are misleading when their scales differ this much.
+                    g_adv = adversarial_weight * (adv_loss + adv_loss_patch)
+                    g_ctc = gp_ctc * fake_ctc_loss
+                    g_writer = gp_wid * fake_wid_loss
+                    g_recn = gp_recn * recn_loss
+                    g_style = (
+                        gp_info * info_loss
                         + getattr(self.opt.training, 'lambda_style_cycle', 1.0)
                           * style_cycle_loss
-                        + getattr(self.opt.training, 'lambda_content_adv', 0.05)
+                        + getattr(self.opt.training, 'lambda_content_adv', 0.02)
                           * content_adv_loss
-                        + gp_wid * fake_wid_loss
-                        + gp_recn * recn_loss
-                        + self.opt.training.lambda_ctx * ctx_loss
+                    )
+                    g_perceptual = (
+                        self.opt.training.lambda_ctx * ctx_loss
                         + self.opt.training.lambda_gram * gram_loss
-                        + self.opt.training.lambda_kl * kl_loss
+                    )
+                    g_kl = self.opt.training.lambda_kl * kl_loss
+                    g_loss = (
+                        g_adv + g_ctc + g_writer + g_recn
+                        + g_style + g_perceptual + g_kl
                     )
 
                     g_loss.backward()
@@ -1639,19 +1633,26 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                         chain(self.models.G.parameters(), self.models.E.parameters()),
                         getattr(self.opt.training, 'grad_clip', 5.0),
                     )
-                    self.averager_meters.update('adv_loss', adv_loss.item())
-                    self.averager_meters.update('adv_loss_patch', adv_loss_patch.item())
-                    self.averager_meters.update('fake_ctc_loss', fake_ctc_loss.item())
-                    self.averager_meters.update('info_loss', info_loss.item())
-                    self.averager_meters.update('style_contrastive_loss', style_contrastive_loss.item())
-                    self.averager_meters.update('writer_contrastive_loss', writer_contrastive_loss.item())
-                    self.averager_meters.update('style_cycle_loss', style_cycle_loss.item())
-                    self.averager_meters.update('content_adv_loss', content_adv_loss.item())
-                    self.averager_meters.update('fake_wid_loss', fake_wid_loss.item())
-                    self.averager_meters.update('recn_loss', recn_loss.item())
-                    self.averager_meters.update('ctx_loss', ctx_loss.item())
-                    self.averager_meters.update('gram_loss', gram_loss.item())
-                    self.averager_meters.update('kl_loss', kl_loss.item())
+                    self.averager_meters.update('g_total', g_loss.item())
+                    self.averager_meters.update('g_adv', g_adv.item())
+                    self.averager_meters.update('g_ctc', g_ctc.item())
+                    self.averager_meters.update('g_writer', g_writer.item())
+                    self.averager_meters.update('g_recn', g_recn.item())
+                    self.averager_meters.update('g_style', g_style.item())
+                    self.averager_meters.update('g_perceptual', g_perceptual.item())
+                    self.averager_meters.update('g_kl', g_kl.item())
+                    self.averager_meters.update('ctc_raw', fake_ctc_loss.item())
+                    self.averager_meters.update('writer_raw', fake_wid_loss.item())
+                    self.averager_meters.update('info_raw', info_loss.item())
+                    self.averager_meters.update('style_cycle_raw', style_cycle_loss.item())
+                    self.averager_meters.update('content_adv_raw', content_adv_loss.item())
+                    self.averager_meters.update('ctx_raw', ctx_loss.item())
+                    self.averager_meters.update('gram_raw', gram_loss.item())
+                    self.averager_meters.update('kl_raw', kl_loss.item())
+                    self.averager_meters.update('adversarial_weight', adversarial_weight)
+                    generator = self.unwrap_model(self.models.G)
+                    fusion_strength = torch.tanh(generator.fusion_alpha).detach().item()
+                    self.averager_meters.update('fusion_strength', fusion_strength)
                     self.optimizers.G.step()
                     if self.use_ema:
                         self.ema_tracker.step_ema(self.models_ema.G, self.models.G)
@@ -1661,36 +1662,52 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                 if iter_count % self.opt.training.print_iter_val == 0:
                     meter_vals = self.averager_meters.eval_all()
                     self.averager_meters.reset_all()
-                    info = "[%3d|%3d]-[%4d|%4d] G:%.4f G-p:%.4f D-fake:%.4f D-real:%.4f " \
-                           "D-fake-p:%.4f D-real-p:%.4f CTC-fake:%.4f Wid-fake:%.4f " \
-                           "Recn-z:%.4f Cont-z:%.4f Recn-c:%.4f Ctx:%.4f Gram:%.4f Kl:%.4f" \
+                    info = "[%3d|%3d]-[%4d|%4d] G:%.3f D:%.3f Adv:%.3f " \
+                           "CTC:%.3f Wid:%.3f Recn:%.3f Style:%.3f " \
+                           "Perc:%.3f KL:%.3f R1:%.3f a:%.2f fuse:%.3f" \
                            % (epoch, self.opt.training.epochs,
                               iter_count % len(self.train_loader), len(self.train_loader),
-                              meter_vals['adv_loss'], meter_vals['adv_loss_patch'],
-                              meter_vals['fake_disc_loss'], meter_vals['real_disc_loss'],
-                              meter_vals['fake_disc_loss_patch'], meter_vals['real_disc_loss_patch'],
-                              meter_vals['fake_ctc_loss'], meter_vals['fake_wid_loss'], meter_vals['info_loss'],
-                              meter_vals['style_contrastive_loss'], meter_vals['recn_loss'], meter_vals['ctx_loss'],
-                              meter_vals['gram_loss'], meter_vals['kl_loss'])
+                              meter_vals['g_total'], meter_vals['d_total'],
+                              meter_vals['g_adv'], meter_vals['g_ctc'],
+                              meter_vals['g_writer'], meter_vals['g_recn'],
+                              meter_vals['g_style'], meter_vals['g_perceptual'],
+                              meter_vals['g_kl'], meter_vals['r1_loss'],
+                              meter_vals['adversarial_weight'],
+                              meter_vals['fusion_strength'])
                     self.print(info) if self.local_rank < 1 else None
 
                     if _is_master:
 
 
-                        # WandB losses
-                        wandb_log = {('loss/' + k): v for k, v in meter_vals.items()}
-                        wandb_log['train/iter'] = iter_count + 1
-
-                        try:
-                            lr = self.lr_schedulers.G.get_last_lr()[0]
-                        except Exception:
-                            lr = self.lr_schedulers.G.get_lr()[0]
-                        wandb_log['loss/lr'] = lr
-
-                        G_unwrapped = getattr(self.models.G, 'module', self.models.G)
-                        info_attns = G_unwrapped._info_attention()
-                        for i_, attn_info in enumerate(info_attns):
-                            wandb_log['loss/gamma%d' % i_] = attn_info['gamma']
+                        # Main charts show actual weighted contributions;
+                        # raw values remain in a small diagnostics namespace.
+                        wandb_log = {
+                            'loss/g_total': meter_vals['g_total'],
+                            'loss/d_total': meter_vals['d_total'],
+                            'loss/adv': meter_vals['g_adv'],
+                            'loss/content': meter_vals['g_ctc'],
+                            'loss/writer': meter_vals['g_writer'],
+                            'loss/reconstruction': meter_vals['g_recn'],
+                            'loss/style': meter_vals['g_style'],
+                            'loss/perceptual': meter_vals['g_perceptual'],
+                            'loss/kl': meter_vals['g_kl'],
+                            'loss/r1': meter_vals['r1_loss'],
+                            'diagnostics/d_global': meter_vals['d_global'],
+                            'diagnostics/d_patch': meter_vals['d_patch'],
+                            'diagnostics/ctc_raw': meter_vals['ctc_raw'],
+                            'diagnostics/writer_raw': meter_vals['writer_raw'],
+                            'diagnostics/info_raw': meter_vals['info_raw'],
+                            'diagnostics/style_cycle_raw': meter_vals['style_cycle_raw'],
+                            'diagnostics/content_adv_raw': meter_vals['content_adv_raw'],
+                            'diagnostics/ctx_raw': meter_vals['ctx_raw'],
+                            'diagnostics/gram_relative': meter_vals['gram_raw'],
+                            'diagnostics/kl_raw': meter_vals['kl_raw'],
+                            'train/adversarial_weight': meter_vals['adversarial_weight'],
+                            'train/fusion_strength': meter_vals['fusion_strength'],
+                            'train/lr_g': self.optimizers.G.param_groups[0]['lr'],
+                            'train/lr_d': self.optimizers.D.param_groups[0]['lr'],
+                            'train/iter': iter_count + 1,
+                        }
 
                         import wandb as _wandb
                         if _wandb.run:

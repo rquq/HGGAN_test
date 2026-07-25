@@ -4,7 +4,7 @@ from torch import nn
 
 from lib.datasets import WriterBalancedBatchSampler
 from networks.fusion import StyleContentMamba
-from networks.loss import KLloss, supervised_contrastive_style_loss
+from networks.loss import GramStyleLoss, KLloss, supervised_contrastive_style_loss
 from networks.model import EMA
 from networks.module import StyleBackbone, StyleEncoder
 
@@ -87,6 +87,20 @@ def test_writer_batches_losses_and_ema_buffers():
 
     torch.testing.assert_close(averaged.running_mean, current.running_mean)
     assert torch.equal(averaged.num_batches_tracked, current.num_batches_tracked)
+
+
+def test_gram_style_loss_is_relative_and_scale_stable():
+    gram_loss = GramStyleLoss()
+    target = torch.randn(2, 32, 8, 12)
+
+    torch.testing.assert_close(
+        gram_loss(target, target), torch.tensor(0.0), atol=1e-7, rtol=0
+    )
+    moderate = gram_loss(target * 1.5, target)
+    amplified = gram_loss(target * 15.0, target * 10.0)
+
+    assert torch.isfinite(moderate)
+    torch.testing.assert_close(moderate, amplified, atol=1e-6, rtol=1e-5)
 
 
 def test_recognizer_cudnn_rnn_backward_in_train_mode():

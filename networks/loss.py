@@ -140,13 +140,20 @@ class GramStyleLoss(nn.Module):
     def __init__(self):
         super(GramStyleLoss, self).__init__()
         self.gram = GramMatrix()
-        self.criterion = nn.MSELoss()
 
     def __call__(self, input_feat, target_feat, feat_len=None):
         input_gram = self.gram(input_feat, feat_len)
         target_gram = self.gram(target_feat, feat_len)
-        loss = self.criterion(input_gram, target_gram)
-        return loss
+        # A raw Gram MSE scales with feature energy and channel count, so its
+        # magnitude can vary by orders of magnitude between backbone stages.
+        # Normalize by the detached energy of both Gram matrices to make the
+        # loss dimensionless while preserving gradients through input_gram.
+        error = (input_gram - target_gram).square().mean(dim=(1, 2))
+        energy = 0.5 * (
+            input_gram.square().mean(dim=(1, 2))
+            + target_gram.square().mean(dim=(1, 2))
+        )
+        return (error / energy.detach().clamp_min(1e-6)).mean()
 
 
 class GramMatrix(nn.Module):

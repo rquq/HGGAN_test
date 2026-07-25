@@ -45,21 +45,19 @@ training:
   blank_ratio: 0.
   sort_input: true
   num_critic_train: 1
-  content_warmup_steps: 2000
-  writer_balanced_batches: true
+  # Optional generator-only adversarial ramp; 0 trains both GANs from step 1.
+  adversarial_ramp_steps: 0
+  writer_balanced_batches: false
   samples_per_writer: 2
   vae_mode: true
   lambda_ctc: 1.0
   lambda_info: 1.0
-  lambda_wid: 1.0
+  lambda_wid: 0.5
   lambda_recn: 10.0
-  lambda_style_contrastive: 0.25
-  lambda_writer_contrastive: 0.25
   lambda_style_cycle: 1.0
-  lambda_content_adv: 0.05
-  style_temperature: 0.1
+  lambda_content_adv: 0.02
   lambda_kl: 0.1
-  lambda_ctx: 0.5
+  lambda_ctx: 0.1
   lambda_gram: 0.1
   grad_clip: 5.0
   r1_interval: 16
