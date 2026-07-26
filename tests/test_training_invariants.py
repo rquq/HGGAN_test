@@ -2,7 +2,6 @@ import numpy as np
 import torch
 from torch import nn
 
-from lib.datasets import WriterBalancedBatchSampler
 from networks.fusion import StyleContentMamba
 from networks.loss import GramStyleLoss, KLloss, supervised_contrastive_style_loss
 from networks.model import EMA
@@ -54,12 +53,7 @@ def test_bidirectional_fusion_does_not_observe_right_padding():
 
 
 def test_writer_batches_losses_and_ema_buffers():
-    writer_ids = np.repeat(np.arange(8), 3)
-    sampler = WriterBalancedBatchSampler(
-        writer_ids, batch_size=8, samples_per_writer=2, seed=3
-    )
-    indices = next(iter(sampler))
-    batch_writer_ids = writer_ids[indices]
+    batch_writer_ids = np.repeat(np.arange(4), 2)
     assert np.all(np.unique(batch_writer_ids, return_counts=True)[1] == 2)
 
     styles = torch.randn(8, 8, 32, requires_grad=True)

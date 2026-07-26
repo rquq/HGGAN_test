@@ -38,10 +38,6 @@ training:
   blank_ratio: 0.
   sort_input: true
   num_critic_train: 1
-  # Optional generator-only adversarial ramp; 0 trains both GANs from step 1.
-  adversarial_ramp_steps: 0
-  writer_balanced_batches: false
-  samples_per_writer: 2
   vae_mode: true
   lambda_ctc: 1.0
   lambda_info: 1.0

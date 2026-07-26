@@ -13,54 +13,6 @@ from lib.alphabet import strLabelConverter
 from lib.path_config import data_roots, data_paths, ImgHeight, CharWidth
 from lib.transforms import RandomScale, RandomClip
 
-class WriterBalancedBatchSampler(Sampler):
-    """Yield batches with repeated writers so supervised style positives exist."""
-    def __init__(self, writer_ids, batch_size, samples_per_writer=2, seed=0, rank=0):
-        self.writer_ids = np.asarray(writer_ids)
-        self.batch_size = int(batch_size)
-        self.samples_per_writer = int(samples_per_writer)
-        self.seed = int(seed)
-        self.rank = int(rank)
-        self.epoch = 0
-        if self.batch_size <= 0 or self.samples_per_writer <= 0:
-            raise ValueError('batch_size and samples_per_writer must be positive')
-        if self.batch_size % self.samples_per_writer:
-            raise ValueError('batch_size must be divisible by samples_per_writer')
-
-        self.writers_per_batch = self.batch_size // self.samples_per_writer
-        self.writer_to_indices = {
-            int(writer): np.flatnonzero(self.writer_ids == writer)
-            for writer in np.unique(self.writer_ids)
-        }
-        self.writers = np.asarray(sorted(self.writer_to_indices), dtype=np.int64)
-        if len(self.writers) == 0:
-            raise ValueError('writer_ids must contain at least one writer')
-        self.num_batches = len(self.writer_ids) // self.batch_size
-
-    def set_epoch(self, epoch):
-        self.epoch = int(epoch)
-
-    def __len__(self):
-        return self.num_batches
-
-    def __iter__(self):
-        rng = np.random.default_rng(self.seed + self.epoch * 100003 + self.rank * 1009)
-        for _ in range(self.num_batches):
-            replace_writers = len(self.writers) < self.writers_per_batch
-            selected_writers = rng.choice(
-                self.writers, size=self.writers_per_batch, replace=replace_writers
-            )
-            batch = []
-            for writer in selected_writers:
-                candidates = self.writer_to_indices[int(writer)]
-                selected = rng.choice(
-                    candidates,
-                    size=self.samples_per_writer,
-                    replace=len(candidates) < self.samples_per_writer,
-                )
-                batch.extend(int(index) for index in selected)
-            rng.shuffle(batch)
-            yield batch
 
 
 class Hdf5Dataset(Dataset):

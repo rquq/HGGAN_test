@@ -28,10 +28,6 @@ def r1_reg(d_out, x_in):
     return reg
 
 
-def tv_loss(img, img_lens):
-    loss = (recn_l1_loss(img[:, :, 1:, :], img[:, :, :-1, :], img_lens) +
-            recn_l1_loss(img[:, :, :, 1:], img[:, :, :, :-1], img_lens - 1)) / 2
-    return loss
 
 
 def recn_l1_loss(img1, img2, img_lens):
@@ -41,21 +37,6 @@ def recn_l1_loss(img1, img2, img_lens):
     return loss
 
 
-def calc_loss_perceptual(hout, hgt, img_lens):
-    loss = 0
-    for j in range(3):
-        scale = 2 ** (3 - j)
-        loss += recn_l1_loss(hout[j], hgt[j], img_lens // scale) / scale
-    return loss
-
-
-def gram_matrix(feat):
-    # https://github.com/pytorch/examples/blob/master/fast_neural_style/neural_style/utils.py
-    (b, ch, h, w) = feat.size()
-    feat = feat.view(b, ch, h * w)
-    feat_t = feat.transpose(1, 2)
-    gram = torch.bmm(feat, feat_t) / (ch * h * w)
-    return gram
 
 
 def KLloss(mu, logvar):
@@ -181,13 +162,6 @@ def _global_style(style):
     return style if style.dim() == 2 else style[:, 0]
 
 
-def contrastive_style_loss(fake_styles, real_styles, temperature=0.07):
-    """Match corresponding samples using the explicit global style token."""
-    fake_global = F.normalize(_global_style(fake_styles), dim=-1)
-    real_global = F.normalize(_global_style(real_styles), dim=-1)
-    logits = torch.matmul(fake_global, real_global.t()) / temperature
-    labels = torch.arange(fake_global.size(0), device=fake_styles.device)
-    return F.cross_entropy(logits, labels)
 
 
 def supervised_contrastive_style_loss(styles, writer_ids, temperature=0.1):

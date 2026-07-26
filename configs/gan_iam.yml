@@ -17,10 +17,10 @@ inference:
 
 training:
   dset_split: 'trnval'
-  epochs: 70
+  epochs: 36
   lr_policy: 'linear'
-  start_decay_epoch: 25
-  n_epochs_decay: 46
+  start_decay_epoch: 12
+  n_epochs_decay: 24
   batch_size: 6
   eval_batch_size: 6
   sample_nrow: 3
@@ -45,10 +45,6 @@ training:
   blank_ratio: 0.
   sort_input: true
   num_critic_train: 1
-  # Optional generator-only adversarial ramp; 0 trains both GANs from step 1.
-  adversarial_ramp_steps: 0
-  writer_balanced_batches: false
-  samples_per_writer: 2
   vae_mode: true
   lambda_ctc: 1.0
   lambda_info: 1.0
@@ -78,7 +74,7 @@ valid:
   validate_kid: true
   validate_is: false
   validate_hwd: true
-  validate_cmmd: true
+  validate_cmmd: false
   validate_cmmd_every_n_epochs: 3
   use_rand_corpus: false
   n_rand_repeat: 10

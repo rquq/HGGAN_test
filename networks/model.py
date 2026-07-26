@@ -17,8 +17,7 @@ from networks.utils import _info, set_requires_grad, get_scheduler, idx_to_words
                             words_to_images, ctc_greedy_decoder, extract_all_patches, frozen_bn
 from networks.BigGAN_networks import Generator, Discriminator, PatchDiscriminator
 from networks.module import Recognizer, WriterIdentifier, StyleEncoder, StyleBackbone
-from lib.datasets import (get_dataset, get_collect_fn, Hdf5Dataset,
-                          WriterBalancedBatchSampler)
+from lib.datasets import get_dataset, get_collect_fn, Hdf5Dataset
 from lib.alphabet import strLabelConverter, get_lexicon, get_true_alphabet, Alphabets
 from lib.utils import draw_image, get_logger, AverageMeterManager, option_to_string, AverageMeter, plot_heatmap
 from networks.rand_dist import prepare_z_dist, prepare_y_dist
@@ -411,47 +410,27 @@ class AdversarialModel(BaseModel):
         self.valid_real_stats = None
         dataset = get_dataset(opt.dataset, opt.training.dset_split,
                               recogn_aug=True, wid_aug=True, process_style=True)
-        use_writer_batches = getattr(opt.training, 'writer_balanced_batches', True)
-        if use_writer_batches:
-            rank = dist.get_rank() if dist.is_available() and dist.is_initialized() else max(self.local_rank, 0)
-            self.train_sampler = WriterBalancedBatchSampler(
-                dataset.wids,
-                batch_size=opt.training.batch_size,
-                samples_per_writer=getattr(opt.training, 'samples_per_writer', 2),
-                seed=opt.seed,
-                rank=rank,
+        if self.local_rank > -1:
+            from torch.utils.data.distributed import DistributedSampler
+            self.train_sampler = DistributedSampler(
+                dataset, num_replicas=None, rank=self.local_rank, shuffle=True
             )
-            self.train_loader = DataLoader(
-                dataset,
-                batch_sampler=self.train_sampler,
-                collate_fn=self.collect_fn,
-                num_workers=4,
-                pin_memory=(self.device.type == 'cuda'),
-                persistent_workers=True,
-                worker_init_fn=seed_worker,
-            )
+            shuffle = False
         else:
-            if self.local_rank > -1:
-                from torch.utils.data.distributed import DistributedSampler
-                self.train_sampler = DistributedSampler(
-                    dataset, num_replicas=None, rank=self.local_rank, shuffle=True
-                )
-                shuffle = False
-            else:
-                self.train_sampler = None
-                shuffle = True
-            self.train_loader = DataLoader(
-                dataset,
-                batch_size=opt.training.batch_size,
-                shuffle=shuffle,
-                sampler=self.train_sampler,
-                collate_fn=self.collect_fn,
-                num_workers=4,
-                drop_last=True,
-                pin_memory=(self.device.type == 'cuda'),
-                persistent_workers=True,
-                worker_init_fn=seed_worker,
-            )
+            self.train_sampler = None
+            shuffle = True
+        self.train_loader = DataLoader(
+            dataset,
+            batch_size=opt.training.batch_size,
+            shuffle=shuffle,
+            sampler=self.train_sampler,
+            collate_fn=self.collect_fn,
+            num_workers=4,
+            drop_last=True,
+            pin_memory=(self.device.type == 'cuda'),
+            persistent_workers=True,
+            worker_init_fn=seed_worker,
+        )
 
         self.tst_loader = DataLoader(
             get_dataset(opt.dataset, opt.valid.dset_split,
@@ -560,7 +539,7 @@ class AdversarialModel(BaseModel):
 
                 import wandb as _wandb
                 if _wandb.run:
-                    _wandb.log({'samples/generated': _wandb.Image(res_img, caption=f'iter {iteration_done}')},
+                    _wandb.log({'sample/generated': _wandb.Image(res_img, caption=f'iter {iteration_done}')},
                                step=iteration_done)
             except RuntimeError as e:
                 self.print(e)
@@ -1284,7 +1263,7 @@ class GlobalLocalAdversarialModel(AdversarialModel):
             'd_global', 'd_patch', 'r1_loss',
             'ctc_raw', 'writer_raw', 'info_raw', 'style_cycle_raw',
             'content_adv_raw', 'ctx_raw', 'gram_raw', 'kl_raw',
-            'adversarial_weight', 'fusion_strength',
+            'fusion_strength',
         ])
         device = self.device
 
@@ -1331,13 +1310,6 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                 real_lbs = batch['lbs'].to(device, non_blocking=True)
                 real_lb_lens = batch['lb_lens'].to(device, non_blocking=True)
                 max_label_len = real_lbs.size(-1)
-                adversarial_ramp_steps = int(
-                    getattr(self.opt.training, 'adversarial_ramp_steps', 0)
-                )
-                adversarial_weight = (
-                    1.0 if adversarial_ramp_steps <= 0
-                    else min(1.0, float(iter_count + 1) / adversarial_ramp_steps)
-                )
 
                 #############################
                 # Optimizing Discriminator
@@ -1607,7 +1579,7 @@ class GlobalLocalAdversarialModel(AdversarialModel):
 
                     # Optimize and log weighted contributions. Raw loss values
                     # alone are misleading when their scales differ this much.
-                    g_adv = adversarial_weight * (adv_loss + adv_loss_patch)
+                    g_adv = adv_loss + adv_loss_patch
                     g_ctc = gp_ctc * fake_ctc_loss
                     g_writer = gp_wid * fake_wid_loss
                     g_recn = gp_recn * recn_loss
@@ -1649,7 +1621,6 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                     self.averager_meters.update('ctx_raw', ctx_loss.item())
                     self.averager_meters.update('gram_raw', gram_loss.item())
                     self.averager_meters.update('kl_raw', kl_loss.item())
-                    self.averager_meters.update('adversarial_weight', adversarial_weight)
                     generator = self.unwrap_model(self.models.G)
                     fusion_strength = torch.tanh(generator.fusion_alpha).detach().item()
                     self.averager_meters.update('fusion_strength', fusion_strength)
@@ -1662,52 +1633,20 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                 if iter_count % self.opt.training.print_iter_val == 0:
                     meter_vals = self.averager_meters.eval_all()
                     self.averager_meters.reset_all()
-                    info = "[%3d|%3d]-[%4d|%4d] G:%.3f D:%.3f Adv:%.3f " \
-                           "CTC:%.3f Wid:%.3f Recn:%.3f Style:%.3f " \
-                           "Perc:%.3f KL:%.3f R1:%.3f a:%.2f fuse:%.3f" \
-                           % (epoch, self.opt.training.epochs,
-                              iter_count % len(self.train_loader), len(self.train_loader),
-                              meter_vals['g_total'], meter_vals['d_total'],
-                              meter_vals['g_adv'], meter_vals['g_ctc'],
-                              meter_vals['g_writer'], meter_vals['g_recn'],
-                              meter_vals['g_style'], meter_vals['g_perceptual'],
-                              meter_vals['g_kl'], meter_vals['r1_loss'],
-                              meter_vals['adversarial_weight'],
-                              meter_vals['fusion_strength'])
+                    loss_items = [f"{k}:{v:.4f}" for k, v in meter_vals.items() if k != 'fusion_strength']
+                    loss_str = " ".join(loss_items)
+                    param_str = f"fuse:{meter_vals['fusion_strength']:.3f}"
+                    info = f"[{epoch:3d}|{self.opt.training.epochs:3d}]-[{iter_count % len(self.train_loader):4d}|{len(self.train_loader):4d}] {loss_str} {param_str}"
                     self.print(info) if self.local_rank < 1 else None
 
                     if _is_master:
-
-
-                        # Main charts show actual weighted contributions;
-                        # raw values remain in a small diagnostics namespace.
-                        wandb_log = {
-                            'loss/g_total': meter_vals['g_total'],
-                            'loss/d_total': meter_vals['d_total'],
-                            'loss/adv': meter_vals['g_adv'],
-                            'loss/content': meter_vals['g_ctc'],
-                            'loss/writer': meter_vals['g_writer'],
-                            'loss/reconstruction': meter_vals['g_recn'],
-                            'loss/style': meter_vals['g_style'],
-                            'loss/perceptual': meter_vals['g_perceptual'],
-                            'loss/kl': meter_vals['g_kl'],
-                            'loss/r1': meter_vals['r1_loss'],
-                            'diagnostics/d_global': meter_vals['d_global'],
-                            'diagnostics/d_patch': meter_vals['d_patch'],
-                            'diagnostics/ctc_raw': meter_vals['ctc_raw'],
-                            'diagnostics/writer_raw': meter_vals['writer_raw'],
-                            'diagnostics/info_raw': meter_vals['info_raw'],
-                            'diagnostics/style_cycle_raw': meter_vals['style_cycle_raw'],
-                            'diagnostics/content_adv_raw': meter_vals['content_adv_raw'],
-                            'diagnostics/ctx_raw': meter_vals['ctx_raw'],
-                            'diagnostics/gram_relative': meter_vals['gram_raw'],
-                            'diagnostics/kl_raw': meter_vals['kl_raw'],
-                            'train/adversarial_weight': meter_vals['adversarial_weight'],
-                            'train/fusion_strength': meter_vals['fusion_strength'],
-                            'train/lr_g': self.optimizers.G.param_groups[0]['lr'],
-                            'train/lr_d': self.optimizers.D.param_groups[0]['lr'],
-                            'train/iter': iter_count + 1,
-                        }
+                        # Log all loss terms under 'loss/' like in random_crop, and training params under 'train/'
+                        wandb_log = {('loss/' + k): v for k, v in meter_vals.items() if k != 'fusion_strength'}
+                        wandb_log['train/fusion_strength'] = meter_vals['fusion_strength']
+                        wandb_log['train/fusion_strength'] = meter_vals['fusion_strength']
+                        wandb_log['train/lr_g'] = self.optimizers.G.param_groups[0]['lr']
+                        wandb_log['train/lr_d'] = self.optimizers.D.param_groups[0]['lr']
+                        wandb_log['train/iter'] = iter_count + 1
 
                         import wandb as _wandb
                         if _wandb.run:
