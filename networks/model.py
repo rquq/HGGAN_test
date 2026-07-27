@@ -74,6 +74,8 @@ class BaseModel(object):
         self.alphabet = Alphabets[alphabet_key]
         self.label_converter = strLabelConverter(alphabet_key)
         self.epoch_start = 1
+        if self.log_root:
+            self.create_logger()
 
     @staticmethod
     def unwrap_model(model):
@@ -93,14 +95,17 @@ class BaseModel(object):
         if self.logger:
             return
 
+        if self.local_rank > 0:
+            return
+
         if not os.path.exists(self.log_root):
             os.makedirs(self.log_root)
 
+        self.logger = get_logger(self.log_root)
+        self.print(f'log_root: {self.log_root}')
         opt_str = option_to_string(self.opt)
         with open(os.path.join(self.log_root, 'config.txt'), 'w') as f:
             f.writelines(opt_str)
-        self.print(f'log_root: {self.log_root}')
-        self.logger = get_logger(self.log_root)
 
     def info(self, extra=None):
         self.print("RUNDIR: {}".format(self.log_root))
