@@ -7,7 +7,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from . import BigGAN_layers as layers
-from .fusion import StyleContentMamba
+from .fusion import StyleContentAttentionFusion
 from networks.utils import init_weights, _len2mask
 
 # Architectures for G
@@ -26,53 +26,29 @@ def G_arch(ch=64, attention='64', ksize='333333', dilation='111111'):
 
 
 class BlockSpecificStyleProjection(nn.Module):
-    """
-    Learned attention-based pooling for each GBlock in the generator.
-    Avoids destroying spatial style details by letting each block selectively pool style tokens.
-    """
-    def __init__(self, style_dim, num_blocks=4, style_chunk_size=32, which_linear=nn.Linear):
+    """Project the explicit global style token for each GBlock."""
+
+    def __init__(self, style_dim, num_blocks=4, style_chunk_size=32,
+                 which_linear=nn.Linear):
         super().__init__()
         self.num_blocks = num_blocks
-        self.style_chunk_size = style_chunk_size
-        
-        # Attention queries for each block to dynamically pool the style tokens
-        self.pool_queries = nn.ParameterList([
-            nn.Parameter(torch.randn(1, 1, style_dim) * 0.02) for _ in range(num_blocks)
-        ])
-        
-        # Block-specific projection layers using which_linear for Spectral Normalization stability
         self.projections = nn.ModuleList([
             nn.Sequential(
                 which_linear(style_dim, style_chunk_size),
                 nn.SiLU(),
-                which_linear(style_chunk_size, style_chunk_size)
-            ) for _ in range(num_blocks)
+                which_linear(style_chunk_size, style_chunk_size),
+            )
+            for _ in range(num_blocks)
         ])
 
-    def forward(self, z):
-        """
-        Args:
-            z: (B, S, D) - Style sequence from encoder (S style tokens of dimension D=style_dim)
-        Returns:
-            ys: list of style vectors of shape (B, style_chunk_size) modulating each GBlock
-        """
-        B, S, D = z.shape
-        ys = []
-        for i in range(self.num_blocks):
-            # pool_queries[i] has shape (1, 1, D)
-            # z.transpose(-2, -1) has shape (B, D, S)
-            # Query-Key dot product yields (B, 1, S) compatibility scores
-            scores = torch.matmul(self.pool_queries[i], z.transpose(-2, -1)) / (D ** 0.5)
-            attn_weights = torch.softmax(scores, dim=-1) # (B, 1, S)
-            
-            # Weighted average: (B, 1, S) x (B, S, D) -> (B, 1, D) -> (B, D)
-            z_pooled = torch.matmul(attn_weights, z).squeeze(1)
-            
-            # Project to the CCBN modulation dimension
-            y_block = self.projections[i](z_pooled)
-            ys.append(y_block)
-            
-        return ys
+    def forward(self, global_style):
+        if global_style.ndim == 3:
+            if global_style.size(1) != 1:
+                raise ValueError('GBlock conditioning accepts only the global style token')
+            global_style = global_style[:, 0]
+        elif global_style.ndim != 2:
+            raise ValueError('global style must have shape (B, D) or (B, 1, D)')
+        return [projection(global_style) for projection in self.projections]
 
 
 class Generator(nn.Module):
@@ -84,7 +60,7 @@ class Generator(nn.Module):
                  G_activation=nn.ReLU(inplace=False),
                  BN_eps=1e-5, SN_eps=1e-12, G_fp16=False,
                  init='ortho', G_param='SN', norm_style='bn', bn_linear='embed', input_nc=3,
-                 embed_pad_idx=0, embed_max_norm=1.0
+                 embed_pad_idx=0, embed_max_norm=1.0, fusion_gate_init=0.25
                  ):
         super(Generator, self).__init__()
         dim_z = style_dim
@@ -163,12 +139,17 @@ class Generator(nn.Module):
 
         self.filter_linear = self.which_linear(self.embed_dim,
                                         self.arch['in_channels'][0] * (self.bottom_width * self.bottom_height))
-        self.style_content_mix = StyleContentMamba(
+        self.style_content_mix = StyleContentAttentionFusion(
             self.embed_dim, self.style_dim, vocab_size=self.n_classes
         )
-        # Begin from the reliable random-crop content path and let training opt in
-        # to Mamba fusion gradually instead of replacing text conditioning at step 0.
-        self.fusion_alpha = nn.Parameter(torch.zeros(()))
+        if not 0.0 < fusion_gate_init < 1.0:
+            raise ValueError('fusion_gate_init must be strictly between 0 and 1')
+        # A channel-wise, non-zero gate gives fusion gradients from the first
+        # update while retaining the reliable unfused content path.
+        gate_logit = torch.logit(torch.tensor(float(fusion_gate_init)))
+        self.fusion_gate_logits = nn.Parameter(
+            torch.full((self.embed_dim,), gate_logit.item())
+        )
 
         self.bssp = BlockSpecificStyleProjection(style_dim=self.style_dim, num_blocks=len(self.arch['in_channels']), style_chunk_size=self.z_chunk_size, which_linear=self.which_linear)
 
@@ -204,11 +185,14 @@ class Generator(nn.Module):
         # Initialize weights. Optionally skip init for testing.
         if self.init != 'none':
             init_weights(self, self.init)
+        # General initialization touches fusion Linear weights; restore its
+        # identity-like nonzero residual handoffs afterwards.
+        self.style_content_mix.reset_stability_parameters()
 
     def forward(self, z, y, y_lens):
-        # Style affects synthesis through pure style pooling, never by mixing text
-        # into the vectors that drive conditional normalization.
-        ys = self.bssp(z)
+        # Only the explicit global token may bypass character-level fusion.
+        # Local tokens must travel through the aligned fusion path.
+        ys = self.bssp(z[:, 0])
 
         char_ids = y
         content = self.text_embedding(y).float().to(y.device)
@@ -217,7 +201,8 @@ class Generator(nn.Module):
         )
         token_positions = torch.arange(y.size(1), device=y.device).unsqueeze(0)
         valid_tokens = (token_positions < y_lens.unsqueeze(1)).unsqueeze(-1)
-        y_mixed = content + torch.tanh(self.fusion_alpha) * (fused_content - content)
+        fusion_gate = torch.sigmoid(self.fusion_gate_logits).view(1, 1, -1)
+        y_mixed = content + fusion_gate * (fused_content - content)
         y_mixed = y_mixed * valid_tokens.to(y_mixed.dtype)
         h = self.filter_linear(y_mixed) * valid_tokens.to(y_mixed.dtype)
 
@@ -249,6 +234,9 @@ class Generator(nn.Module):
             output = output * mask + (mask - 1)
 
         return output
+
+    def fusion_strength(self):
+        return torch.sigmoid(self.fusion_gate_logits).mean()
 
     def _info_attention(self):
         attn_index = -1

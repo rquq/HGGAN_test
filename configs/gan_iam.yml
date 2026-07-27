@@ -44,7 +44,8 @@ training:
   capitalize_ratio: 0.5
   blank_ratio: 0.
   sort_input: true
-  num_critic_train: 1
+  # D uses half G's learning rate; two D updates per G balances the adversaries.
+  num_critic_train: 2
   vae_mode: true
   lambda_ctc: 1.0
   lambda_info: 1.0
@@ -54,7 +55,6 @@ training:
   lambda_content_adv: 0.02
   lambda_kl: 0.1
   lambda_ctx: 0.1
-  lambda_gram: 0.1
   grad_clip: 5.0
   r1_interval: 16
   lambda_r1: 0.01
@@ -111,6 +111,7 @@ test:
 GenModel:
   G_ch: 64
   style_dim: 32
+  fusion_gate_init: 0.25
   bottom_width: 4
   bottom_height: 4
   resolution: 64

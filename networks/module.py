@@ -267,10 +267,10 @@ class StyleEncoder(nn.Module):
         return style_tokens[:, 0]
 
     def predict_content(self, style_tokens, reverse=True):
-        style_global = self.global_token(style_tokens)
+        style_for_probe = style_tokens
         if reverse:
-            style_global = _gradient_reverse(style_global, self.content_grl)
-        return self.content_probe(style_global)
+            style_for_probe = _gradient_reverse(style_for_probe, self.content_grl)
+        return self.content_probe(style_for_probe)
 
     def forward(self, img, img_len, cnn_backbone=None, ret_feats=False, vae_mode=False):
         feat, all_feats = cnn_backbone(img, ret_feats=True)
