@@ -1030,35 +1030,6 @@ class GlobalLocalAdversarialModel(AdversarialModel):
         if is_resuming:
             epoch_done = self.load(resume_path, self.device)
             torch.cuda.empty_cache()
-
-            # Carry accompanying best_fid_*.pth from input directory to current run's ckpt_dir
-            try:
-                import glob, shutil
-                ckpt_dir = os.path.join(self.log_root, getattr(self.opt.training, 'ckpt_dir', 'ckpts'))
-                os.makedirs(ckpt_dir, exist_ok=True)
-
-                real_resume_file = self.resolve_resume_path(resume_path) or resume_path
-                source_dir = os.path.dirname(os.path.abspath(real_resume_file)) if os.path.isfile(real_resume_file) else os.path.abspath(real_resume_file)
-
-                if os.path.abspath(source_dir) != os.path.abspath(ckpt_dir):
-                    best_fid_files = glob.glob(os.path.join(source_dir, "best_fid_*.pth"))
-                    for best_file in best_fid_files:
-                        dst_path = os.path.join(ckpt_dir, os.path.basename(best_file))
-                        if not os.path.exists(dst_path):
-                            shutil.copy(best_file, dst_path)
-                            self.print(f"--> Carried input best checkpoint into run folder: {os.path.basename(best_file)}")
-
-                        fname = os.path.basename(best_file)
-                        if fname.startswith("best_fid_") and fname.endswith(".pth"):
-                            try:
-                                score_part = fname[len("best_fid_"):-len(".pth")]
-                                score_val = float(score_part)
-                                if score_val < getattr(self, 'best_fid', np.inf):
-                                    self.best_fid = score_val
-                                    self.print(f"--> Restored baseline best FID = {score_val:.4f} from input {fname}")
-                            except Exception: pass
-            except Exception as e:
-                self.print(f"Warning carrying best checkpoint: {e}")
         else:
             if os.path.exists(self.opt.training.pretrained_w):
                 w_dict = torch.load(self.opt.training.pretrained_w, map_location='cpu', weights_only=False)

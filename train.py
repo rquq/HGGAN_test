@@ -25,6 +25,11 @@ if __name__ == "__main__":
     args = parser.parse_args()
     cfg = yaml2config(args.config)
     
+    run_id = datetime.strftime(datetime.now(), '%m-%d-%H-%M')
+    logdir = os.path.join("runs", os.path.basename(args.config)[:-4] + '-' + str(run_id))
+    ckpt_dir = os.path.join(logdir, getattr(getattr(cfg, 'training', {}), 'ckpt_dir', 'ckpts'))
+    os.makedirs(ckpt_dir, exist_ok=True)
+
     local_rank = args.local_rank
     if local_rank == -1 and "LOCAL_RANK" in os.environ:
         local_rank = int(os.environ["LOCAL_RANK"])
@@ -35,14 +40,9 @@ if __name__ == "__main__":
         torch.cuda.set_device(local_rank)
         torch.distributed.init_process_group(backend='nccl')
         
-        run_id = datetime.strftime(datetime.now(), '%m-%d-%H-%M')
         run_id_tensor = torch.tensor([ord(c) for c in run_id], dtype=torch.long, device=local_rank)
         torch.distributed.broadcast(run_id_tensor, src=0)
         run_id = "".join([chr(c) for c in run_id_tensor.cpu().tolist()])
-    else:
-        run_id = datetime.strftime(datetime.now(), '%m-%d-%H-%M')
-
-    logdir = os.path.join("runs", os.path.basename(args.config)[:-4] + '-' + str(run_id))
 
     model = get_model(cfg.model)(cfg, logdir)
     model.train()
