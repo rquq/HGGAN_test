@@ -6,7 +6,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn import Parameter as P
 from .utils import _len2mask
-import matplotlib.pyplot as plt
 
 
 # Projection of x onto y
@@ -29,8 +28,6 @@ def power_iteration(W, u_, update=True, eps=1e-12):
         # Run one step of the power iteration
         with torch.no_grad():
             v = torch.matmul(u, W)
-            # Run Gram-Schmidt to subtract components of all other singular vectors
-            # print('v', v, 'vs', vs, 'eps', eps)
             v = F.normalize(gram_schmidt(v, vs), eps=eps)
             # Add to the list
             vs += [v]
@@ -88,8 +85,6 @@ class SN(object):
             W_mat = W_mat.t()
         # Apply num_itrs power iterations
         for _ in range(self.num_itrs):
-            # Run Gram-Schmidt to subtract components of all other singular vectors
-            # print('W_mat', W_mat, 'self.u', self.u, 'self.eps', self.eps)
             svs, us, vs = power_iteration(W_mat, self.u, update=self.training, eps=self.eps)
             # Update the svs
         if self.training:
@@ -142,58 +137,7 @@ class SNEmbedding(nn.Embedding, SN):
 
 #
 # # A non-local block as used in SA-GAN
-# # Note that the implementation as described in the paper is largely incorrect;
-# # refer to the released code for the actual implementation.
-# class Attention(nn.Module):
-#     INF_VALUE = 1e8
-#     def __init__(self, ch, which_conv=SNConv2d, name='attention'):
-#         super(Attention, self).__init__()
-#         # Channel multiplier
-#         self.ch = ch
-#         self.which_conv = which_conv
-#         self.theta = self.which_conv(self.ch, self.ch // 8, kernel_size=1, padding=0, bias=False)
-#         self.phi = self.which_conv(self.ch, self.ch // 8, kernel_size=1, padding=0, bias=False)
-#         self.g = self.which_conv(self.ch, self.ch // 2, kernel_size=1, padding=0, bias=False)
-#         self.o = self.which_conv(self.ch // 2, self.ch, kernel_size=1, padding=0, bias=False)
-#         # Learnable gain parameter
-#         self.gamma = P(torch.tensor(0.), requires_grad=True)
-#
-#     def forward(self, x, y=None, y_len=None):
-#         # Apply convs
-#         theta = self.theta(x)
-#         phi = F.max_pool2d(self.phi(x), [2, 2])
-#         g = F.max_pool2d(self.g(x), [2, 2])
-#         # Perform reshapes
-#         theta_mask = _len2mask(y_len, theta.shape[3]).view(x.size(0), 1, 1, theta.shape[3])
-#         theta = theta * theta_mask + (theta_mask - 1) * self.INF_VALUE
-#
-#         for i in range(4):
-#             print(y_len[i])
-#             plt.subplot(4, 1, i + 1)
-#             plt.imshow(theta[i, 0].detach().cpu().numpy())
-#         plt.show()
-#         # try to plot here
-#         theta = theta.view(-1, self.ch // 8, x.shape[2] * x.shape[3])
-#         try:
-#             phi = phi.view(-1, self.ch // 8, x.shape[2] * x.shape[3] // 4)
-#         except:
-#             print(phi.shape)
-#         g = g.view(-1, self.ch // 2, x.shape[2] * x.shape[3] // 4)
-#         # Matmul and softmax to get attention maps
-#         beta = F.softmax(torch.bmm(theta.transpose(1, 2), phi), -1)
-#         att_map = beta.view(-1, x.shape[2] // 2, x.shape[3] // 2)
-#         for i in range(4):
-#             print(y_len[i])
-#             plt.subplot(4, 1, i + 1)
-#             plt.imshow(att_map[i].detach().cpu().numpy())
-#         plt.show()
-#
-#         # Attention map times g path
-#         o = self.o(torch.bmm(g, beta.transpose(1, 2)).view(-1, self.ch // 2, x.shape[2], x.shape[3]))
-#         return self.gamma * o + x
-#
-#
-#
+
 
 # Self Attention module from self-attention gan
 class SelfAttention(nn.Module):
@@ -220,126 +164,25 @@ class SelfAttention(nn.Module):
     def forward(self, x, x_len=None, **kwargs):
         """
             inputs :
-                x : input feature maps( B X C X W X H)
+                x : input feature maps( B X C X H X W)
             returns :
                 out : self attention value + input feature
                 attention: B X N X N (N is Width*Height)
         """
-        # print('attention size', x.size())
-        m_batchsize, C, width, height = x.size()
-        # print('query_conv size', self.query_conv(x).size())
+        m_batchsize, C, height, width = x.size()
+        proj_query = self.query_conv(x).view(m_batchsize, -1, width * height).permute(0, 2, 1)
+        proj_key = self.key_conv(x).view(m_batchsize, -1, width * height)
+        energy = torch.bmm(proj_query, proj_key)
+        attention = self.softmax(energy)
 
-        proj_query = self.query_conv(x).view(
-            m_batchsize, -1, width * height)  # B X C X (N)
-        proj_key = self.key_conv(x).view(
-            m_batchsize, -1, width * height)  # B X C X (W*H)
-        energy = torch.bmm(proj_query.transpose(1, 2), proj_key)  # transpose check
-
-        # if x_len is not None:
-        #     mask = _len2mask(x_len, x.shape[3]).unsqueeze(dim=1).repeat(1, x.shape[2], 1)\
-        #                                                         .view(m_batchsize, -1).unsqueeze(dim=1)
-        #     print('mask', mask.size())
-        #     mask_e = torch.bmm(mask.transpose(1, 2), mask)
-        #     print('mask_e', mask_e.size())
-        #     print('energy', energy.size())
-        #     energy = energy * mask_e + (mask_e - 1) * self.INF_VALUE
-        #     print(mask_e)
-        #     print(energy)
-
-        attention = self.softmax(energy)  # B X (N) X (N)
-        # print(attention)
-        # if x_len is not None:
-        #     for i in range(1):
-        #         print(x_len[i])
-        #         plt.subplot(1, 1, i + 1)
-        #         plt.imshow(attention[i].detach().cpu().numpy() * 1e5)
-        #     plt.show()
-
-        proj_value = self.value_conv(x).view(
-            m_batchsize, -1, width * height)  # B X C X N
+        proj_value = self.value_conv(x).view(m_batchsize, -1, width * height)
 
         out = torch.bmm(proj_value, attention.permute(0, 2, 1))
-        out = out.view(m_batchsize, C, width, height)
+        out = out.view(m_batchsize, C, height, width)
 
-        out = self.gamma*out + x
+        out = self.gamma * out + x
         return out
 
-
-# from networks.cc_attention import ca_weight, ca_map
-# class CrissCrossSelfAttention(nn.Module):
-#     """ Criss-Cross Attention Module"""
-#     INF_VALUE = 1e8
-#     def __init__(self, in_dim, which_conv=SNConv2d):
-#         super(CrissCrossSelfAttention,self).__init__()
-#         self.chanel_in = in_dim
-#
-#         self.query_conv = which_conv(in_channels=in_dim, out_channels=in_dim // 8,
-#                                      kernel_size=1, padding=0, bias=False)
-#         self.key_conv = which_conv(in_channels=in_dim, out_channels=in_dim // 8,
-#                                    kernel_size=1, padding=0, bias=False)
-#         self.value_conv = which_conv(in_channels=in_dim, out_channels=in_dim,
-#                                      kernel_size=1, padding=0, bias=False)
-#         self.gamma = nn.Parameter(torch.zeros(1))
-#
-#         self._vis_out = None
-#
-#     def forward(self, x, energy_mask=None, **kwargs):
-#         proj_query = self.query_conv(x)
-#         proj_key = self.key_conv(x)
-#         proj_value = self.value_conv(x)
-#
-#         energy = ca_weight(proj_query, proj_key)
-#         if energy_mask is not None:
-#             energy = energy * energy_mask + (energy_mask - 1) * self.INF_VALUE
-#         attention = F.softmax(energy, 1)
-#         out = ca_map(attention, proj_value)
-#
-#         self._vis_out = out[0, 0].detach().cpu().numpy()
-#
-#         for j in range(2):
-#             plt.subplot(411)
-#             energy_mask = energy_mask.view(energy.size(0), energy.size(1), -1)
-#             plt.imshow(energy_mask.detach().cpu().numpy()[j])
-#
-#             plt.subplot(412)
-#             energy = energy.view(energy.size(0), energy.size(1), -1)
-#             plt.imshow(energy.detach().cpu().numpy()[j])
-#
-#             attention = attention.view(attention.size(0), attention.size(1), -1)
-#             plt.subplot(413)
-#             plt.imshow(attention.detach().cpu().numpy()[j])
-#
-#             plt.subplot(414)
-#             plt.imshow(out.detach().cpu().numpy()[j, 0])
-#             plt.show()
-#
-#         out = self.gamma*out + x
-#         return out
-#
-#     @staticmethod
-#     def calc_energy_mask(x, y_len=None):
-#         if y_len is None:
-#             energy_mask = ca_weight(seq_mask_expand, None)
-#         else:
-#             y_len_mask = _len2mask(y_len, x.size(3)).unsqueeze(1).unsqueeze(1)
-#             seq_mask_expand = y_len_mask.repeat(1, 1, x.size(2), 1)
-#             energy_mask = ca_weight(seq_mask_expand, seq_mask_expand)
-#         return energy_mask
-#
-#
-# class DualCrossAttention(nn.Module):
-#     def __init__(self, in_dim, which_conv=SNConv2d):
-#         super(DualCrossAttention, self).__init__()
-#         self.attn1 = CrissCrossSelfAttention(in_dim, which_conv)
-#         self.attn2 = CrissCrossSelfAttention(in_dim, which_conv)
-#
-#     def forward(self, x, y_len=None, **kwargs):
-#         energy_mask = CrissCrossSelfAttention.calc_energy_mask(x, y_len)
-#         out = self.attn1(x, energy_mask)
-#         out = self.attn2(out, energy_mask)
-#         return out
-#
-# Attention = DualCrossAttention
 
 Attention = SelfAttention
 
@@ -357,7 +200,6 @@ def fused_bn(x, mean, var, gain=None, bias=None, eps=1e-5):
     if bias is not None:
         shift = shift - bias
     return x * scale - shift
-    # return ((x - mean) / ((var + eps) ** 0.5)) * gain + bias # The unfused way.
 
 
 # Manual BN
@@ -540,51 +382,6 @@ class bn(nn.Module):
                                 self.bias, self.training, self.momentum, self.eps)
 
 
-# Generator blocks
-# Note that this class assumes the kernel size and padding (and any other
-# settings) have been selected in the main generator module and passed in
-# through the which_conv arg. Similar rules apply with which_bn (the input
-# size [which is actually the number of channels of the conditional info] must
-# be preselected)
-class GBlock(nn.Module):
-    def __init__(self, in_channels, out_channels,
-                 which_conv1=nn.Conv2d, which_conv2=nn.Conv2d, which_bn=bn, activation=None,
-                 upsample=None):
-        super(GBlock, self).__init__()
-
-        self.in_channels, self.out_channels = in_channels, out_channels
-        self.which_conv1, self.which_conv2, self.which_bn = which_conv1, which_conv2, which_bn
-        self.activation = activation
-        self.upsample = upsample
-        # Conv layers
-        self.conv1 = self.which_conv1(self.in_channels, self.out_channels)
-        self.conv2 = self.which_conv2(self.out_channels, self.out_channels)
-        self.learnable_sc = in_channels != out_channels or upsample
-        if self.learnable_sc:
-            self.conv_sc = self.which_conv1(in_channels, out_channels,
-                                           kernel_size=1, padding=0)
-        # Batchnorm layers
-        self.bn1 = self.which_bn(in_channels)
-        self.bn2 = self.which_bn(out_channels)
-        # upsample layers
-        self.upsample = upsample
-
-    def forward(self, x, y, **kwargs):
-        h = self.activation(self.bn1(x, y))
-        # h = self.activation(x)
-        # h=x
-        if self.upsample:
-            h = self.upsample(h)
-            x = self.upsample(x)
-        h = self.conv1(h)
-        h = self.activation(self.bn2(h, y))
-        # h = self.activation(h)
-        h = self.conv2(h)
-        if self.learnable_sc:
-            x = self.conv_sc(x)
-        return h + x
-
-
 # Residual block for the discriminator
 class DBlock(nn.Module):
     def __init__(self, in_channels, out_channels, which_conv=SNConv2d, wide=True,
@@ -621,9 +418,7 @@ class DBlock(nn.Module):
 
     def forward(self, x, **kwargs):
         if self.preactivation:
-            # h = self.activation(x) # NOT TODAY SATAN
-            # Andy's note: This line *must* be an out-of-place ReLU or it
-            #              will negatively affect the shortcut connection.
+            # Must use an out-of-place ReLU activation to preserve shortcut connection state
             h = F.relu(x)
         else:
             h = x
@@ -633,5 +428,3 @@ class DBlock(nn.Module):
             h = self.downsample(h)
 
         return h + self.shortcut(x)
-
-# dogball

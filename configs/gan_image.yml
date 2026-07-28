@@ -1,4 +1,6 @@
 device: 'cuda:0'
+multi_gpu: false
+gpus: [0]
 model: 'gl_adversarial_model'
 dataset: 'custom'
 seed: 123456
@@ -60,36 +62,29 @@ DiscModel:
   D_ch: 64
   D_wide: true
   resolution: 64
-  D_kernel_size: 3
   D_attn: '0'
-  n_class: 80
+  width_context: true
+  width_heads: 4
   num_D_SVs: 1
   num_D_SV_itrs: 1
   SN_eps: 1.e-08
   output_dim: 1
   init: 'N02'
   D_param: 'SN'
-  bn_linear: 'SN'
   input_nc: 1
-  one_hot: true
 
 
 PatchDiscModel:
-  D_ch: 64
-  D_wide: true
-  resolution: 32
-  D_kernel_size: 3
-  D_attn: '0'
-  n_class: 80
+  D_ch: 32
+  D_max_ch: 192
+  D_layers: 3
   num_D_SVs: 1
   num_D_SV_itrs: 1
   SN_eps: 1.e-08
   output_dim: 1
   init: 'N02'
   D_param: 'SN'
-  bn_linear: 'SN'
   input_nc: 1
-  one_hot: true
 
 OcrModel:
   resolution: 16

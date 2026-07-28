@@ -1,10 +1,12 @@
+import os
 import argparse
+import sys
 from lib.utils import yaml2config
 from networks import get_model
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description="config")
+    parser = argparse.ArgumentParser(description="Evaluation demo script")
     parser.add_argument(
         "--config",
         nargs="?",
@@ -17,31 +19,62 @@ if __name__ == '__main__':
         "--ckpt",
         nargs="?",
         type=str,
-        default="./pretrained/HiGAN+.pth",
-        help="checkpoint for evaluation",
+        default=None,
+        help="checkpoint for evaluation (overrides config if set)",
     )
 
     parser.add_argument(
         "--mode",
         nargs="?",
         type=str,
-        default="text",
-        help="mode: [rand] [style] [text] [interp]",
+        default=None,
+        choices=["rand", "style", "text", "interp"],
+        help="mode: [rand] [style] [text] [interp] (overrides config if set)",
+    )
+
+    parser.add_argument(
+        "--device",
+        type=str,
+        default=None,
+        help="Override compute device (e.g. cuda:0 or cpu)",
     )
 
     args = parser.parse_args()
-    cfg = yaml2config(args.config)
+    config_path = args.config if getattr(args, 'config', None) is not None else "configs/gan_iam.yml"
+    cfg = yaml2config(config_path)
+    infer_cfg = getattr(cfg, 'inference', cfg)
 
-    model = get_model(cfg.model)(cfg, args.config)
-    model.load(args.ckpt, cfg.device)
+    # Resolution order: CLI flag > config YAML (inference block or root) > fallback default
+    device = args.device if args.device is not None else getattr(infer_cfg, 'device', getattr(cfg, 'device', 'cuda:0'))
+    ckpt = args.ckpt if args.ckpt is not None else getattr(infer_cfg, 'ckpt', getattr(cfg, 'ckpt', './pretrained/HiGAN+.pth'))
+    mode = args.mode if args.mode is not None else getattr(infer_cfg, 'mode', getattr(cfg, 'mode', 'text'))
+
+    cfg.device = device
+    cfg.ckpt = ckpt
+    cfg.mode = mode
+
+    print("=" * 60)
+    print("EVALUATION DEMO CONFIGURATION")
+    print(f" - Config File : {config_path}")
+    print(f" - Checkpoint  : {ckpt}")
+    print(f" - Mode        : {mode}")
+    print(f" - Device      : {device}")
+    print("=" * 60)
+
+    model = get_model(cfg.model)(cfg)
+    if not os.path.exists(ckpt):
+        print(f"[Warning] Specified checkpoint path does not exist: {ckpt}")
+    model.load(ckpt, device)
     model.set_mode('eval')
-    if args.mode == 'style':
+
+    if mode == 'style':
         model.eval_style()
-    elif args.mode == 'rand':
+    elif mode == 'rand':
         model.eval_rand()
-    elif args.mode == 'interp':
+    elif mode == 'interp':
         model.eval_interp()
-    elif args.mode == 'text':
+    elif mode == 'text':
         model.eval_text()
     else:
-        print('Unsupported mode: {} | [rand] [style] [text] [interp]'.format(args.mode))
+        print(f"Unsupported mode: {mode} | Choose from [rand, style, text, interp]")
+        sys.exit(1)

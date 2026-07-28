@@ -1,3 +1,4 @@
+import math
 import torch
 import numpy as np
 from copy import deepcopy
@@ -9,13 +10,8 @@ def seed_rng(seed):
   np.random.seed(seed)
 
 
-# A highly simplified convenience class for sampling from distributions
-# One could also use PyTorch's inbuilt distributions package.
-# Note that this class requires initialization to proceed as
-# x = Distribution(torch.randn(size))
-# x.init_distribution(dist_type, **dist_kwargs)
-# x = x.to(device,dtype)
-# This is partially based on https://discuss.pytorch.org/t/subclassing-torch-tensor/23754/2
+# A convenience class for sampling from distributions without corrupting global RNG state.
+# Subclasses torch.Tensor based on https://discuss.pytorch.org/t/subclassing-torch-tensor/23754/2
 class Distribution(torch.Tensor):
     # Init the params of the distribution
     def init_distribution(self, dist_type, **kwargs):
@@ -32,7 +28,9 @@ class Distribution(torch.Tensor):
             self.generator = None
             self.np_rng = None
         if self.dist_type == 'normal':
-            self.mean, self.var = kwargs['mean'], kwargs['var']
+            self.mean = kwargs.get('mean', 0.0)
+            self.var = kwargs.get('var', 1.0)
+            self.std = kwargs.get('std', math.sqrt(self.var) if self.var > 0 else 1.0)
         elif self.dist_type == 'uniform':
             self.low, self.high = kwargs['low'], kwargs['high']
         elif self.dist_type == 'categorical':
@@ -44,7 +42,7 @@ class Distribution(torch.Tensor):
 
     def sample_(self):
         if self.dist_type == 'normal':
-            self.normal_(self.mean, self.var, generator=self.generator)
+            self.normal_(self.mean, self.std, generator=self.generator)
         elif self.dist_type == 'uniform':
             self.uniform_(self.low, self.high, generator=self.generator)
         elif self.dist_type == 'categorical':
@@ -64,11 +62,30 @@ class Distribution(torch.Tensor):
             # return self.variable
         return self
 
-    # # Silly hack: overwrite the to() method to wrap the new object
-    # # in a distribution as well
+    def get_state(self):
+        state = {}
+        if hasattr(self, 'generator') and self.generator is not None:
+            state['generator'] = self.generator.get_state()
+        if hasattr(self, 'np_rng') and self.np_rng is not None:
+            state['np_rng'] = self.np_rng.get_state()
+        return state
+
+    def set_state(self, state):
+        if not state or not isinstance(state, dict):
+            return
+        if hasattr(self, 'generator') and self.generator is not None and 'generator' in state and state['generator'] is not None:
+            gen_state = state['generator']
+            if isinstance(gen_state, torch.Tensor):
+                gen_state = gen_state.cpu().to(torch.uint8)
+            self.generator.set_state(gen_state)
+        if hasattr(self, 'np_rng') and self.np_rng is not None and 'np_rng' in state and state['np_rng'] is not None:
+            self.np_rng.set_state(state['np_rng'])
+
+
+    # Overwrite to() method to preserve distribution attributes and Generator device state
     def to(self, *args, **kwargs):
         device_tensor = super().to(*args, **kwargs)
-        new_obj = Distribution(device_tensor)
+        new_obj = device_tensor.as_subclass(Distribution)
         dist_type = getattr(self, 'dist_type', 'normal')
         dist_kwargs = getattr(self, 'dist_kwargs', {})
         new_obj.dist_type = dist_type
@@ -90,6 +107,7 @@ class Distribution(torch.Tensor):
         if dist_type == 'normal':
             new_obj.mean = getattr(self, 'mean', 0)
             new_obj.var = getattr(self, 'var', 1.0)
+            new_obj.std = getattr(self, 'std', math.sqrt(new_obj.var) if new_obj.var > 0 else 1.0)
         elif dist_type == 'uniform':
             new_obj.low = getattr(self, 'low', 0)
             new_obj.high = getattr(self, 'high', 1)

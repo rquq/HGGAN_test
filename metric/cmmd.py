@@ -51,8 +51,17 @@ def get_clip_model_path_and_cache():
 
 
 class ClipEmbeddingModel:
-    def __init__(self):
+    def __init__(self, device=None):
         import os
+        hf_token = os.environ.get("HF_TOKEN")
+        if hf_token:
+            os.environ["HF_TOKEN"] = hf_token
+            try:
+                import huggingface_hub
+                huggingface_hub.login(token=hf_token, write_permission=False)
+            except Exception:
+                pass
+
         model_path, cache_dir, save_dir, is_local = get_clip_model_path_and_cache()
         
         if is_local:
@@ -62,7 +71,7 @@ class ClipEmbeddingModel:
                 ).eval()
             except Exception:
                 self._model = CLIPVisionModelWithProjection.from_pretrained(
-                    "openai/clip-vit-large-patch14-336", cache_dir=cache_dir, local_files_only=False
+                    "openai/clip-vit-large-patch14-336", cache_dir=cache_dir, local_files_only=False, token=hf_token
                 ).eval()
                 # Save to output for future offline use
                 try:
@@ -78,7 +87,7 @@ class ClipEmbeddingModel:
                 ).eval()
             except Exception:
                 self._model = CLIPVisionModelWithProjection.from_pretrained(
-                    "openai/clip-vit-large-patch14-336", cache_dir=cache_dir, local_files_only=False
+                    "openai/clip-vit-large-patch14-336", cache_dir=cache_dir, local_files_only=False, token=hf_token
                 ).eval()
                 
             # If successfully downloaded/loaded from Hub, save a clean copy to output save_dir
@@ -90,8 +99,10 @@ class ClipEmbeddingModel:
                 except Exception as e:
                     print(f"Warning: Could not save CLIP model to outputs: {e}")
                 
-        if _CUDA_AVAILABLE:
-            self._model = self._model.cuda()
+        if device is not None:
+            self._model = self._model.to(device)
+        elif _CUDA_AVAILABLE:
+            self._model = self._model.to(torch.device('cuda'))
         self.input_image_size = 336
         self.mean = torch.tensor([0.48145466, 0.4578275, 0.40821073]).view(1, 3, 1, 1)
         self.std = torch.tensor([0.26862954, 0.26130258, 0.27577711]).view(1, 3, 1, 1)
@@ -115,11 +126,13 @@ class ClipEmbeddingModel:
 
 
 def mmd(x, y):
-    x = torch.from_numpy(x)
-    y = torch.from_numpy(y)
+    if isinstance(x, np.ndarray):
+        x = torch.from_numpy(x)
+    if isinstance(y, np.ndarray):
+        y = torch.from_numpy(y)
 
-    x_sqnorms = torch.diag(torch.matmul(x, x.T))
-    y_sqnorms = torch.diag(torch.matmul(y, y.T))
+    x_sqnorms = torch.sum(x**2, dim=-1)
+    y_sqnorms = torch.sum(y**2, dim=-1)
 
     gamma = 1 / (2 * _SIGMA**2)
     k_xx = torch.mean(
@@ -196,7 +209,7 @@ def calculate_cmmd_score(data_loader, generator, n_rand_repeat, device, n_batche
         n_batches = len(data_loader)
         
     if embedding_model is None:
-        embedding_model = ClipEmbeddingModel()
+        embedding_model = ClipEmbeddingModel(device)
         
     size = embedding_model.input_image_size
     
