@@ -35,6 +35,11 @@ if __name__ == "__main__":
     args = parser.parse_args()
     cfg = yaml2config(args.config)
 
+    run_id = datetime.strftime(datetime.now(), '%m-%d-%H-%M')
+    logdir = os.path.join("runs", os.path.basename(args.config)[:-4] + '-' + str(run_id))
+    ckpt_dir = os.path.join(logdir, getattr(getattr(cfg, 'training', {}), 'ckpt_dir', 'ckpts'))
+    os.makedirs(ckpt_dir, exist_ok=True)
+
     local_rank = getattr(cfg, 'local_rank', -1)
     if local_rank == -1 and "LOCAL_RANK" in os.environ:
         local_rank = int(os.environ["LOCAL_RANK"])
@@ -63,16 +68,12 @@ if __name__ == "__main__":
         if seed is not None:
             seed_everything(seed + local_rank)
 
-        run_id = datetime.strftime(datetime.now(), '%m-%d-%H-%M')
         run_id_tensor = torch.tensor([ord(c) for c in run_id], dtype=torch.long, device=local_rank)
         dist.broadcast(run_id_tensor, src=0)
         run_id = "".join([chr(c) for c in run_id_tensor.cpu().tolist()])
     else:
         if hasattr(cfg, "seed") and cfg.seed is not None:
             seed_everything(cfg.seed)
-        run_id = datetime.strftime(datetime.now(), '%m-%d-%H-%M')
-
-    logdir = os.path.join("runs", os.path.basename(args.config)[:-4] + '-' + str(run_id))
 
     model = get_model(cfg.model)(cfg, logdir)
     model.train()
