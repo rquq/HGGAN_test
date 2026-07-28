@@ -2,8 +2,23 @@ import os
 from datetime import datetime
 import argparse
 
+import random
+import numpy as np
+import torch
+
 from lib.utils import yaml2config
 from networks import get_model
+
+
+def seed_everything(seed):
+    random.seed(seed)
+    os.environ['PYTHONHASHSEED'] = str(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = False
+    torch.backends.cudnn.benchmark = False
 
 
 if __name__ == "__main__":
@@ -40,9 +55,10 @@ if __name__ == "__main__":
         torch.cuda.set_device(local_rank)
         torch.distributed.init_process_group(backend='nccl')
         
-        run_id_tensor = torch.tensor([ord(c) for c in run_id], dtype=torch.long, device=local_rank)
-        torch.distributed.broadcast(run_id_tensor, src=0)
-        run_id = "".join([chr(c) for c in run_id_tensor.cpu().tolist()])
+    if hasattr(cfg, "seed") and cfg.seed is not None:
+        seed_everything(cfg.seed)
+    else:
+        seed_everything(123456)
 
     model = get_model(cfg.model)(cfg, logdir)
     model.train()
