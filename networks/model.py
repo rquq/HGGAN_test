@@ -182,7 +182,7 @@ class BaseModel(object):
         if iter_count is not None:
             ckpt['iter_count'] = iter_count
 
-        # ── Streamlined Best/Last Saving (Only 1 best.pth & 1 last.pth) ──
+        # ── Best/Last Checkpoint Saving (Only last_fid_X.pth & best_fid_X.pth) ──
         import shutil, glob
         current_fid = best_fid if best_fid is not None else kwargs.get('fid', kwargs.get('FID', None))
         if current_fid is not None:
@@ -198,9 +198,8 @@ class BaseModel(object):
 
         ckpt_dir = os.path.join(self.log_root, self.opt.training.ckpt_dir)
         os.makedirs(ckpt_dir, exist_ok=True)
-        best_pth_path = os.path.join(ckpt_dir, 'best.pth')
 
-        is_new_best = (tag == 'best') or (not os.path.exists(best_pth_path)) or (current_fid is not None and current_fid < cached_best)
+        is_new_best = (tag == 'best') or (current_fid is not None and current_fid < cached_best)
 
         if is_new_best and current_fid is not None:
             self.best_fid = current_fid
@@ -212,22 +211,42 @@ class BaseModel(object):
         tmp_path = os.path.join(ckpt_dir, f".tmp_{tag}.pth")
         torch.save(ckpt, tmp_path)
 
-        # Update primary target file (e.g. last.pth or best.pth)
-        main_save_path = os.path.join(ckpt_dir, f"{tag}.pth")
-        shutil.copy(tmp_path, main_save_path)
+        if tag == 'last':
+            eval_fid = current_fid if (current_fid is not None and np.isfinite(current_fid)) else (cached_best if np.isfinite(cached_best) else None)
+            fid_str = f"{eval_fid:.4f}" if (eval_fid is not None and np.isfinite(eval_fid)) else "inf"
+            
+            for old_last in glob.glob(os.path.join(ckpt_dir, "last_fid_*.pth")) + glob.glob(os.path.join(ckpt_dir, "last.pth")):
+                try: os.remove(old_last)
+                except Exception: pass
 
-        # If this checkpoint is a new best and tag != 'best', update best.pth
-        if is_new_best and tag != 'best':
-            shutil.copy(tmp_path, best_pth_path)
-            fid_msg = f" (FID: {current_fid:.4f})" if current_fid is not None else ""
-            self.print(f"--> Updated best.pth from {tag}.pth{fid_msg}")
+            last_fid_path = os.path.join(ckpt_dir, f"last_fid_{fid_str}.pth")
+            shutil.copy(tmp_path, last_fid_path)
+            self.print(f"--> Saved last checkpoint: last_fid_{fid_str}.pth")
 
-        # Clean up temporary file and any legacy *_fid_*.pth files
+            if is_new_best:
+                best_str = f"{current_fid:.4f}" if (current_fid is not None and np.isfinite(current_fid)) else fid_str
+                for old_best in glob.glob(os.path.join(ckpt_dir, "best_fid_*.pth")) + glob.glob(os.path.join(ckpt_dir, "best.pth")):
+                    try: os.remove(old_best)
+                    except Exception: pass
+
+                best_fid_path = os.path.join(ckpt_dir, f"best_fid_{best_str}.pth")
+                shutil.copy(tmp_path, best_fid_path)
+                self.print(f"--> Saved new best checkpoint: best_fid_{best_str}.pth (FID: {current_fid:.4f})")
+
+        else:
+            if is_new_best or tag == 'best':
+                best_str = f"{current_fid:.4f}" if (current_fid is not None and np.isfinite(current_fid)) else "inf"
+                for old_best in glob.glob(os.path.join(ckpt_dir, "best_fid_*.pth")) + glob.glob(os.path.join(ckpt_dir, "best.pth")):
+                    try: os.remove(old_best)
+                    except Exception: pass
+
+                best_fid_path = os.path.join(ckpt_dir, f"best_fid_{best_str}.pth")
+                shutil.copy(tmp_path, best_fid_path)
+                self.print(f"--> Saved best checkpoint: best_fid_{best_str}.pth (FID: {current_fid:.4f})")
+
+        # Clean up temporary file
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
-        for old_fid_file in glob.glob(os.path.join(ckpt_dir, "*_fid_*.pth")):
-            try: os.remove(old_fid_file)
-            except Exception: pass
 
     def restore_rng_state(self, rng=None):
         if rng is None:
@@ -292,17 +311,16 @@ class BaseModel(object):
     def resolve_resume_path(self, resume_path):
         if not resume_path:
             return None
-        if isinstance(resume_path, bool) or str(resume_path).lower() in ('true', 'latest'):
-            candidate = os.path.join(self.log_root, getattr(self.opt.training, 'ckpt_dir', 'ckpts'), 'last.pth')
-            return candidate if os.path.exists(candidate) else None
-        if os.path.isdir(resume_path):
-            candidate = os.path.join(resume_path, 'last.pth')
-            if os.path.exists(candidate):
-                return candidate
-            candidate = os.path.join(resume_path, getattr(self.opt.training, 'ckpt_dir', 'ckpts'), 'last.pth')
-            return candidate if os.path.exists(candidate) else None
         if os.path.isfile(resume_path):
             return resume_path
+        if isinstance(resume_path, bool) or str(resume_path).lower() in ('true', 'latest'):
+            candidate_dir = os.path.join(self.log_root, getattr(self.opt.training, 'ckpt_dir', 'ckpts'))
+            if os.path.isdir(candidate_dir):
+                import glob
+                pths = glob.glob(os.path.join(candidate_dir, "last_fid_*.pth")) + glob.glob(os.path.join(candidate_dir, "last.pth"))
+                pths = [p for p in pths if not os.path.basename(p).startswith('.tmp_')]
+                if pths:
+                    return max(set(pths), key=os.path.getmtime)
         return None
 
     def load(self, ckpt, map_location=None, modules=None):
@@ -1255,8 +1273,36 @@ class GlobalLocalAdversarialModel(AdversarialModel):
         is_resuming = resume_path is not None and os.path.exists(resume_path)
         if is_resuming:
             epoch_done = self.load(resume_path, self.device)
-            # Skipping immediate validation on resume to prevent OOM due to optimizer state overhead.
             torch.cuda.empty_cache()
+
+            # Carry accompanying best_fid_*.pth from input directory to current run's ckpt_dir
+            try:
+                import glob, shutil
+                ckpt_dir = os.path.join(self.log_root, getattr(self.opt.training, 'ckpt_dir', 'ckpts'))
+                os.makedirs(ckpt_dir, exist_ok=True)
+
+                real_resume_file = self.resolve_resume_path(resume_path) or resume_path
+                source_dir = os.path.dirname(os.path.abspath(real_resume_file)) if os.path.isfile(real_resume_file) else os.path.abspath(real_resume_file)
+
+                if os.path.abspath(source_dir) != os.path.abspath(ckpt_dir):
+                    best_fid_files = glob.glob(os.path.join(source_dir, "best_fid_*.pth"))
+                    for best_file in best_fid_files:
+                        dst_path = os.path.join(ckpt_dir, os.path.basename(best_file))
+                        if not os.path.exists(dst_path):
+                            shutil.copy(best_file, dst_path)
+                            self.print(f"--> Carried input best checkpoint into run folder: {os.path.basename(best_file)}")
+
+                        fname = os.path.basename(best_file)
+                        if fname.startswith("best_fid_") and fname.endswith(".pth"):
+                            try:
+                                score_part = fname[len("best_fid_"):-len(".pth")]
+                                score_val = float(score_part)
+                                if score_val < getattr(self, 'best_fid', np.inf):
+                                    self.best_fid = score_val
+                                    self.print(f"--> Restored baseline best FID = {score_val:.4f} from input {fname}")
+                            except Exception: pass
+            except Exception as e:
+                self.print(f"Warning carrying best checkpoint: {e}")
         else:
             if os.path.exists(self.opt.training.pretrained_w):
                 w_dict = torch.load(self.opt.training.pretrained_w, map_location='cpu', weights_only=False)
@@ -1823,14 +1869,14 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                 eval_interval_iters = max(1, int(eval_epoch_val * len(self.train_loader)))
                 save_interval_iters = max(1, int(save_epoch_val * len(self.train_loader)))
 
-                is_eval_step = (iter_count + 1) % eval_interval_iters == 0
-                is_save_step = (iter_count + 1) % save_interval_iters == 0
+                is_eval = (iter_count + 1) % eval_interval_iters == 0
+                is_save = (iter_count + 1) % save_interval_iters == 0
 
-                should_eval = is_eval_step and (not is_save_step or save_interval_iters == eval_interval_iters)
                 if getattr(self, 'is_resumed_start', False):
-                    should_eval = False
+                    is_eval = False
+                    self.is_resumed_start = False
 
-                if should_eval:
+                if is_eval:
                     self.print('Calculate FID_KID (iter {})'.format(iter_count + 1)) if self.local_rank < 1 else None
                     scores = self.validate(current_epoch=epoch)
                     if _is_master:
@@ -1842,24 +1888,13 @@ class GlobalLocalAdversarialModel(AdversarialModel):
 
                     if 'fid' in scores and scores['fid'] < best_fid:
                         best_fid = scores['fid']
-                        is_best = True
                         best_scores = scores
                         if _is_master:
-                            ckpt_root = os.path.join(self.log_root, self.opt.training.ckpt_dir)
-                            os.makedirs(ckpt_root, exist_ok=True)
                             self.save('best', epoch, iter_count=iter_count, best_fid=best_fid, **(best_scores or {}))
-                            self.print(f"--> Saved new best checkpoint (best_fid: {best_fid:.4f}) at iter {iter_count + 1}")
-                        is_best = False
 
-                if is_save_step:
-                    ckpt_root = os.path.join(self.log_root, self.opt.training.ckpt_dir)
-                    if not os.path.exists(ckpt_root):
-                        os.makedirs(ckpt_root) if self.local_rank < 1 else None
-
-                    self.save('last', epoch, iter_count=iter_count, best_fid=best_fid)
-                    if is_best:
-                        self.save('best', epoch, iter_count=iter_count, best_fid=best_fid, **(best_scores or {})) if self.local_rank < 1 else None
-                        is_best = False
+                if is_save:
+                    if _is_master:
+                        self.save('last', epoch, iter_count=iter_count, best_fid=best_fid)
 
                 iter_count += 1
                 if getattr(self, 'is_resumed_start', False):
