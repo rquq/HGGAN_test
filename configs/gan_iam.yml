@@ -23,7 +23,7 @@ training:
   n_epochs_decay: 24
   batch_size: 12
   eval_batch_size: 12
-  sample_nrow: 3
+  sample_nrow: 4
   # optimization:
   lr: 2.0e-4
   d_lr: 1.0e-4
