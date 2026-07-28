@@ -198,6 +198,7 @@ EncModel:
   backbone_channels: [64, 128, 256]
   n_class: 80
   content_grl: 1.0
+  local_query_residual: 0.25
   init: 'none'
 
 

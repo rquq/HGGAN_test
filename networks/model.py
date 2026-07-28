@@ -14,7 +14,7 @@ import torch.nn.functional as F
 from metric.val_metrics import calculate_fid_kid_is
 from metric.mssim_psnr import calculate_mssim_psnr
 from networks.utils import _info, set_requires_grad, get_scheduler, idx_to_words, rescale_images, rescale_images2, \
-                            words_to_images, ctc_greedy_decoder, extract_all_patches, frozen_bn
+                            words_to_images, ctc_greedy_decoder, extract_all_patches, frozen_bn, restore_scheduler_state
 from networks.BigGAN_networks import Generator, Discriminator, PatchDiscriminator
 from networks.module import Recognizer, WriterIdentifier, StyleEncoder, StyleBackbone
 from lib.datasets import get_dataset, get_collect_fn, Hdf5Dataset
@@ -82,6 +82,24 @@ class BaseModel(object):
         if model is None:
             return None
         return getattr(model, 'module', model)
+
+    @staticmethod
+    def resume_position(epoch_done, restored_iter, loader_len):
+        """Return the saved epoch, batch offset, and next global iteration.
+
+        ``Epoch`` is authoritative because a global iteration can start from a
+        transferred checkpoint and therefore need not encode the current epoch.
+        """
+        if loader_len <= 0:
+            raise ValueError('loader_len must be positive')
+        if restored_iter is None:
+            epoch_done = int(epoch_done)
+            return max(1, epoch_done + 1), 0, epoch_done * loader_len
+
+        iter_count = int(restored_iter) + 1
+        skip_batches = iter_count % loader_len
+        start_epoch = int(epoch_done) + (1 if skip_batches == 0 else 0)
+        return max(1, start_epoch), skip_batches, iter_count
 
     def print(self, info):
         if self.local_rank > 0:
@@ -1219,14 +1237,14 @@ class GlobalLocalAdversarialModel(AdversarialModel):
         restored_ema_step = restored_meta.get('ema_step', None)
 
         if restored_iter is not None:
-            iter_count = restored_iter + 1
+            start_epoch, skip_batches, iter_count = self.resume_position(
+                epoch_done, restored_iter, len(self.train_loader)
+            )
             self.print(f"Resumed exact iter_count={iter_count} from checkpoint")
-            start_epoch = iter_count // len(self.train_loader) + 1
-            skip_batches = iter_count % len(self.train_loader)
         elif is_resuming:
-            start_epoch = epoch_done + 1
-            skip_batches = 0
-            iter_count = epoch_done * len(self.train_loader)
+            start_epoch, skip_batches, iter_count = self.resume_position(
+                epoch_done, None, len(self.train_loader)
+            )
             self.print(f"Calculated iter_count={iter_count} based on epoch_done={epoch_done}")
         else:
             start_epoch = 1
@@ -1235,23 +1253,30 @@ class GlobalLocalAdversarialModel(AdversarialModel):
 
         self.epoch_start = start_epoch
 
+        scheduler_base_lrs = {
+            'G': float(opt.training.lr),
+            'D': float(getattr(opt.training, 'd_lr', opt.training.lr)),
+        }
         self.lr_schedulers = Munch(
-            G=get_scheduler(self.optimizers.G, opt.training, last_epoch=start_epoch - 2 if is_resuming else -1),
-            D=get_scheduler(self.optimizers.D, opt.training, last_epoch=start_epoch - 2 if is_resuming else -1)
+            G=get_scheduler(self.optimizers.G, opt.training, base_lr=scheduler_base_lrs['G']),
+            D=get_scheduler(self.optimizers.D, opt.training, base_lr=scheduler_base_lrs['D']),
         )
-        if hasattr(self, '_ckpt_sched_data') and self._ckpt_sched_data:
+        if is_resuming:
+            scheduler_states = getattr(self, '_ckpt_sched_data', {})
             for key in self.lr_schedulers.keys():
                 sched_key = 'SCHED.' + key
-                if sched_key in self._ckpt_sched_data:
-                    try:
-                        self.lr_schedulers[key].load_state_dict(self._ckpt_sched_data[sched_key])
-                        if hasattr(self.lr_schedulers[key], 'get_last_lr') and key in self.optimizers:
-                            lrs = self.lr_schedulers[key].get_last_lr()
-                            for param_group, lr in zip(self.optimizers[key].param_groups, lrs):
-                                param_group['lr'] = lr
-                        self.print(f'Loaded restored scheduler state for {key}')
-                    except Exception as e:
-                        self.print(f'Failed to restore scheduler state for {key}: {e}')
+                try:
+                    restore_scheduler_state(
+                        self.lr_schedulers[key], self.optimizers[key],
+                        scheduler_states.get(sched_key), scheduler_base_lrs[key],
+                        completed_epochs=start_epoch - 1,
+                    )
+                    self.print(
+                        f'Restored scheduler {key} at epoch {start_epoch - 1} '
+                        f'with lr={self.optimizers[key].param_groups[0]["lr"]:.6g}'
+                    )
+                except Exception as e:
+                    self.print(f'Failed to restore scheduler state for {key}: {e}')
 
         # multi-gpu
         if self.local_rank > -1:
@@ -1267,6 +1292,9 @@ class GlobalLocalAdversarialModel(AdversarialModel):
             'g_total', 'd_total', 'g_adv', 'g_ctc', 'g_writer',
             'g_recn', 'g_style', 'g_context', 'g_kl',
             'r1_loss', 'fusion_strength', 'fusion_gate_min', 'fusion_gate_max',
+            'd_real', 'd_fake', 'd_real_patch', 'd_fake_patch',
+            'g_adv_global', 'g_adv_patch', 'g_ctc_rand', 'g_ctc_style',
+            'g_info', 'g_style_cycle', 'g_content_adv',
         ])
         device = self.device
 
@@ -1408,6 +1436,10 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                 disc_loss = (real_disc_loss + fake_disc_loss + real_disc_loss_patch
                              + fake_disc_loss_patch + r1_loss)
                 self.averager_meters.update('d_total', disc_loss.item())
+                self.averager_meters.update('d_real', real_disc_loss.item())
+                self.averager_meters.update('d_fake', fake_disc_loss.item())
+                self.averager_meters.update('d_real_patch', real_disc_loss_patch.item())
+                self.averager_meters.update('d_fake_patch', fake_disc_loss_patch.item())
                 self.averager_meters.update('r1_loss', r1_loss.item())
 
                 disc_loss.backward()
@@ -1552,7 +1584,19 @@ class GlobalLocalAdversarialModel(AdversarialModel):
 
                     ctx_loss = torch.tensor(0.0, device=self.device)
                     for real_img_feat, fake_img_feat in zip(real_img_feats, fake_imgs_feats):
-                        ctx_loss += self.contextual_loss(real_img_feat, fake_img_feat)
+                        real_feat_lens = torch.ceil(
+                            style_ref_lens.float()
+                            * (real_img_feat.size(-1) / float(style_refs.size(-1)))
+                        ).long().clamp_(1, real_img_feat.size(-1))
+                        fake_feat_lens = torch.ceil(
+                            style_img_lens.float()
+                            * (fake_img_feat.size(-1) / float(style_imgs.size(-1)))
+                        ).long().clamp_(1, fake_img_feat.size(-1))
+                        ctx_loss += self.contextual_loss(
+                            real_img_feat, fake_img_feat,
+                            target_lengths=real_feat_lens,
+                            input_lengths=fake_feat_lens,
+                        )
 
                     kl_loss = KLloss(mu, logvar) if self.vae_mode else torch.tensor(0.0, device=self.device)
 
@@ -1590,10 +1634,17 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                     )
                     self.averager_meters.update('g_total', g_loss.item())
                     self.averager_meters.update('g_adv', g_adv.item())
+                    self.averager_meters.update('g_adv_global', adv_loss.item())
+                    self.averager_meters.update('g_adv_patch', adv_loss_patch.item())
                     self.averager_meters.update('g_ctc', g_ctc.item())
+                    self.averager_meters.update('g_ctc_rand', fake_ctc_loss_rand.item())
+                    self.averager_meters.update('g_ctc_style', fake_ctc_loss_style.item())
                     self.averager_meters.update('g_writer', g_writer.item())
                     self.averager_meters.update('g_recn', g_recn.item())
                     self.averager_meters.update('g_style', g_style.item())
+                    self.averager_meters.update('g_info', info_loss.item())
+                    self.averager_meters.update('g_style_cycle', style_cycle_loss.item())
+                    self.averager_meters.update('g_content_adv', content_adv_loss.item())
                     self.averager_meters.update('g_context', g_context.item())
                     self.averager_meters.update('g_kl', g_kl.item())
 
@@ -1611,30 +1662,71 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                 if iter_count % self.opt.training.print_iter_val == 0:
                     meter_vals = self.averager_meters.eval_all()
                     self.averager_meters.reset_all()
+
+                    lr_g = self.optimizers.G.param_groups[0]['lr']
+                    lr_d = self.optimizers.D.param_groups[0]['lr']
+
                     info = (
                         f"[{epoch:3d}|{self.opt.training.epochs:3d}]-"
                         f"[{iter_count % len(self.train_loader):4d}|{len(self.train_loader):4d}] "
-                        f"G:{meter_vals['g_total']:.3f} D:{meter_vals['d_total']:.3f} "
-                        f"Adv:{meter_vals['g_adv']:.3f} CTC:{meter_vals['g_ctc']:.3f} Wid:{meter_vals['g_writer']:.3f} "
-                        f"Recn:{meter_vals['g_recn']:.3f} Style:{meter_vals['g_style']:.3f} Ctx:{meter_vals['g_context']:.3f} Kl:{meter_vals['g_kl']:.3f} "
+                        f"G:{meter_vals['g_total']:.3f} D:{meter_vals['d_total']:.3f} | "
+                        f"Adv:{meter_vals['g_adv']:.3f} CTC:{meter_vals['g_ctc']:.3f} Recn:{meter_vals['g_recn']:.3f} "
+                        f"Style:{meter_vals['g_style']:.3f} Wid:{meter_vals['g_writer']:.3f} Ctx:{meter_vals['g_context']:.3f} KL:{meter_vals['g_kl']:.3f} | "
                         f"R1:{meter_vals['r1_loss']:.3f} Fuse:{meter_vals['fusion_strength']:.3f}"
-                        f"[{meter_vals['fusion_gate_min']:.3f},{meter_vals['fusion_gate_max']:.3f}]"
+                        f"[{meter_vals['fusion_gate_min']:.3f},{meter_vals['fusion_gate_max']:.3f}] "
+                        f"Lr: G={lr_g:.6g}/D={lr_d:.6g}"
                     )
                     self.print(info) if self.local_rank < 1 else None
 
                     if _is_master:
-                        # Primary charts show weighted objective groups only.
                         wandb_log = {
+                            # ── Train Category (Schedules, LRs, and Training State) ──
+                            'train/lr_g': lr_g,
+                            'train/lr_d': lr_d,
+                            'train/epoch': epoch,
+                            'train/fusion_strength': meter_vals['fusion_strength'],
+                            'train/fusion_gate_min': meter_vals['fusion_gate_min'],
+                            'train/fusion_gate_max': meter_vals['fusion_gate_max'],
+
+                            # ── Loss Category: Overall Totals ──
                             'loss/g_total': meter_vals['g_total'],
                             'loss/d_total': meter_vals['d_total'],
-                            'loss/adversarial': meter_vals['g_adv'],
-                            'loss/content': meter_vals['g_ctc'],
-                            'loss/writer': meter_vals['g_writer'],
-                            'loss/reconstruction': meter_vals['g_recn'],
-                            'loss/style': meter_vals['g_style'],
-                            'loss/context': meter_vals['g_context'],
-                            'loss/kl': meter_vals['g_kl'],
-                            'loss/r1': meter_vals['r1_loss'],
+
+                            # ── Loss Category: Generator Losses & Sub-Loss Breakdown ──
+                            # 1. Adversarial Loss
+                            'loss/g_adversarial': meter_vals['g_adv'],
+                            'loss/g_adv_global': meter_vals['g_adv_global'],
+                            'loss/g_adv_patch': meter_vals['g_adv_patch'],
+
+                            # 2. Content / Recognition CTC Loss
+                            'loss/g_ctc_content': meter_vals['g_ctc'],
+                            'loss/g_ctc_rand': meter_vals['g_ctc_rand'],
+                            'loss/g_ctc_style': meter_vals['g_ctc_style'],
+
+                            # 3. Image Reconstruction Loss
+                            'loss/g_reconstruction': meter_vals['g_recn'],
+
+                            # 4. Style & Disentanglement Loss
+                            'loss/g_style': meter_vals['g_style'],
+                            'loss/g_info': meter_vals['g_info'],
+                            'loss/g_style_cycle': meter_vals['g_style_cycle'],
+                            'loss/g_content_adv': meter_vals['g_content_adv'],
+
+                            # 5. Writer Identification Loss
+                            'loss/g_writer_id': meter_vals['g_writer'],
+
+                            # 6. Contextual Feature Matching Loss
+                            'loss/g_contextual': meter_vals['g_context'],
+
+                            # 7. VAE KL Divergence Loss
+                            'loss/g_kl': meter_vals['g_kl'],
+
+                            # ── Loss Category: Discriminator Losses & Sub-Loss Breakdown ──
+                            'loss/d_r1': meter_vals['r1_loss'],
+                            'loss/d_real': meter_vals['d_real'],
+                            'loss/d_fake': meter_vals['d_fake'],
+                            'loss/d_real_patch': meter_vals['d_real_patch'],
+                            'loss/d_fake_patch': meter_vals['d_fake_patch'],
                         }
 
                         import wandb as _wandb
@@ -1781,26 +1873,29 @@ class RecognizeModel(BaseModel):
         restored_meta = getattr(self, 'restored_metadata', {})
         restored_iter = restored_meta.get('iter_count', None)
         if restored_iter is not None:
-            iter_count = restored_iter + 1
-            start_epoch = iter_count // len(self.train_loader) + 1
-            skip_batches = iter_count % len(self.train_loader)
+            start_epoch, skip_batches, iter_count = self.resume_position(
+                epoch_done, restored_iter, len(self.train_loader)
+            )
         elif is_resuming:
-            start_epoch = epoch_done + 1
-            skip_batches = 0
-            iter_count = epoch_done * len(self.train_loader)
+            start_epoch, skip_batches, iter_count = self.resume_position(
+                epoch_done, None, len(self.train_loader)
+            )
         else:
             start_epoch = 1
             skip_batches = 0
             iter_count = 0
 
-        self.lr_schedulers = Munch(R=get_scheduler(self.optimizers.R, self.opt.training, last_epoch=start_epoch - 2 if is_resuming else -1))
-        if hasattr(self, '_ckpt_sched_data') and self._ckpt_sched_data and 'SCHED.R' in self._ckpt_sched_data:
+        base_lr = float(self.opt.training.lr)
+        self.lr_schedulers = Munch(R=get_scheduler(
+            self.optimizers.R, self.opt.training, base_lr=base_lr
+        ))
+        if is_resuming:
             try:
-                self.lr_schedulers.R.load_state_dict(self._ckpt_sched_data['SCHED.R'])
-                if hasattr(self.lr_schedulers.R, 'get_last_lr') and 'R' in self.optimizers:
-                    lrs = self.lr_schedulers.R.get_last_lr()
-                    for param_group, lr in zip(self.optimizers.R.param_groups, lrs):
-                        param_group['lr'] = lr
+                restore_scheduler_state(
+                    self.lr_schedulers.R, self.optimizers.R,
+                    getattr(self, '_ckpt_sched_data', {}).get('SCHED.R'),
+                    base_lr, start_epoch - 1,
+                )
             except Exception:
                 pass
 
@@ -1993,22 +2088,29 @@ class WriterIdentifyModel(BaseModel):
         restored_meta = getattr(self, 'restored_metadata', {})
         restored_iter = restored_meta.get('iter_count', None)
         if restored_iter is not None:
-            iter_count = restored_iter + 1
-            start_epoch = iter_count // len(self.train_loader) + 1
-            skip_batches = iter_count % len(self.train_loader)
+            start_epoch, skip_batches, iter_count = self.resume_position(
+                epoch_done, restored_iter, len(self.train_loader)
+            )
         elif is_resuming:
-            start_epoch = epoch_done + 1
-            skip_batches = 0
-            iter_count = epoch_done * len(self.train_loader)
+            start_epoch, skip_batches, iter_count = self.resume_position(
+                epoch_done, None, len(self.train_loader)
+            )
         else:
             start_epoch = 1
             skip_batches = 0
             iter_count = 0
 
-        self.lr_schedulers = Munch(W=get_scheduler(self.optimizers.W, self.opt.training, last_epoch=start_epoch - 2 if is_resuming else -1))
-        if hasattr(self, '_ckpt_sched_data') and self._ckpt_sched_data and 'SCHED.W' in self._ckpt_sched_data:
+        base_lr = float(self.opt.training.lr)
+        self.lr_schedulers = Munch(W=get_scheduler(
+            self.optimizers.W, self.opt.training, base_lr=base_lr
+        ))
+        if is_resuming:
             try:
-                self.lr_schedulers.W.load_state_dict(self._ckpt_sched_data['SCHED.W'])
+                restore_scheduler_state(
+                    self.lr_schedulers.W, self.optimizers.W,
+                    getattr(self, '_ckpt_sched_data', {}).get('SCHED.W'),
+                    base_lr, start_epoch - 1,
+                )
             except Exception:
                 pass
 

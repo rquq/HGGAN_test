@@ -57,8 +57,8 @@ class CXLoss(nn.Module):
         self.b = b
 
     def center_by_T(self, featureI, featureT):
-        # Calculate mean channel vector for feature map.
-        meanT = featureT.mean(dim=(0, 2, 3), keepdim=True)
+        # Center each sample independently; a batch-wide mean couples writers.
+        meanT = featureT.mean(dim=(2, 3), keepdim=True)
         return featureI - meanT, featureT - meanT
 
     def l2_normalize_channelwise(self, features):
@@ -79,7 +79,7 @@ class CXLoss(nn.Module):
         W_sum = W.sum(dim=axis, keepdim=True)
         return W.div(W_sum)
 
-    def forward(self, featureT, featureI):
+    def _forward_impl(self, featureT, featureI):
         '''
         :param featureT: target
         :param featureI: inference
@@ -94,8 +94,8 @@ class CXLoss(nn.Module):
         N, C, H_T, W_T = featureT.shape
         _, _, H_I, W_I = featureI.shape
 
-        featI_flat = featureI.view(N, C, H_I * W_I)
-        featT_flat = featureT.view(N, C, H_T * W_T)
+        featI_flat = featureI.reshape(N, C, H_I * W_I)
+        featT_flat = featureT.reshape(N, C, H_T * W_T)
 
         # batched matrix multiplication: (N, P_T, C) x (N, C, P_I) -> (N, P_T, P_I)
         dist = torch.bmm(featT_flat.transpose(1, 2), featI_flat)
@@ -111,6 +111,32 @@ class CXLoss(nn.Module):
         CX_mean = torch.mean(CX_max, dim=1)
         CX_loss = torch.mean(-torch.log(CX_mean + 1e-5))
         return CX_loss
+
+    def forward(self, featureT, featureI, target_lengths=None, input_lengths=None):
+        if target_lengths is None and input_lengths is None:
+            return self._forward_impl(featureT, featureI)
+        if target_lengths is None or input_lengths is None:
+            raise ValueError('target_lengths and input_lengths must be supplied together')
+        if len(target_lengths) != featureT.size(0) or len(input_lengths) != featureI.size(0):
+            raise ValueError('contextual-loss lengths must match their batch sizes')
+
+        losses = []
+        target_widths = target_lengths.detach().clamp(
+            1, featureT.size(-1)
+        ).tolist()
+        input_widths = input_lengths.detach().clamp(
+            1, featureI.size(-1)
+        ).tolist()
+        for index, (target_width, input_width) in enumerate(zip(
+            target_widths, input_widths
+        )):
+            target_width = int(target_width)
+            input_width = int(input_width)
+            losses.append(self._forward_impl(
+                featureT[index:index + 1, :, :, :target_width],
+                featureI[index:index + 1, :, :, :input_width],
+            ))
+        return torch.stack(losses).mean()
 
 
 

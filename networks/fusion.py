@@ -15,7 +15,8 @@ class StyleConditionedSelfAttention(nn.Module):
     """Word-level content context, conditioned only by the global style token."""
 
     def __init__(self, d_model, style_dim, nhead=4, attn_dim=128,
-                 ffn_dim=None, max_seq_len=32, residual_init=0.25):
+                 ffn_dim=None, max_seq_len=32, residual_init=0.25,
+                 conditioning_limit=0.5):
         super().__init__()
         if attn_dim % nhead:
             raise ValueError('attn_dim must be divisible by nhead')
@@ -27,10 +28,12 @@ class StyleConditionedSelfAttention(nn.Module):
         self.head_dim = attn_dim // nhead
         self.max_seq_len = max_seq_len
         self.residual_init = residual_init
+        self.conditioning_limit = float(conditioning_limit)
         ffn_dim = ffn_dim or d_model * 2
 
         self.attn_norm = nn.LayerNorm(d_model, elementwise_affine=False)
         self.ffn_norm = nn.LayerNorm(d_model, elementwise_affine=False)
+        self.ffn_residual_norm = nn.LayerNorm(d_model, elementwise_affine=False)
         self.qkv = nn.Linear(d_model, attn_dim * 3, bias=False)
         self.attn_out = nn.Linear(attn_dim, d_model, bias=False)
         self.ffn_in = nn.Linear(d_model, ffn_dim * 2)
@@ -84,6 +87,10 @@ class StyleConditionedSelfAttention(nn.Module):
             [self.d_model, self.d_model, self.d_model, self.d_model, 1, 1],
             dim=-1,
         )
+        shift_attn = self.conditioning_limit * torch.tanh(shift_attn)
+        scale_attn = self.conditioning_limit * torch.tanh(scale_attn)
+        shift_ffn = self.conditioning_limit * torch.tanh(shift_ffn)
+        scale_ffn = self.conditioning_limit * torch.tanh(scale_ffn)
 
         attn_input = self._condition(
             self.attn_norm(content_seq), shift_attn, scale_attn
@@ -112,6 +119,7 @@ class StyleConditionedSelfAttention(nn.Module):
         )
         value_branch, gate_branch = self.ffn_in(ffn_input).chunk(2, dim=-1)
         ffn_output = self.ffn_out(value_branch * F.silu(gate_branch))
+        ffn_output = self.ffn_residual_norm(ffn_output)
         content_seq = content_seq + torch.sigmoid(gate_ffn).unsqueeze(1) * ffn_output
         if mask is not None:
             content_seq = content_seq * mask.unsqueeze(-1).to(content_seq.dtype)
@@ -121,9 +129,11 @@ class StyleConditionedSelfAttention(nn.Module):
 class AllographicModulation(nn.Module):
     """Route local style tokens to characters and predict bounded affine detail."""
 
-    def __init__(self, d_model, routing_dim=16, vocab_size=256):
+    def __init__(self, d_model, routing_dim=16, vocab_size=256,
+                 modulation_limit=0.5):
         super().__init__()
         self.vocab_size = vocab_size
+        self.modulation_limit = float(modulation_limit)
         self.warned_out_of_vocab = False
         self.q_proj = nn.Linear(d_model, d_model)
         self.k_proj = nn.Linear(d_model, d_model)
@@ -174,8 +184,8 @@ class AllographicModulation(nn.Module):
         character_style = torch.matmul(attention, value)
         scale, shift = self.mod_proj(character_style).chunk(2, dim=-1)
         # Bounded affine parameters prevent one routing error from exploding G input.
-        scale = torch.tanh(scale)
-        shift = torch.tanh(shift)
+        scale = self.modulation_limit * torch.tanh(scale)
+        shift = self.modulation_limit * torch.tanh(shift)
         output = content_seq * (1.0 + scale) + shift
         if mask is not None:
             output = output * mask.unsqueeze(-1).to(output.dtype)
@@ -194,6 +204,8 @@ class StyleContentAttentionFusion(nn.Module):
             nn.SiLU(),
             nn.Linear(d_model, d_model),
         )
+        self.local_style_input_norm = nn.LayerNorm(style_dim, elementwise_affine=False)
+        self.local_style_output_norm = nn.LayerNorm(d_model, elementwise_affine=False)
         self.content_context = StyleConditionedSelfAttention(
             d_model=d_model, style_dim=style_dim, nhead=nhead,
             attn_dim=attn_dim, ffn_dim=ffn_dim, max_seq_len=max_seq_len,
@@ -236,7 +248,15 @@ class StyleContentAttentionFusion(nn.Module):
             content_seq = content_seq * mask.unsqueeze(-1).to(content_seq.dtype)
 
         global_style = style_seq[:, 0]
-        local_style = self.local_style_proj(style_seq[:, 1:])
+        # Keep local-token identity through the 32→d_model handoff. The old
+        # two-layer projection mapped distinct tokens back to one nearly
+        # identical vector while these existing weights can form a good residual.
+        local_style_input = self.local_style_input_norm(style_seq[:, 1:])
+        local_style_hidden = self.local_style_proj[0](local_style_input)
+        local_style = self.local_style_output_norm(
+            local_style_hidden
+            + self.local_style_proj[2](F.silu(local_style_hidden))
+        )
 
         # Stage 1: global style changes word-level content relationships, not glyph routing.
         content_context = self.content_context(content_seq, global_style, mask=mask)

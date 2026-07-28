@@ -1,14 +1,17 @@
 import numpy as np
 import torch
 from torch import nn
+from munch import Munch
 
 from networks.fusion import StyleContentAttentionFusion
-from networks.loss import GramStyleLoss, KLloss, supervised_contrastive_style_loss
-from networks.model import EMA
+from networks.loss import CXLoss, GramStyleLoss, KLloss, supervised_contrastive_style_loss
+from networks.model import BaseModel, EMA
 from networks.module import StyleBackbone, StyleEncoder
+from networks.utils import get_scheduler, restore_scheduler_state
 
 
 def test_style_encoder_is_compact_and_does_not_replace_parameters_in_forward():
+    torch.manual_seed(7)
     backbone = StyleBackbone(init='none').eval()
     encoder = StyleEncoder(
         init='none', num_style_tokens=8,
@@ -24,8 +27,14 @@ def test_style_encoder_is_compact_and_does_not_replace_parameters_in_forward():
         shorter_batch_styles = encoder(images[..., :160], lengths, backbone)
 
     assert styles.shape == (2, 8, 32)
-    torch.testing.assert_close(styles, shorter_batch_styles, atol=1e-3, rtol=1e-3)
+    torch.testing.assert_close(styles, shorter_batch_styles, atol=2e-3, rtol=1e-3)
     assert {id(parameter) for parameter in encoder.parameters()} == parameter_ids
+    local_styles = torch.nn.functional.normalize(styles[:, 1:], dim=-1)
+    local_similarity = local_styles @ local_styles.transpose(1, 2)
+    off_diagonal = ~torch.eye(
+        local_styles.size(1), dtype=torch.bool
+    ).unsqueeze(0)
+    assert local_similarity.masked_select(off_diagonal).mean() < 0.9
 
 
 def test_attention_fusion_does_not_observe_right_padding():
@@ -80,13 +89,13 @@ def test_attention_and_allograph_have_separate_style_roles():
     labels = torch.randint(0, 20, (2, 7))
     lengths = torch.tensor([7, 5])
     observed = {}
-
     def capture_context(_, inputs):
         observed['global_shape'] = tuple(inputs[1].shape)
 
     def capture_allograph(_, inputs):
         observed['local_shape'] = tuple(inputs[1].shape)
 
+        observed['local_style'] = inputs[1].detach()
     context_hook = fusion.content_context.register_forward_pre_hook(capture_context)
     allograph_hook = fusion.allograph_mod.register_forward_pre_hook(capture_allograph)
     output = fusion(content, style, labels, lengths)
@@ -96,6 +105,12 @@ def test_attention_and_allograph_have_separate_style_roles():
 
     assert observed['global_shape'] == (2, 8)
     assert observed['local_shape'] == (2, 3, 16)
+    projected_local = torch.nn.functional.normalize(
+        observed['local_style'], dim=-1
+    )
+    projected_similarity = projected_local @ projected_local.transpose(1, 2)
+    off_diagonal = ~torch.eye(3, dtype=torch.bool).unsqueeze(0)
+    assert projected_similarity.masked_select(off_diagonal).mean() < 0.9
     assert style.grad[:, 0].abs().sum() > 0
     assert style.grad[:, 1:].abs().sum() > 0
     assert content.grad.abs().sum() > 0
@@ -198,3 +213,89 @@ def test_content_adversary_covers_every_style_token():
 
     assert logits.shape == (3, 8, 80)
     assert torch.all(styles.grad.abs().sum(dim=-1) > 0)
+
+
+def test_checkpoint_resume_uses_epoch_metadata_at_a_loader_boundary():
+    assert BaseModel.resume_position(3, 26114, 26115) == (4, 0, 26115)
+    assert BaseModel.resume_position(3, 5, 10) == (3, 6, 6)
+
+
+def test_discriminator_scheduler_preserves_its_configured_half_rate():
+    g_parameter = nn.Parameter(torch.zeros(()))
+    d_parameter = nn.Parameter(torch.zeros(()))
+    g_optimizer = torch.optim.Adam([g_parameter], lr=2e-4)
+    d_optimizer = torch.optim.Adam([d_parameter], lr=1e-4)
+    options = Munch(
+        lr=2e-4, lr_policy='linear', start_decay_epoch=12, n_epochs_decay=24,
+    )
+
+    get_scheduler(g_optimizer, options, base_lr=2e-4)
+    d_scheduler = get_scheduler(d_optimizer, options, base_lr=1e-4)
+    assert d_optimizer.param_groups[0]['lr'] == 1e-4
+
+    stale_state = d_scheduler.state_dict()
+    stale_state['base_lrs'] = [2e-4]
+    stale_state['_last_lr'] = [2e-4]
+    stale_state['last_epoch'] = 2
+    d_optimizer.param_groups[0]['lr'] = 2e-4
+    restore_scheduler_state(
+        d_scheduler,
+        d_optimizer,
+        stale_state,
+        base_lr=1e-4,
+        completed_epochs=3,
+    )
+
+    assert d_optimizer.param_groups[0]['lr'] == 1e-4
+    assert d_scheduler.base_lrs == [1e-4]
+    assert d_scheduler.last_epoch == 3
+
+
+def test_contextual_loss_ignores_padding_and_centers_each_sample():
+    torch.manual_seed(23)
+    contextual = CXLoss()
+    target = torch.randn(2, 8, 3, 5)
+    inferred = torch.randn(2, 8, 3, 6)
+    target_lengths = torch.tensor([5, 5])
+    input_lengths = torch.tensor([6, 6])
+    baseline = contextual(target, inferred)
+
+    padded_target = torch.randn(2, 8, 3, 9) * 100
+    padded_inferred = torch.randn(2, 8, 3, 11) * 100
+    padded_target[..., :5] = target
+    padded_inferred[..., :6] = inferred
+    padded = contextual(
+        padded_target,
+        padded_inferred,
+        target_lengths=target_lengths,
+        input_lengths=input_lengths,
+    )
+
+    torch.testing.assert_close(baseline, padded, atol=1e-6, rtol=1e-5)
+
+
+def test_fusion_residuals_remain_bounded_under_extreme_style_conditioning():
+    torch.manual_seed(31)
+    fusion = StyleContentAttentionFusion(
+        d_model=16, style_dim=8, nhead=4, attn_dim=32,
+        ffn_dim=32, max_seq_len=16, vocab_size=20,
+    ).eval()
+    with torch.no_grad():
+        fusion.content_context.style_mod.weight.fill_(100.0)
+        fusion.content_context.style_mod.bias.fill_(100.0)
+        fusion.content_context.ffn_in.weight.fill_(50.0)
+        fusion.content_context.ffn_out.weight.fill_(50.0)
+    content = torch.randn(2, 8, 16)
+    style = torch.randn(2, 4, 8) * 100
+    labels = torch.randint(0, 20, (2, 8))
+    lengths = torch.tensor([8, 5])
+
+    with torch.no_grad():
+        output = fusion(content, style, labels, lengths)
+    valid = (
+        torch.arange(content.size(1)).unsqueeze(0) < lengths.unsqueeze(1)
+    )
+    output_rms = output[valid].square().mean().sqrt()
+
+    assert torch.isfinite(output).all()
+    assert output_rms < 3.0

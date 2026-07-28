@@ -89,7 +89,7 @@ def get_linear_scheduler(optimizer, start_decay_iter, n_iters_decay):
     return scheduler
 
 
-def get_scheduler(optimizer, opt, last_epoch=-1):
+def get_scheduler(optimizer, opt, last_epoch=-1, base_lr=None):
     """Return a learning rate scheduler
 
     Parameters:
@@ -101,7 +101,8 @@ def get_scheduler(optimizer, opt, last_epoch=-1):
     and linearly decay the rate to zero over the next <opt.n_epochs_decay> epochs.
     For other schedulers (step, plateau, and cosine), we use the default PyTorch schedulers.
     """
-    base_lr = getattr(opt, 'lr', None)
+    if base_lr is None:
+        base_lr = getattr(opt, 'lr', None)
     for group in optimizer.param_groups:
         if 'initial_lr' not in group or base_lr is not None:
             group['initial_lr'] = base_lr if base_lr is not None else group.get('lr', 1e-4)
@@ -119,6 +120,38 @@ def get_scheduler(optimizer, opt, last_epoch=-1):
         scheduler = lr_scheduler.CosineAnnealingLR(optimizer, T_max=opt.n_epochs, eta_min=0, last_epoch=last_epoch)
     else:
         raise NotImplementedError('learning rate policy [%s] is not implemented' % opt.lr_policy)
+    return scheduler
+
+
+def restore_scheduler_state(scheduler, optimizer, state_dict, base_lr,
+                            completed_epochs):
+    """Restore epoch progress while rebasing a stale checkpoint learning rate."""
+    if state_dict:
+        scheduler.load_state_dict(state_dict)
+
+    completed_epochs = max(0, int(completed_epochs))
+    base_lrs = [float(base_lr)] * len(optimizer.param_groups)
+    if hasattr(scheduler, 'lr_lambdas'):
+        last_lrs = [
+            lr * scheduler.lr_lambdas[index](completed_epochs)
+            for index, lr in enumerate(base_lrs)
+        ]
+    else:
+        old_bases = state_dict.get('base_lrs', base_lrs) if state_dict else base_lrs
+        old_lrs = state_dict.get('_last_lr', old_bases) if state_dict else old_bases
+        last_lrs = [
+            new_base * (old_lr / old_base if old_base else 1.0)
+            for new_base, old_lr, old_base in zip(base_lrs, old_lrs, old_bases)
+        ]
+
+    scheduler.base_lrs = base_lrs
+    scheduler.last_epoch = completed_epochs
+    scheduler._last_lr = last_lrs
+    if hasattr(scheduler, '_step_count'):
+        scheduler._step_count = completed_epochs + 1
+    for param_group, initial_lr, lr in zip(optimizer.param_groups, base_lrs, last_lrs):
+        param_group['initial_lr'] = initial_lr
+        param_group['lr'] = lr
     return scheduler
 
 

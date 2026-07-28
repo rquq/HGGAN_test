@@ -192,14 +192,17 @@ def _gradient_reverse(x, scale):
 class StyleEncoder(nn.Module):
     def __init__(self, style_dim=32, in_dim=256, init='N02', num_style_tokens=8,
                  backbone_channels=(64, 128, 256), n_class=80, content_grl=1.0,
-                 **kwargs):
+                 local_query_residual=0.25, **kwargs):
         super(StyleEncoder, self).__init__()
         self.style_dim = style_dim
         self._in_dim = in_dim
         self.num_style_tokens = num_style_tokens
         self.content_grl = content_grl
+        self.local_query_residual = float(local_query_residual)
         if num_style_tokens < 1:
             raise ValueError('num_style_tokens must be at least 1')
+        if self.local_query_residual < 0:
+            raise ValueError('local_query_residual must be non-negative')
 
         self.linear_style = nn.Sequential(
             nn.Linear(in_dim, in_dim),
@@ -230,6 +233,11 @@ class StyleEncoder(nn.Module):
         self.style_cross_attn = nn.MultiheadAttention(
             embed_dim=in_dim, num_heads=4, batch_first=True
         )
+        # Affine-free norms add no checkpoint state. They prevent the frozen
+        # backbone's very different feature scales from dominating attention.
+        self.style_key_norm = nn.LayerNorm(in_dim, elementwise_affine=False)
+        self.style_query_norm = nn.LayerNorm(in_dim, elementwise_affine=False)
+        self.local_output_norm = nn.LayerNorm(in_dim, elementwise_affine=False)
         self.content_probe = nn.Linear(style_dim, n_class)
 
         if init != 'none':
@@ -332,7 +340,7 @@ class StyleEncoder(nn.Module):
                     ~width_mask[:, None, :].expand(-1, height, -1).reshape(feature.size(0), -1)
                 )
 
-        style_keys = torch.cat(spatial_tokens, dim=1)
+        style_keys = self.style_key_norm(torch.cat(spatial_tokens, dim=1))
         key_padding_mask = torch.cat(padding_masks, dim=1) if padding_masks else None
 
         batch_size = img.size(0)
@@ -341,20 +349,34 @@ class StyleEncoder(nn.Module):
             pe_queries = get_1d_sinusoidal_embeddings(
                 style_queries.size(1), self._in_dim, style_queries.device
             )
-            style_queries = style_queries + pe_queries.unsqueeze(0)
-            local_style, _ = self.style_cross_attn(
+            style_queries = self.style_query_norm(
+                style_queries + pe_queries.unsqueeze(0)
+            )
+            local_attended, _ = self.style_cross_attn(
                 query=style_queries,
                 key=style_keys,
                 value=style_keys,
                 key_padding_mask=key_padding_mask,
+                need_weights=False,
             )
-            local_style = self.linear_style(local_style)
+            local_style = self.linear_style(
+                self.local_output_norm(style_queries + local_attended)
+            )
         else:
             local_style = style_queries
 
         global_style = self.linear_style(global_context).unsqueeze(1)
         style = torch.cat([global_style, local_style], dim=1)
-        style_tokens_mu = self.mu(style)
+        global_mu = self.mu(global_style)
+        if local_style.size(1):
+            # Preserve query identity after cross-attention. Reusing mu.weight
+            # adds no parameters, keeping checkpoints and optimizer state valid.
+            local_mu = self.mu(local_style) + self.local_query_residual * F.linear(
+                style_queries, self.mu.weight, bias=None
+            )
+        else:
+            local_mu = self.mu(local_style)
+        style_tokens_mu = torch.cat([global_mu, local_mu], dim=1)
 
         if vae_mode:
             logvar = torch.clamp(self.logvar(style), min=-14.0, max=4.0)
