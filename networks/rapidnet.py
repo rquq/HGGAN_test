@@ -83,6 +83,14 @@ class ConditionedRapidBlock(nn.Module):
         self.project = which_conv(
             in_channels, out_channels, kernel_size=1, padding=0
         )
+        # A pointwise projection cannot blend the replicated cells produced by
+        # upsampling. Apply an unscaled depthwise transition before the
+        # residual MLDC mixer so every stage establishes real spatial
+        # continuity without giving up RapidNet's lightweight channel mixing.
+        self.spatial_transition = which_conv(
+            out_channels, out_channels, kernel_size=3, padding=1,
+            groups=out_channels,
+        )
         self.bn_mixer = which_bn(out_channels)
         self.mldc = RapidMLDCMixer(
             out_channels, which_conv=which_conv, expansion=expansion
@@ -103,6 +111,7 @@ class ConditionedRapidBlock(nn.Module):
             residual = self.upsample(residual)
 
         h = self.project(h)
+        h = self.spatial_transition(h)
         h = self.activation(self.bn_mixer(h, y))
         h = self.mldc(h)
 

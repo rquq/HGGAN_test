@@ -345,12 +345,56 @@ def test_rapid_generator_preserves_conditioning_geometry_and_gradients():
         isinstance(blocklist[0], ConditionedRapidBlock)
         for blocklist in generator.blocks
     )
+    assert all(
+        blocklist[0].upsample.keywords['mode'] == 'bilinear'
+        and blocklist[0].upsample.keywords['align_corners'] is False
+        and blocklist[0].spatial_transition.groups
+            == blocklist[0].spatial_transition.out_channels
+        for blocklist in generator.blocks
+    )
     assert style.grad is not None and torch.isfinite(style.grad).all()
     assert generator.fusion_gate_logits.grad is not None
     assert all(
         blocklist[0].mldc.mixer_scale.grad is not None
         for blocklist in generator.blocks
     )
+
+
+def test_rapid_upsampling_does_not_preserve_hard_macro_cells():
+    class PassCondition(nn.Module):
+        def forward(self, features, _condition):
+            return features
+
+    block = ConditionedRapidBlock(
+        in_channels=1,
+        out_channels=1,
+        which_conv=lambda in_channels, out_channels, **kwargs: nn.Conv2d(
+            in_channels, out_channels, bias=False, **kwargs
+        ),
+        which_bn=lambda _channels: PassCondition(),
+        activation=nn.Identity(),
+        upsample=lambda features: torch.nn.functional.interpolate(
+            features, scale_factor=2, mode='bilinear', align_corners=False
+        ),
+    )
+    with torch.no_grad():
+        block.project.weight.fill_(1.0)
+        block.shortcut.weight.fill_(1.0)
+        block.spatial_transition.weight.zero_()
+        block.spatial_transition.weight[:, :, 1, 1] = 1.0
+        block.mldc.mixer_scale.zero_()
+        block.mldc.ffn_scale.zero_()
+
+    seed_cells = torch.tensor(
+        [[[[0.0, 1.0], [0.0, 1.0]]]], requires_grad=True
+    )
+    output = block(seed_cells, torch.zeros(1, 1))
+    output.sum().backward()
+
+    assert output.shape == (1, 1, 4, 4)
+    assert torch.unique(output).numel() > torch.unique(seed_cells).numel()
+    assert 0.0 < output[0, 0, 0, 1] < output[0, 0, 0, -1]
+    assert seed_cells.grad is not None and torch.isfinite(seed_cells.grad).all()
 
 
 def test_global_and_stroke_critics_are_complementary_and_backward_safe():

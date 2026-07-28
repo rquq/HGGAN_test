@@ -166,7 +166,10 @@ class Generator(nn.Module):
                 which_bn=self.which_bn,
                 activation=self.activation,
                 upsample=functools.partial(
-                    F.interpolate, scale_factor=self.arch['upsample'][index]
+                    F.interpolate,
+                    scale_factor=self.arch['upsample'][index],
+                    mode='bilinear',
+                    align_corners=False,
                 ),
             )]]
 
