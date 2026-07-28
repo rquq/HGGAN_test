@@ -1,9 +1,79 @@
 import os
 import argparse
 import random
+import numpy as np
 from munch import Munch
 from lib.utils import yaml2config
 from networks import get_model
+
+
+def format_metrics(metrics: dict) -> str:
+    lines = [
+        "",
+        "=" * 54,
+        "               EVALUATION METRICS SUMMARY",
+        "=" * 54,
+    ]
+
+    cleaned = {}
+    for key, val in metrics.items():
+        if isinstance(val, (np.generic, np.ndarray)):
+            cleaned[key] = float(val)
+        elif isinstance(val, tuple) and len(val) == 2:
+            cleaned[key] = (float(val[0]), float(val[1]))
+        else:
+            cleaned[key] = val
+
+    metric_names = [
+        ('fid', 'FID (Frechet Inception Distance)'),
+        ('kid', 'KID (Kernel Inception Distance)'),
+        ('is_gen', 'IS (Inception Score - Gen)'),
+        ('is_org', 'IS (Inception Score - Real)'),
+        ('hwd', 'HWD (Handwriting Distance)'),
+        ('cmmd', 'CMMD (CLIP MMD)'),
+        ('wier', 'WIER (Writer ID Error Rate)'),
+        ('cer', 'CER (Character Error Rate)'),
+        ('wer', 'WER (Word Error Rate)'),
+        ('psnr', 'PSNR'),
+        ('mssim', 'MS-SSIM'),
+    ]
+
+    printed_keys = set()
+    for key, label in metric_names:
+        if key in cleaned:
+            val = cleaned[key]
+            printed_keys.add(key)
+            if isinstance(val, float):
+                lines.append(f"  {label:<34}: {val:.4f}")
+            elif isinstance(val, tuple) and len(val) == 2:
+                lines.append(f"  {label:<34}: mean={val[0]:.4f}, std={val[1]:.4f}")
+            else:
+                lines.append(f"  {label:<34}: {val}")
+
+    for key, val in cleaned.items():
+        if key not in printed_keys:
+            if isinstance(val, float):
+                lines.append(f"  {key.upper():<34}: {val:.4f}")
+            else:
+                lines.append(f"  {key.upper():<34}: {val}")
+
+    lines.append("=" * 54)
+    lines.append("")
+    return "\n".join(lines)
+
+
+def parse_bool(val):
+    if val is None:
+        return None
+    if isinstance(val, bool):
+        return val
+    s = str(val).strip().lower()
+    if s in ('true', '1', 'yes', 't', 'y'):
+        return True
+    elif s in ('false', '0', 'no', 'f', 'n'):
+        return False
+    raise argparse.ArgumentTypeError(f"Boolean value expected, got '{val}'.")
+
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Evaluation test script")
@@ -31,18 +101,6 @@ if __name__ == '__main__':
         help="Dataset split for evaluation (overrides config if set)",
     )
 
-    def parse_bool(val):
-        if val is None:
-            return None
-        if isinstance(val, bool):
-            return val
-        s = str(val).strip().lower()
-        if s in ('true', '1', 'yes', 't', 'y'):
-            return True
-        elif s in ('false', '0', 'no', 'f', 'n'):
-            return False
-        raise argparse.ArgumentTypeError(f"Boolean value expected, got '{val}'.")
-
     parser.add_argument(
         "--guided",
         dest='guided',
@@ -63,6 +121,12 @@ if __name__ == '__main__':
         type=int,
         default=None,
         help="Random seed for evaluation reproducibility",
+    )
+
+    parser.add_argument(
+        "--all-metrics",
+        action="store_true",
+        help="Enable evaluation of all standard metrics (FID, KID, IS, HWD, CMMD)",
     )
 
     args = parser.parse_args()
@@ -90,6 +154,13 @@ if __name__ == '__main__':
     cfg.valid.dset_split = split
     cfg.guided = guided
 
+    if args.all_metrics:
+        cfg.valid.validate_fid = True
+        cfg.valid.validate_kid = True
+        cfg.valid.validate_is = True
+        cfg.valid.validate_hwd = True
+        cfg.valid.validate_cmmd = True
+
     print("=" * 60)
     print("EVALUATION TEST CONFIGURATION")
     print(f" - Config File : {config_path}")
@@ -106,9 +177,6 @@ if __name__ == '__main__':
     model.load(ckpt, device)
     model.set_mode('eval')
     val_results = model.validate(guided, test_stage=True)
-    print("Evaluation Results:")
-    for k, v in val_results.items():
-        if isinstance(v, float):
-            print(f"  {k:10s}: {v:.4f}")
-        else:
-            print(f"  {k:10s}: {v}")
+    print(format_metrics(val_results))
+    print("Raw metrics dict:")
+    print(val_results)
