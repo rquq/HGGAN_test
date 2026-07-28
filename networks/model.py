@@ -584,6 +584,7 @@ class AdversarialModel(BaseModel):
                                          'iter_{}.png'.format(iteration_done))
                 im = Image.fromarray(res_img)
                 im.save(save_path)
+                self.print(f"--> Saved sample image: iter_{iteration_done}.png")
 
                 import wandb as _wandb
                 if _wandb.run:
