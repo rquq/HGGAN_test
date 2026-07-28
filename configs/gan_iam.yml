@@ -19,7 +19,7 @@ training:
   start_decay_epoch: 25
   n_epochs_decay: 46
   batch_size: 4
-  eval_batch_size: 6
+  eval_batch_size: 12
   sample_nrow: 3
   # optimization:
   lr: 2.0e-4
@@ -29,7 +29,7 @@ training:
   sample_iter_val: 200
   print_iter_val: 20
   start_save_epoch_val: 0
-  eval_epoch_val: 1
+  eval_epoch_val: 2
   save_epoch_val: 1
   sample_dir: 'imgs'
   ckpt_dir: 'ckpts'
@@ -54,11 +54,11 @@ valid:
   dset_split: 'test'
   validate_ocr: false
   validate_fid: true
-  validate_kid: true
+  validate_kid: false
   validate_is: false
   validate_hwd: true
   validate_cmmd: true
-  validate_cmmd_every_n_epochs: 3
+  validate_cmmd_every_n_epochs: 4
   use_rand_corpus: false
   n_rand_repeat: 10
   batch_size: 32
