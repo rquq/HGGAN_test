@@ -152,15 +152,66 @@ class BaseModel(object):
         ckpt['Epoch'] = epoch_done
         if iter_count is not None:
             ckpt['iter_count'] = iter_count
-        if best_fid is not None:
-            ckpt['best_fid'] = best_fid
+
+        # ── Fast & Clean Best FID Tracking & Single-Pass Atomic Save ──
+        import shutil, glob
+        current_fid = best_fid if best_fid is not None else kwargs.get('fid', kwargs.get('FID', None))
+        if current_fid is not None:
+            try: current_fid = float(current_fid)
+            except Exception: current_fid = None
+
+        cached_best = getattr(self, 'best_fid', None)
+        if cached_best is None:
+            cached_best = getattr(self, 'restored_metadata', {}).get('best_fid', np.inf)
+            if cached_best is None: cached_best = np.inf
+            try: cached_best = float(cached_best)
+            except Exception: cached_best = np.inf
 
         ckpt_dir = os.path.join(self.log_root, self.opt.training.ckpt_dir)
         os.makedirs(ckpt_dir, exist_ok=True)
-        ckpt_save_path = os.path.join(ckpt_dir, tag + '.pth')
-        tmp_save_path = os.path.join(ckpt_dir, tag + '.pth.tmp')
-        torch.save(ckpt, tmp_save_path)
-        os.replace(tmp_save_path, ckpt_save_path)
+        best_pth_path = os.path.join(ckpt_dir, 'best.pth')
+
+        is_new_best = (tag == 'best') or (not os.path.exists(best_pth_path)) or (current_fid is not None and current_fid < cached_best)
+
+        if is_new_best and current_fid is not None:
+            self.best_fid = current_fid
+            ckpt['best_fid'] = current_fid
+        elif cached_best < np.inf:
+            ckpt['best_fid'] = cached_best
+
+        # Write once to a temporary file
+        tmp_path = os.path.join(ckpt_dir, f".tmp_{tag}.pth")
+        torch.save(ckpt, tmp_path)
+
+        # Update primary target file (e.g. last.pth or best.pth)
+        main_save_path = os.path.join(ckpt_dir, tag + '.pth')
+        shutil.copy(tmp_path, main_save_path)
+
+        # Save tag_fid_NUMBER.pth & cleanup outdated files for this tag
+        if current_fid is not None and not np.isnan(current_fid):
+            fid_str = f"{current_fid:.4f}"
+            tagged_fid_path = os.path.join(ckpt_dir, f"{tag}_fid_{fid_str}.pth")
+            shutil.copy(tmp_path, tagged_fid_path)
+            for old_file in glob.glob(os.path.join(ckpt_dir, f"{tag}_fid_*.pth")):
+                if os.path.abspath(old_file) != os.path.abspath(tagged_fid_path):
+                    try: os.remove(old_file)
+                    except Exception: pass
+
+        # If this checkpoint is a new best, update best.pth & best_fid_NUMBER.pth
+        if is_new_best and tag != 'best':
+            shutil.copy(tmp_path, best_pth_path)
+            self.print(f"--> Updated best.pth from {tag}.pth" + (f" (FID: {current_fid:.4f})" if current_fid else ""))
+            if current_fid is not None and not np.isnan(current_fid):
+                fid_str = f"{current_fid:.4f}"
+                best_fid_path = os.path.join(ckpt_dir, f"best_fid_{fid_str}.pth")
+                shutil.copy(tmp_path, best_fid_path)
+                for old_file in glob.glob(os.path.join(ckpt_dir, "best_fid_*.pth")):
+                    if os.path.abspath(old_file) != os.path.abspath(best_fid_path):
+                        try: os.remove(old_file)
+                        except Exception: pass
+
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
 
     def restore_rng_state(self, rng=None):
         if rng is None:
