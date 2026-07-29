@@ -1382,8 +1382,9 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                 eval_interval_iters = max(1, int(eval_epoch_val * len(self.train_loader)))
                 save_interval_iters = max(1, int(save_epoch_val * len(self.train_loader)))
                 
-                is_eval = (iter_count + 1) % eval_interval_iters == 0
-                is_save = (iter_count + 1) % save_interval_iters == 0
+                global_iter = (epoch - 1) * len(self.train_loader) + (i + 1)
+                is_eval = global_iter % eval_interval_iters == 0
+                is_save = global_iter % save_interval_iters == 0
                 
                 if getattr(self, 'is_resumed_start', False):
                     is_eval = False
@@ -1404,7 +1405,7 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                         best_fid = scores['fid']
                         best_scores = scores
                         if _is_master:
-                            self.save('best', epoch, iter_count=iter_count, best_fid=best_fid, fid=scores['fid'], **(best_scores or {}))
+                            self.save('best', epoch, iter_count=iter_count, best_fid=best_fid, **(best_scores or {}))
 
                 if is_save:
                     if _is_master:
