@@ -29,7 +29,7 @@ training:
   sample_iter_val: 200
   print_iter_val: 20
   start_save_epoch_val: 0
-  eval_epoch_val: 2
+  eval_epoch_val: 1
   save_epoch_val: 1
   sample_dir: 'imgs'
   ckpt_dir: 'ckpts'
@@ -54,8 +54,8 @@ valid:
   dset_split: 'test'
   validate_ocr: false
   validate_fid: true
-  validate_kid: false
-  validate_is: false
+  validate_kid: true
+  validate_is: true
   validate_hwd: true
   validate_cmmd: true
   validate_cmmd_every_n_epochs: 4
