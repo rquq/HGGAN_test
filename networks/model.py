@@ -139,10 +139,13 @@ class BaseModel(object):
 
         # ── Best/Last Checkpoint Saving (Only last_fid_X.pth & best_fid_X.pth) ──
         import shutil, glob
-        current_fid = best_fid if best_fid is not None else kwargs.get('fid', kwargs.get('FID', None))
-        if current_fid is not None:
-            try: current_fid = float(current_fid)
-            except Exception: current_fid = None
+        this_fid = kwargs.get('fid', kwargs.get('FID', getattr(self, 'last_eval_fid', None)))
+        if this_fid is not None:
+            try:
+                this_fid = float(this_fid)
+                self.last_eval_fid = this_fid
+            except Exception:
+                this_fid = None
 
         cached_best = getattr(self, 'best_fid', None)
         if cached_best is None:
@@ -151,24 +154,33 @@ class BaseModel(object):
             try: cached_best = float(cached_best)
             except Exception: cached_best = np.inf
 
+        if best_fid is not None:
+            try: best_fid_val = float(best_fid)
+            except Exception: best_fid_val = cached_best
+        else:
+            best_fid_val = cached_best
+
+        is_new_best = (tag == 'best') or (this_fid is not None and this_fid < cached_best)
+
+        if is_new_best and this_fid is not None:
+            self.best_fid = this_fid
+            best_fid_val = this_fid
+            ckpt['best_fid'] = this_fid
+        elif best_fid_val < np.inf:
+            ckpt['best_fid'] = best_fid_val
+
+        if this_fid is not None:
+            ckpt['fid'] = this_fid
+
         ckpt_dir = os.path.join(self.log_root, self.opt.training.ckpt_dir)
         os.makedirs(ckpt_dir, exist_ok=True)
-
-        is_new_best = (tag == 'best') or (current_fid is not None and current_fid < cached_best)
-
-        if is_new_best and current_fid is not None:
-            self.best_fid = current_fid
-            ckpt['best_fid'] = current_fid
-        elif cached_best < np.inf:
-            ckpt['best_fid'] = cached_best
 
         # Write once to a temporary file
         tmp_path = os.path.join(ckpt_dir, f".tmp_{tag}.pth")
         torch.save(ckpt, tmp_path)
 
         if tag == 'last':
-            eval_fid = current_fid if (current_fid is not None and np.isfinite(current_fid)) else (cached_best if np.isfinite(cached_best) else None)
-            fid_str = f"{eval_fid:.4f}" if (eval_fid is not None and np.isfinite(eval_fid)) else "inf"
+            fid_str = f"{this_fid:.4f}" if (this_fid is not None and np.isfinite(this_fid)) else "inf"
             
             for old_last in glob.glob(os.path.join(ckpt_dir, "last_fid_*.pth")) + glob.glob(os.path.join(ckpt_dir, "last.pth")):
                 try: os.remove(old_last)
@@ -179,25 +191,25 @@ class BaseModel(object):
             self.print(f"--> Saved last checkpoint: last_fid_{fid_str}.pth")
 
             if is_new_best:
-                best_str = f"{current_fid:.4f}" if (current_fid is not None and np.isfinite(current_fid)) else fid_str
+                best_str = f"{best_fid_val:.4f}" if (best_fid_val is not None and np.isfinite(best_fid_val)) else fid_str
                 for old_best in glob.glob(os.path.join(ckpt_dir, "best_fid_*.pth")) + glob.glob(os.path.join(ckpt_dir, "best.pth")):
                     try: os.remove(old_best)
                     except Exception: pass
 
                 best_fid_path = os.path.join(ckpt_dir, f"best_fid_{best_str}.pth")
                 shutil.copy(tmp_path, best_fid_path)
-                self.print(f"--> Saved new best checkpoint: best_fid_{best_str}.pth (FID: {current_fid:.4f})")
+                self.print(f"--> Saved new best checkpoint: best_fid_{best_str}.pth (FID: {best_fid_val:.4f})")
 
         else:
             if is_new_best or tag == 'best':
-                best_str = f"{current_fid:.4f}" if (current_fid is not None and np.isfinite(current_fid)) else "inf"
+                best_str = f"{best_fid_val:.4f}" if (best_fid_val is not None and np.isfinite(best_fid_val)) else "inf"
                 for old_best in glob.glob(os.path.join(ckpt_dir, "best_fid_*.pth")) + glob.glob(os.path.join(ckpt_dir, "best.pth")):
                     try: os.remove(old_best)
                     except Exception: pass
 
                 best_fid_path = os.path.join(ckpt_dir, f"best_fid_{best_str}.pth")
                 shutil.copy(tmp_path, best_fid_path)
-                self.print(f"--> Saved best checkpoint: best_fid_{best_str}.pth (FID: {current_fid:.4f})")
+                self.print(f"--> Saved best checkpoint: best_fid_{best_str}.pth (FID: {best_fid_val:.4f})")
 
         # Clean up temporary file
         if os.path.exists(tmp_path):
@@ -1380,6 +1392,8 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                 if is_eval:
                     self.print('Calculate FID_KID (iter {})'.format(iter_count + 1)) if self.local_rank < 1 else None
                     scores = self.validate(current_epoch=epoch)
+                    if 'fid' in scores:
+                        self.last_eval_fid = float(scores['fid'])
                     if _is_master:
                         score_str = ", ".join([f"{k}: {v:.4f}" if isinstance(v, float) else f"{k}: {v}" for k, v in scores.items()])
                         self.print(f"Validation metrics at iter {iter_count + 1}: {score_str}")
@@ -1390,11 +1404,12 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                         best_fid = scores['fid']
                         best_scores = scores
                         if _is_master:
-                            self.save('best', epoch, iter_count=iter_count, best_fid=best_fid, **(best_scores or {}))
+                            self.save('best', epoch, iter_count=iter_count, best_fid=best_fid, fid=scores['fid'], **(best_scores or {}))
 
                 if is_save:
                     if _is_master:
-                        self.save('last', epoch, iter_count=iter_count, best_fid=best_fid)
+                        current_eval_fid = scores.get('fid') if ('scores' in locals() and isinstance(scores, dict)) else getattr(self, 'last_eval_fid', None)
+                        self.save('last', epoch, iter_count=iter_count, best_fid=best_fid, fid=current_eval_fid)
 
                 iter_count += 1
 
