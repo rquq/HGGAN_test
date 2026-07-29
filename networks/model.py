@@ -140,6 +140,8 @@ class BaseModel(object):
         # ── Best/Last Checkpoint Saving (Only last_fid_X.pth & best_fid_X.pth) ──
         import shutil, glob
         this_fid = kwargs.get('fid', kwargs.get('FID', getattr(self, 'last_eval_fid', None)))
+        if this_fid is None and hasattr(self, 'restored_metadata'):
+            this_fid = self.restored_metadata.get('last_eval_fid', self.restored_metadata.get('best_fid', None))
         if this_fid is not None:
             try:
                 this_fid = float(this_fid)
@@ -324,10 +326,28 @@ class BaseModel(object):
                 except Exception as e:
                     self.print(f"Could not read best_fid from {source_best_pth}: {e}")
 
+        restored_fid = ckpt_data.get('fid', ckpt_data.get('last_eval_fid', None))
+        if restored_fid is None and isinstance(ckpt, str):
+            import re
+            m = re.search(r'_fid_([0-9]+\.[0-9]+)', os.path.basename(ckpt))
+            if m:
+                try:
+                    restored_fid = float(m.group(1))
+                except Exception:
+                    pass
+
+        if restored_fid is not None:
+            try:
+                self.last_eval_fid = float(restored_fid)
+                self.print(f"Restored last_eval_fid={self.last_eval_fid:.4f} from checkpoint")
+            except Exception:
+                pass
+
         self.restored_metadata = {
             'Epoch': ckpt_data.get('Epoch', 0),
             'iter_count': ckpt_data.get('iter_count', None),
             'best_fid': best_fid,
+            'last_eval_fid': getattr(self, 'last_eval_fid', None),
         }
 
         for name, model in self.models.items():
@@ -1409,7 +1429,9 @@ class GlobalLocalAdversarialModel(AdversarialModel):
 
                 if is_save:
                     if _is_master:
-                        current_eval_fid = scores.get('fid') if ('scores' in locals() and isinstance(scores, dict)) else getattr(self, 'last_eval_fid', None)
+                        current_eval_fid = float(scores['fid']) if (is_eval and 'scores' in locals() and isinstance(scores, dict) and 'fid' in scores) else getattr(self, 'last_eval_fid', None)
+                        if current_eval_fid is None and hasattr(self, 'restored_metadata'):
+                            current_eval_fid = self.restored_metadata.get('last_eval_fid', self.restored_metadata.get('best_fid', None))
                         self.save('last', epoch, iter_count=iter_count, best_fid=best_fid, fid=current_eval_fid)
 
                 iter_count += 1
