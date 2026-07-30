@@ -8,22 +8,15 @@ img_height: 64
 char_width: 32
 
 
-inference:
-  ckpt: './pretrained/HiGAN+.pth'
-  mode: 'text'
-  guided: true
-  deploy_dst: './pretrained/deploy_HiGAN+.pth'
-
-
 training:
   dset_split: 'trnval'
-  epochs: 36
+  epochs: 70
   lr_policy: 'linear'
-  start_decay_epoch: 12
-  n_epochs_decay: 24
-  batch_size: 6
-  eval_batch_size: 12
-  sample_nrow: 4
+  start_decay_epoch: 25
+  n_epochs_decay: 46
+  batch_size: 2
+  eval_batch_size: 2
+  sample_nrow: 3
   # optimization:
   lr: 2.0e-4
   d_lr: 1.0e-4
@@ -46,10 +39,6 @@ training:
   sort_input: true
   # D uses half G's learning rate; two D updates per G balances the adversaries.
   num_critic_train: 2
-  lambda_patch_adv: 0.5
-  patch_size: 32
-  min_patch_crops: 4
-  max_patch_crops: 8
   vae_mode: true
   lambda_ctc: 1.0
   lambda_info: 1.0
@@ -76,10 +65,10 @@ valid:
   validate_ocr: false
   validate_fid: true
   validate_kid: true
-  validate_is: true
+  validate_is: false
   validate_hwd: true
-  validate_cmmd: false
-  validate_cmmd_every_n_epochs: 4
+  validate_cmmd: true
+  validate_cmmd_every_n_epochs: 3
   use_rand_corpus: false
   n_rand_repeat: 10
   batch_size: 32
@@ -142,29 +131,36 @@ DiscModel:
   D_ch: 64
   D_wide: true
   resolution: 64
+  D_kernel_size: 3
   D_attn: '0'
-  width_context: true
-  width_heads: 4
+  n_class: 80
   num_D_SVs: 1
   num_D_SV_itrs: 1
   SN_eps: 1.e-08
   output_dim: 1
   init: 'N02'
   D_param: 'SN'
+  bn_linear: 'SN'
   input_nc: 1
+  one_hot: true
 
 
 PatchDiscModel:
-  D_ch: 32
-  D_max_ch: 192
-  D_layers: 3
+  D_ch: 64
+  D_wide: true
+  resolution: 32
+  D_kernel_size: 3
+  D_attn: '0'
+  n_class: 80
   num_D_SVs: 1
   num_D_SV_itrs: 1
   SN_eps: 1.e-08
   output_dim: 1
   init: 'N02'
   D_param: 'SN'
+  bn_linear: 'SN'
   input_nc: 1
+  one_hot: true
 
 OcrModel:
   resolution: 16

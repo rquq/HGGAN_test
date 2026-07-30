@@ -14,7 +14,7 @@ import torch.nn.functional as F
 from metric.val_metrics import calculate_fid_kid_is
 from metric.mssim_psnr import calculate_mssim_psnr
 from networks.utils import _info, set_requires_grad, get_scheduler, idx_to_words, rescale_images, rescale_images2, \
-                            words_to_images, ctc_greedy_decoder, sample_adaptive_patches, frozen_bn, restore_scheduler_state
+                            words_to_images, ctc_greedy_decoder, extract_all_patches, frozen_bn, restore_scheduler_state
 from networks.BigGAN_networks import Generator, Discriminator, PatchDiscriminator
 from networks.module import Recognizer, WriterIdentifier, StyleEncoder, StyleBackbone
 from lib.datasets import get_dataset, get_collect_fn, Hdf5Dataset
@@ -1386,25 +1386,6 @@ class GlobalLocalAdversarialModel(AdversarialModel):
         device = self.device
 
         ctc_len_scale = self.unwrap_model(self.models.R).len_scale
-        patch_size = int(getattr(self.opt.training, 'patch_size', 32))
-        min_patch_crops = int(getattr(self.opt.training, 'min_patch_crops', 4))
-        max_patch_crops = int(getattr(self.opt.training, 'max_patch_crops', 8))
-        patch_adv_weight = float(
-            getattr(self.opt.training, 'lambda_patch_adv', 0.5)
-        )
-        masking_mode = getattr(self.opt.training, 'masking_mode', 'none')
-
-        def prepare_stroke_patches(images, image_lens):
-            patches, _ = sample_adaptive_patches(
-                images,
-                image_lens,
-                patch_size=patch_size,
-                min_crops=min_patch_crops,
-                max_crops=max_patch_crops,
-            )
-            if masking_mode != 'none':
-                patches = apply_light_mixed_patch_mask(patches)
-            return patches
 
         best_fid = restored_meta.get('best_fid', None)
         if best_fid is None:
@@ -1497,22 +1478,23 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                                   torch.mean(F.relu(1.0 + d_style)) + 
                                   torch.mean(F.relu(1.0 + d_recn))) / 3
 
-                # Matched adaptive crop policy for every generated path.
-                fake_patch_groups = [
-                    prepare_stroke_patches(fake_imgs.detach(), fake_img_lens),
-                    prepare_stroke_patches(style_imgs.detach(), style_img_lens),
-                    prepare_stroke_patches(recn_imgs.detach(), recn_img_lens),
-                ]
-                fake_patch_sizes = [group.size(0) for group in fake_patch_groups]
-                p_all = self.models.P(torch.cat(fake_patch_groups, dim=0))
-                p_fake, p_style, p_recn = torch.split(
-                    p_all, fake_patch_sizes, dim=0
-                )
-                fake_disc_loss_patch = (
-                    torch.mean(F.relu(1.0 + p_fake))
-                    + torch.mean(F.relu(1.0 + p_style))
-                    + torch.mean(F.relu(1.0 + p_recn))
-                ) / 3
+                # Patch Discriminator forwards
+                n_patch_row = (cat_fake_imgs.size(-2) - 32) // 8 + 1
+                n_fake = int(torch.sum(torch.div(fake_img_lens - 32, 8, rounding_mode='trunc') + 1).item()) * n_patch_row
+                n_style = int(torch.sum(torch.div(style_img_lens - 32, 8, rounding_mode='trunc') + 1).item()) * n_patch_row
+                n_recn = int(torch.sum(torch.div(recn_img_lens - 32, 8, rounding_mode='trunc') + 1).item()) * n_patch_row
+
+                p_all_patches = extract_all_patches(cat_fake_imgs.detach(), cat_fake_img_lens)
+                masking_mode = getattr(self.opt.training, 'masking_mode', 'none')
+                if masking_mode != 'none':
+                    p_all_patches = apply_light_mixed_patch_mask(p_all_patches)
+
+                # Batch forward all patches through P to avoid multiple GPU kernel launches
+                p_all = self.models.P(p_all_patches)
+                p_fake, p_style, p_recn = torch.split(p_all, [n_fake, n_style, n_recn], dim=0)
+                fake_disc_loss_patch = (torch.mean(F.relu(1.0 + p_fake)) + 
+                                        torch.mean(F.relu(1.0 + p_style)) + 
+                                        torch.mean(F.relu(1.0 + p_recn))) / 3
 
                 # Random crops are local views, not complete word samples. Feeding
                 # them to the global discriminator taught D that truncated words
@@ -1530,29 +1512,16 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                 else:
                     r1_loss = real_disc_loss.new_zeros(())
 
-                real_patch_groups = [
-                    prepare_stroke_patches(real_imgs, real_img_lens),
-                    prepare_stroke_patches(real_aug_imgs, real_aug_img_lens),
-                ]
-                real_patch_sizes = [group.size(0) for group in real_patch_groups]
-                real_patch_logits = self.models.P(
-                    torch.cat(real_patch_groups, dim=0)
-                )
-                real_patch_logits, real_aug_patch_logits = torch.split(
-                    real_patch_logits, real_patch_sizes, dim=0
-                )
-                real_disc_loss_patch = (
-                    torch.mean(F.relu(1.0 - real_patch_logits))
-                    + torch.mean(F.relu(1.0 - real_aug_patch_logits))
-                ) / 2
+                real_img_patches = extract_all_patches(real_imgs, real_img_lens, plot=False)
+                real_aug_imgs_patches = extract_all_patches(real_aug_imgs, real_aug_img_lens)
+                real_patches_cat = torch.cat([real_img_patches, real_aug_imgs_patches], dim=0)
+                if masking_mode != 'none':
+                    real_patches_cat = apply_light_mixed_patch_mask(real_patches_cat)
+                real_disc_patches = self.models.P(real_patches_cat)
+                real_disc_loss_patch = torch.mean(F.relu(1.0 - real_disc_patches))
 
-                disc_loss = (
-                    real_disc_loss + fake_disc_loss
-                    + patch_adv_weight * (
-                        real_disc_loss_patch + fake_disc_loss_patch
-                    )
-                    + r1_loss
-                )
+                disc_loss = (real_disc_loss + fake_disc_loss + real_disc_loss_patch
+                             + fake_disc_loss_patch + r1_loss)
                 self.averager_meters.update('d_total', disc_loss.item())
                 self.averager_meters.update('d_real', real_disc_loss.item())
                 self.averager_meters.update('d_fake', fake_disc_loss.item())
@@ -1623,23 +1592,19 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                     d_fake, d_style, d_recn = torch.chunk(d_fake_all, 3, dim=0)
                     adv_loss = -(torch.mean(d_fake) + torch.mean(d_style) + torch.mean(d_recn)) / 3
 
-                    fake_patch_groups = [
-                        prepare_stroke_patches(fake_imgs, fake_img_lens),
-                        prepare_stroke_patches(style_imgs, style_img_lens),
-                        prepare_stroke_patches(recn_imgs, recn_img_lens),
-                    ]
-                    fake_patch_sizes = [
-                        group.size(0) for group in fake_patch_groups
-                    ]
-                    p_all = self.models.P(torch.cat(fake_patch_groups, dim=0))
-                    p_fake, p_style, p_recn = torch.split(
-                        p_all, fake_patch_sizes, dim=0
-                    )
-                    adv_loss_patch = -(
-                        torch.mean(p_fake)
-                        + torch.mean(p_style)
-                        + torch.mean(p_recn)
-                    ) / 3
+                    n_patch_row = (cat_fake_imgs.size(-2) - 32) // 8 + 1
+                    n_fake = int(torch.sum(torch.div(fake_img_lens - 32, 8, rounding_mode='trunc') + 1).item()) * n_patch_row
+                    n_style = int(torch.sum(torch.div(style_img_lens - 32, 8, rounding_mode='trunc') + 1).item()) * n_patch_row
+                    n_recn = int(torch.sum(torch.div(recn_img_lens - 32, 8, rounding_mode='trunc') + 1).item()) * n_patch_row
+
+                    p_all_patches = extract_all_patches(cat_fake_imgs, cat_fake_img_lens)
+                    if masking_mode != 'none':
+                        p_all_patches = apply_light_mixed_patch_mask(p_all_patches)
+
+                    # Batch forward all patches through P to avoid multiple GPU kernel launches
+                    p_all = self.models.P(p_all_patches)
+                    p_fake, p_style, p_recn = torch.split(p_all, [n_fake, n_style, n_recn], dim=0)
+                    adv_loss_patch = -(torch.mean(p_fake) + torch.mean(p_style) + torch.mean(p_recn)) / 3
 
                     ### CTC Auxiliary loss ###
                     # self.models.R.frozen_bn()
@@ -1729,8 +1694,7 @@ class GlobalLocalAdversarialModel(AdversarialModel):
 
                     # Optimize and log weighted contributions. Raw loss values
                     # alone are misleading when their scales differ this much.
-                    weighted_adv_loss_patch = patch_adv_weight * adv_loss_patch
-                    g_adv = adv_loss + weighted_adv_loss_patch
+                    g_adv = adv_loss + adv_loss_patch
                     g_ctc = lambda_ctc * fake_ctc_loss
                     g_writer = lambda_wid * fake_wid_loss
                     g_recn = lambda_recn * recn_loss
@@ -1758,7 +1722,7 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                     self.averager_meters.update('g_total', g_loss.item())
                     self.averager_meters.update('g_adv', g_adv.item())
                     self.averager_meters.update('g_adv_global', adv_loss.item())
-                    self.averager_meters.update('g_adv_patch', weighted_adv_loss_patch.item())
+                    self.averager_meters.update('g_adv_patch', adv_loss_patch.item())
                     self.averager_meters.update('g_ctc', g_ctc.item())
                     self.averager_meters.update('g_ctc_rand', fake_ctc_loss_rand.item())
                     self.averager_meters.update('g_ctc_style', fake_ctc_loss_style.item())
