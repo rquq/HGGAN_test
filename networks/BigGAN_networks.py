@@ -310,14 +310,20 @@ class WidthContextMixer(nn.Module):
             batch, width, 3, self.num_heads, self.head_dim
         ).permute(2, 0, 3, 1, 4)
         query, key, value = qkv.unbind(0)
-        scores = torch.matmul(query, key.transpose(-2, -1)) * self.scale
-        if valid_mask is not None:
-            scores = scores.masked_fill(
-                ~valid_mask[:, None, None, :],
-                torch.finfo(scores.dtype).min,
-            )
-        attention = torch.softmax(scores, dim=-1)
-        context = torch.matmul(attention, value)
+        # Use PyTorch's fused attention kernel to avoid materializing the
+        # width-by-width score and probability tensors.  A boolean SDPA mask
+        # keeps exactly the same valid-key semantics as the former masked fill.
+        attention_mask = (
+            valid_mask[:, None, None, :] if valid_mask is not None else None
+        )
+        context = F.scaled_dot_product_attention(
+            query,
+            key,
+            value,
+            attn_mask=attention_mask,
+            dropout_p=0.0,
+            scale=self.scale,
+        )
         context = context.transpose(1, 2).reshape(batch, width, channels)
         context = self.proj(context)
         if valid_mask is not None:

@@ -227,9 +227,14 @@ class StyleEncoder(nn.Module):
 
         # Token zero is an explicit global style summary. The remaining compact
         # query set captures local stroke details without a 32x32 content-rich code.
-        self.style_queries = nn.Parameter(
-            torch.randn(1, num_style_tokens - 1, in_dim) * 0.02
-        )
+        query_count = num_style_tokens - 1
+        style_query_init = torch.empty(1, query_count, in_dim)
+        if query_count:
+            # Orthogonal rows start as distinct local stroke slots while matching
+            # the old N(0, 0.02) per-component scale in expectation.
+            nn.init.orthogonal_(style_query_init[0])
+            style_query_init.mul_(0.02 * (in_dim ** 0.5))
+        self.style_queries = nn.Parameter(style_query_init)
         self.style_cross_attn = nn.MultiheadAttention(
             embed_dim=in_dim, num_heads=4, batch_first=True
         )

@@ -4,7 +4,7 @@ from torch import nn
 from munch import Munch
 
 from networks.BigGAN_networks import Generator, Discriminator, PatchDiscriminator
-from networks.fusion import StyleContentAttentionFusion
+from networks.fusion import AllographicModulation, StyleContentAttentionFusion
 from networks.rapidnet import ConditionedRapidBlock
 from networks.loss import CXLoss, GramStyleLoss, KLloss, supervised_contrastive_style_loss
 from networks.model import BaseModel, EMA
@@ -18,19 +18,25 @@ def test_style_encoder_is_compact_and_does_not_replace_parameters_in_forward():
     torch.manual_seed(7)
     backbone = StyleBackbone(init='none').eval()
     encoder = StyleEncoder(
-        init='none', num_style_tokens=8,
+        init='none', num_style_tokens=12,
         backbone_channels=(64, 128, 256), n_class=80,
     ).eval()
     images = torch.full((2, 1, 64, 192), -1.0)
     images[..., :128] = torch.randn(2, 1, 64, 128)
     lengths = torch.tensor([128, 128])
     parameter_ids = {id(parameter) for parameter in encoder.parameters()}
+    raw_queries = torch.nn.functional.normalize(
+        encoder.style_queries[0], dim=-1
+    )
+    raw_similarity = raw_queries @ raw_queries.transpose(0, 1)
+    raw_off_diagonal = ~torch.eye(raw_queries.size(0), dtype=torch.bool)
+    assert raw_similarity.masked_select(raw_off_diagonal).abs().max() < 1e-5
 
     with torch.no_grad():
         styles = encoder(images, lengths, backbone)
         shorter_batch_styles = encoder(images[..., :160], lengths, backbone)
 
-    assert styles.shape == (2, 8, 32)
+    assert styles.shape == (2, 12, 32)
     torch.testing.assert_close(styles, shorter_batch_styles, atol=2e-3, rtol=1e-3)
     assert {id(parameter) for parameter in encoder.parameters()} == parameter_ids
     local_styles = torch.nn.functional.normalize(styles[:, 1:], dim=-1)
@@ -118,6 +124,43 @@ def test_attention_and_allograph_have_separate_style_roles():
     assert style.grad[:, 0].abs().sum() > 0
     assert style.grad[:, 1:].abs().sum() > 0
     assert content.grad.abs().sum() > 0
+
+
+def test_character_conditioned_allograph_gate_is_legacy_safe_and_trainable():
+    torch.manual_seed(19)
+    module = AllographicModulation(
+        d_model=16, routing_dim=8, vocab_size=20,
+    ).train()
+    content = torch.randn(2, 6, 16, requires_grad=True)
+    local_style = torch.randn(2, 7, 16, requires_grad=True)
+    character_ids = torch.tensor([
+        [2, 3, 4, 5, 6, 7],
+        [8, 9, 10, 11, 12, 13],
+    ])
+    mask = torch.ones(2, 6, dtype=torch.bool)
+
+    with torch.no_grad():
+        identity_output = module(content, local_style, character_ids, mask)
+        torch.testing.assert_close(
+            module.char_style_gate.weight,
+            torch.zeros_like(module.char_style_gate.weight),
+        )
+
+    output = module(content, local_style, character_ids, mask)
+    torch.testing.assert_close(output, identity_output)
+    output.square().mean().backward()
+    assert module.char_style_gate.weight.grad.abs().sum() > 0
+
+    legacy_state = module.state_dict()
+    legacy_state.pop('char_style_gate.weight')
+    restored = AllographicModulation(
+        d_model=16, routing_dim=8, vocab_size=20,
+    )
+    restored.load_state_dict(legacy_state, strict=True)
+    torch.testing.assert_close(
+        restored.char_style_gate.weight,
+        torch.zeros_like(restored.char_style_gate.weight),
+    )
 
 
 def test_writer_batches_losses_and_ema_buffers():
@@ -333,7 +376,7 @@ def test_rapid_generator_preserves_conditioning_geometry_and_gradients():
         init='none',
         input_nc=1,
     ).train()
-    style = torch.randn(2, 8, 32, requires_grad=True)
+    style = torch.randn(2, 12, 32, requires_grad=True)
     labels = torch.tensor([[1, 2, 3, 4], [5, 6, 0, 0]])
     lengths = torch.tensor([4, 2])
 

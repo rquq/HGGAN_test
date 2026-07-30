@@ -184,7 +184,8 @@ StyBackbone:
 EncModel:
   style_dim: 32
   in_dim: 256
-  num_style_tokens: 8
+  # One global token plus eleven local allograph/stroke tokens.
+  num_style_tokens: 12
   backbone_channels: [64, 128, 256]
   n_class: 80
   content_grl: 1.0
