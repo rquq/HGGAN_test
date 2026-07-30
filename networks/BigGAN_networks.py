@@ -195,6 +195,12 @@ class Generator(nn.Module):
         self.style_content_mix.reset_stability_parameters()
 
     def forward(self, z, y, y_lens):
+        # Distribution is a reusable sampler container, not an activation
+        # type. Strip its Tensor subclass at the model boundary so its custom
+        # .to() method cannot propagate through G and downstream networks.
+        if type(z) is not torch.Tensor:
+            z = z.as_subclass(torch.Tensor)
+
         # Only the explicit global token may bypass character-level fusion.
         # Local tokens must travel through the aligned fusion path.
         ys = self.bssp(z[:, 0])
@@ -310,20 +316,18 @@ class WidthContextMixer(nn.Module):
             batch, width, 3, self.num_heads, self.head_dim
         ).permute(2, 0, 3, 1, 4)
         query, key, value = qkv.unbind(0)
-        # Use PyTorch's fused attention kernel to avoid materializing the
-        # width-by-width score and probability tensors.  A boolean SDPA mask
-        # keeps exactly the same valid-key semantics as the former masked fill.
-        attention_mask = (
-            valid_mask[:, None, None, :] if valid_mask is not None else None
-        )
-        context = F.scaled_dot_product_attention(
-            query,
-            key,
-            value,
-            attn_mask=attention_mask,
-            dropout_p=0.0,
-            scale=self.scale,
-        )
+        # Keep this explicit instead of relying on fused SDPA: some supported
+        # PyTorch/CUDA combinations select the efficient forward kernel but do
+        # not implement its backward pass. Float32 softmax also keeps AMP
+        # attention probabilities numerically stable.
+        scores = torch.matmul(query, key.transpose(-2, -1)) * self.scale
+        if valid_mask is not None:
+            scores = scores.masked_fill(
+                ~valid_mask[:, None, None, :],
+                torch.finfo(scores.dtype).min,
+            )
+        attention = torch.softmax(scores.float(), dim=-1).to(scores.dtype)
+        context = torch.matmul(attention, value)
         context = context.transpose(1, 2).reshape(batch, width, channels)
         context = self.proj(context)
         if valid_mask is not None:
