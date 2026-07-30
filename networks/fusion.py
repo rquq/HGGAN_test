@@ -148,9 +148,8 @@ class AllographicModulation(nn.Module):
         self.char_routing_emb = nn.Embedding(vocab_size, routing_dim)
         self.context_routing_proj = nn.Linear(d_model, routing_dim)
         self.style_routing_proj = nn.Linear(d_model, routing_dim)
-        # Decode identical writer evidence differently for each character.  The
-        # zero-initialized bounded gain keeps old checkpoints output-compatible
-        # while giving loop/stem-heavy letters their own style interpretation.
+        # Decode identical writer evidence differently for each character.
+        # Zero initialization starts the character gain as an identity mapping.
         self.char_style_norm = nn.LayerNorm(
             routing_dim, elementwise_affine=False
         )
@@ -162,19 +161,6 @@ class AllographicModulation(nn.Module):
         nn.init.normal_(self.mod_proj[-1].weight, 0.0, 0.02)
         nn.init.zeros_(self.mod_proj[-1].bias)
         nn.init.zeros_(self.char_style_gate.weight)
-
-    def _load_from_state_dict(self, state_dict, prefix, local_metadata, strict,
-                              missing_keys, unexpected_keys, error_msgs):
-        # Epoch-9 and older checkpoints predate character-conditioned decoding.
-        # Inject the exact identity initialization so strict weight loading stays
-        # valid and fine-tuning starts from the checkpoint's original function.
-        gate_key = prefix + 'char_style_gate.weight'
-        if gate_key not in state_dict:
-            state_dict[gate_key] = torch.zeros_like(self.char_style_gate.weight)
-        super()._load_from_state_dict(
-            state_dict, prefix, local_metadata, strict, missing_keys,
-            unexpected_keys, error_msgs
-        )
 
     def forward(self, content_seq, local_style_seq, char_ids=None, mask=None):
         local_style_seq = ensure_dim3(local_style_seq)

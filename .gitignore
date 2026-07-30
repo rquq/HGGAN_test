@@ -63,3 +63,8 @@ build/
 Thumbs.db
 .directory
 *~
+
+# Codex-generated local verification artifacts
+/tests/test_training_invariants.py
+/tests/test_main_discriminator_transplant.py
+/.pytest_cache/
