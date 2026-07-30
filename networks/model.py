@@ -113,14 +113,12 @@ class BaseModel(object):
             m_unwrapped = self.unwrap_model(model)
             m_dict = m_unwrapped.state_dict()
             ckpt[name] = m_dict
-            ckpt[type(m_unwrapped).__name__] = m_dict
 
         if hasattr(self, 'models_ema') and self.models_ema:
             for name, model_ema in self.models_ema.items():
                 m_ema_unwrapped = self.unwrap_model(model_ema)
                 m_ema_dict = m_ema_unwrapped.state_dict()
                 ckpt[name + '_EMA'] = m_ema_dict
-                ckpt[type(m_ema_unwrapped).__name__ + '_EMA'] = m_ema_dict
 
         if hasattr(self, 'ema_tracker') and self.ema_tracker is not None:
             ckpt['ema_step'] = self.ema_tracker.step
@@ -369,79 +367,34 @@ class BaseModel(object):
         for name, model in self.models.items():
             if len(modules) > 0 and model not in modules:
                 continue
+            if name not in ckpt_data:
+                raise KeyError(f'Checkpoint is missing required model state: {name}')
             m_unwrapped = self.unwrap_model(model)
-            m_name = type(m_unwrapped).__name__
-            target_key = name if name in ckpt_data else (m_name if m_name in ckpt_data else None)
-            if target_key:
-                try:
-                    m_unwrapped.load_state_dict(ckpt_data[target_key], strict=False)
-                    self.print(f'Loaded weights for {name} using key {target_key}')
-                except Exception as e:
-                    self.print(f'Load {name} ({target_key}) failed: {e}')
-            else:
-                self.print(f'Key {name} / {m_name} not found in checkpoint')
+            m_unwrapped.load_state_dict(ckpt_data[name], strict=True)
+            self.print(f'Loaded strict weights for {name}')
 
         if hasattr(self, 'models_ema') and self.models_ema:
             for name, model_ema in self.models_ema.items():
                 ema_key = name + '_EMA'
-                alt_ema_key = type(self.unwrap_model(self.models.get(name))).__name__ + '_EMA' if name in self.models else None
-                
-                target_key = None
-                if ema_key in ckpt_data:
-                    target_key = ema_key
-                elif alt_ema_key and alt_ema_key in ckpt_data:
-                    target_key = alt_ema_key
-
-                if target_key:
-                    try:
-                        m_ema_unwrapped = self.unwrap_model(model_ema)
-                        m_ema_unwrapped.load_state_dict(ckpt_data[target_key], strict=False)
-                        self.print(f'Loaded EMA weights for {name} using key {target_key}')
-                    except Exception as e:
-                        self.print(f'Load EMA key {target_key} failed: {e}')
-                else:
-                    if name in self.models:
-                        m_unwrapped = self.unwrap_model(self.models[name])
-                        m_ema_unwrapped = self.unwrap_model(model_ema)
-                        m_ema_unwrapped.load_state_dict(m_unwrapped.state_dict())
-                        self.print(f'Initialized EMA weights for {name} from active model')
+                if ema_key not in ckpt_data:
+                    raise KeyError(
+                        f'Checkpoint is missing required EMA state: {ema_key}'
+                    )
+                m_ema_unwrapped = self.unwrap_model(model_ema)
+                m_ema_unwrapped.load_state_dict(
+                    ckpt_data[ema_key], strict=True
+                )
+                self.print(f'Loaded strict EMA weights for {name}')
 
         for key in self.optimizers.keys():
             opt_key = 'OPT.' + key
             if opt_key in ckpt_data:
-                try:
-                    self.optimizers[key].load_state_dict(ckpt_data[opt_key])
-                    for state in self.optimizers[key].state.values():
-                        for k_s, v_s in state.items():
-                            if isinstance(v_s, torch.Tensor):
-                                state[k_s] = v_s.to(self.device)
-                    self.print(f'Loaded optimizer state for OPT.{key}')
-                except Exception as e:
-                    # Fallback for legacy checkpoints: verify shape matching for each parameter
-                    try:
-                        import copy
-                        adapted_opt_dict = copy.deepcopy(ckpt_data[opt_key])
-                        curr_params = self.optimizers[key].param_groups[0]['params']
-                        saved_param_ids = adapted_opt_dict['param_groups'][0]['params']
-                        adapted_opt_dict['param_groups'][0]['params'] = list(range(len(curr_params)))
-                        new_state = {}
-                        for idx, p_curr in enumerate(curr_params):
-                            curr_shape = tuple(p_curr.shape)
-                            if idx < len(saved_param_ids):
-                                p_id = saved_param_ids[idx]
-                                if p_id in ckpt_data[opt_key].get('state', {}):
-                                    item = ckpt_data[opt_key]['state'][p_id]
-                                    if 'exp_avg' in item and tuple(item['exp_avg'].shape) == curr_shape:
-                                        new_state[idx] = item
-                        adapted_opt_dict['state'] = new_state
-                        self.optimizers[key].load_state_dict(adapted_opt_dict)
-                        for state in self.optimizers[key].state.values():
-                            for k_s, v_s in state.items():
-                                if isinstance(v_s, torch.Tensor):
-                                    state[k_s] = v_s.to(self.device)
-                        self.print(f'Loaded adapted optimizer state for OPT.{key} (legacy checkpoint compatibility)')
-                    except Exception as inner_e:
-                        self.print(f'Load OPT.{key} failed: {inner_e}')
+                self.optimizers[key].load_state_dict(ckpt_data[opt_key])
+                for state in self.optimizers[key].state.values():
+                    for state_key, value in state.items():
+                        if isinstance(value, torch.Tensor):
+                            state[state_key] = value.to(self.device)
+                self.print(f'Loaded strict optimizer state for OPT.{key}')
 
         if hasattr(self, 'lr_schedulers') and self.lr_schedulers:
             for key in self.lr_schedulers.keys():

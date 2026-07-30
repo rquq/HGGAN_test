@@ -220,26 +220,6 @@ class StyleEncoder(nn.Module):
         nn.init.constant_(self.logvar.weight, 0.)
         nn.init.constant_(self.logvar.bias, -10.)
 
-    def _load_from_state_dict(self, state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs):
-        proj_keys = [k for k in state_dict.keys() if k.startswith(prefix + 'proj_layers.')]
-        if len(proj_keys) > 0:
-            prefix_len = len(prefix)
-            layer_indices = sorted(list(set(
-                int(k[prefix_len:].split('.')[1])
-                for k in proj_keys
-                if k[prefix_len:].startswith('proj_layers.') and k[prefix_len:].split('.')[1].isdigit()
-            )))
-            if self.proj_layers is None or len(self.proj_layers) != len(layer_indices):
-                layers = []
-                for idx in layer_indices:
-                    w_key = f"{prefix}proj_layers.{idx}.weight"
-                    if w_key in state_dict:
-                        in_ch = state_dict[w_key].shape[1]
-                        layers.append(nn.Conv2d(in_ch, self._in_dim, kernel_size=1))
-                if len(layers) > 0:
-                    self.proj_layers = nn.ModuleList(layers)
-        super()._load_from_state_dict(state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs)
-
     def _build_proj_layers(self, all_feats):
         """Build projection Conv2d layers matching the actual backbone feature channels."""
         if self.proj_layers is not None and len(self.proj_layers) == len(all_feats):
