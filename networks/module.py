@@ -245,21 +245,6 @@ class StyleEncoder(nn.Module):
         nn.init.constant_(self.logvar.weight, 0.)
         nn.init.constant_(self.logvar.bias, -10.)
 
-    def _load_from_state_dict(self, state_dict, prefix, local_metadata, strict,
-                              missing_keys, unexpected_keys, error_msgs):
-        query_key = prefix + 'style_queries'
-        if query_key in state_dict and state_dict[query_key].shape != self.style_queries.shape:
-            old_queries = state_dict[query_key]
-            adapted = self.style_queries.detach().clone()
-            count = min(old_queries.size(1), adapted.size(1))
-            if count:
-                adapted[:, :count].copy_(old_queries[:, :count])
-            state_dict[query_key] = adapted
-        super()._load_from_state_dict(
-            state_dict, prefix, local_metadata, strict, missing_keys,
-            unexpected_keys, error_msgs
-        )
-
     @staticmethod
     def _width_mask(img_len, source_width, target_width):
         if img_len is None:
