@@ -108,7 +108,6 @@ class BaseModel(object):
             m_unwrapped = self.unwrap_model(model)
             m_dict = m_unwrapped.state_dict()
             ckpt[name] = m_dict
-            ckpt[type(m_unwrapped).__name__] = m_dict
 
         for key, optim in self.optimizers.items():
             ckpt['OPT.' + key] = optim.state_dict()
@@ -353,30 +352,21 @@ class BaseModel(object):
         for name, model in self.models.items():
             if len(modules) > 0 and model not in modules:
                 continue
+            if name not in ckpt_data:
+                raise KeyError(f'Checkpoint is missing required model state: {name}')
             m_unwrapped = self.unwrap_model(model)
-            m_name = type(m_unwrapped).__name__
-            target_key = name if name in ckpt_data else (m_name if m_name in ckpt_data else None)
-            if target_key:
-                try:
-                    m_unwrapped.load_state_dict(ckpt_data[target_key], strict=False)
-                    self.print(f'Loaded weights for {name} using key {target_key}')
-                except Exception as e:
-                    self.print(f'Load {name} ({target_key}) failed: {e}')
-            else:
-                self.print(f'Key {name} / {m_name} not found in checkpoint')
+            m_unwrapped.load_state_dict(ckpt_data[name], strict=True)
+            self.print(f'Loaded strict weights for {name}')
 
         for key in self.optimizers.keys():
             opt_key = 'OPT.' + key
             if opt_key in ckpt_data:
-                try:
-                    self.optimizers[key].load_state_dict(ckpt_data[opt_key])
-                    for state in self.optimizers[key].state.values():
-                        for k_s, v_s in state.items():
-                            if isinstance(v_s, torch.Tensor):
-                                state[k_s] = v_s.to(self.device)
-                    self.print(f'Loaded optimizer state for OPT.{key}')
-                except Exception as e:
-                    self.print(f'Load OPT.{key} failed: {e}')
+                self.optimizers[key].load_state_dict(ckpt_data[opt_key])
+                for state in self.optimizers[key].state.values():
+                    for state_key, value in state.items():
+                        if isinstance(value, torch.Tensor):
+                            state[state_key] = value.to(self.device)
+                self.print(f'Loaded strict optimizer state for OPT.{key}')
 
         self._ckpt_sched_data = {}
         for key in getattr(self, 'optimizers', {}).keys():
