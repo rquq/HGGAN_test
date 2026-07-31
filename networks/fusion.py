@@ -130,7 +130,7 @@ class AllographicModulation(nn.Module):
     """Route local style tokens to characters and predict bounded affine detail."""
 
     def __init__(self, d_model, routing_dim=16, vocab_size=256,
-                 modulation_limit=0.5, character_gain_limit=0.5):
+                 modulation_limit=0.5, character_gain_limit=0.25):
         super().__init__()
         self.vocab_size = vocab_size
         self.modulation_limit = float(modulation_limit)

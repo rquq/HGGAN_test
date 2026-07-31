@@ -17,10 +17,12 @@ inference:
 
 training:
   dset_split: 'trnval'
-  epochs: 36
+  # Hold the learning rate through the empirically strong epoch-15 region,
+  # then use the remaining run for lower-LR refinement.
+  epochs: 32
   lr_policy: 'linear'
   start_decay_epoch: 12
-  n_epochs_decay: 24
+  n_epochs_decay: 20
   batch_size: 8
   eval_batch_size: 12
   sample_nrow: 4
@@ -191,8 +193,7 @@ StyBackbone:
 EncModel:
   style_dim: 32
   in_dim: 256
-  # One global token plus eleven local allograph/stroke tokens.
-  num_style_tokens: 12
+  num_style_tokens: 8
   backbone_channels: [64, 128, 256]
   n_class: 80
   content_grl: 1.0
