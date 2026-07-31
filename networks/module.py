@@ -15,12 +15,12 @@ class HeavyCNNAttention(nn.Module):
         self.conv_dilated1 = nn.Conv1d(in_dim, in_dim, kernel_size=3, padding=2, dilation=2)
         self.conv_dilated2 = nn.Conv1d(in_dim, in_dim, kernel_size=3, padding=4, dilation=4)
         self.conv_dilated3 = nn.Conv1d(in_dim, in_dim, kernel_size=3, padding=8, dilation=8)
-        
+
         # 2. Local detail branch (depthwise and small convolutions to capture fine-grained glyph strokes and curves)
         self.local_conv1 = nn.Conv1d(in_dim, in_dim, kernel_size=3, padding=1)
         self.local_conv2 = nn.Conv1d(in_dim, in_dim, kernel_size=5, padding=2, groups=in_dim)
         self.local_fuse = nn.Conv1d(in_dim * 2, in_dim, kernel_size=1)
-        
+
         # 3. Global bottleneck fusion
         self.fuse = nn.Sequential(
             nn.Conv1d(in_dim * 4, in_dim, kernel_size=1),
@@ -28,7 +28,7 @@ class HeavyCNNAttention(nn.Module):
             nn.SiLU(),
             nn.Conv1d(in_dim, in_dim, kernel_size=3, padding=1)
         )
-        
+
         # 4. Gating layers to dynamically fuse local and global features based on allographic complexity
         self.gate_global = nn.Sequential(
             nn.Conv1d(in_dim, in_dim, kernel_size=1),
@@ -38,7 +38,7 @@ class HeavyCNNAttention(nn.Module):
             nn.Conv1d(in_dim, in_dim, kernel_size=1),
             nn.Sigmoid()
         )
-        
+
         # 5. Channel Squeeze-and-Excitation for focused style extraction
         self.se = nn.Sequential(
             nn.AdaptiveAvgPool1d(1),
@@ -48,31 +48,31 @@ class HeavyCNNAttention(nn.Module):
             nn.Sigmoid()
         )
         self.gamma = nn.Parameter(torch.zeros(1))
-        
+
     def forward(self, x, **kwargs):
         # Global context mapping
         x1 = F.silu(self.conv1(x))
         x2 = F.silu(self.conv_dilated1(x))
         x3 = F.silu(self.conv_dilated2(x))
         x4 = F.silu(self.conv_dilated3(x))
-        
+
         fused_global = torch.cat([x1, x2, x3, x4], dim=1)
         out_global = self.fuse(fused_global)
-        
+
         # Local context mapping
         l1 = F.silu(self.local_conv1(x))
         l2 = F.silu(self.local_conv2(x))
         out_local = self.local_fuse(torch.cat([l1, l2], dim=1))
-        
+
         # Dynamic Gated Fusion of Global and Local contexts
         g_g = self.gate_global(out_global)
         g_l = self.gate_local(out_local)
         out_fused = out_global * g_g + out_local * g_l
-        
+
         # Squeeze-and-Excitation gating
         scale = self.se(out_fused)
         out = out_fused * scale
-        
+
         return x + self.gamma * out
 
 
@@ -148,7 +148,7 @@ def get_2d_sinusoidal_embeddings(height, width, dim, device):
     pe = torch.zeros(height, width, dim, device=device)
     d_h = dim // 2
     d_w = dim - d_h
-    
+
     # Height embeddings
     div_term_h = torch.exp(torch.arange(0, d_h, 2, device=device).float() * -(np.log(10000.0) / d_h))
     pos_h = torch.arange(0, height, device=device).float().unsqueeze(1)
@@ -158,7 +158,7 @@ def get_2d_sinusoidal_embeddings(height, width, dim, device):
         pe_h[:, 1::2] = torch.cos(pos_h * div_term_h)
     else:
         pe_h[:, 1::2] = torch.cos(pos_h * div_term_h[:d_h//2])
-        
+
     # Width embeddings
     div_term_w = torch.exp(torch.arange(0, d_w, 2, device=device).float() * -(np.log(10000.0) / d_w))
     pos_w = torch.arange(0, width, device=device).float().unsqueeze(1)
@@ -168,7 +168,7 @@ def get_2d_sinusoidal_embeddings(height, width, dim, device):
         pe_w[:, 1::2] = torch.cos(pos_w * div_term_w)
     else:
         pe_w[:, 1::2] = torch.cos(pos_w * div_term_w[:d_w//2])
-        
+
     pe[:, :, :d_h] = pe_h.unsqueeze(1).expand(-1, width, -1)
     pe[:, :, d_h:] = pe_w.unsqueeze(0).expand(height, -1, -1)
     return pe
@@ -227,9 +227,14 @@ class StyleEncoder(nn.Module):
 
         # Token zero is an explicit global style summary. The remaining compact
         # query set captures local stroke details without a 32x32 content-rich code.
-        self.style_queries = nn.Parameter(
-            torch.randn(1, num_style_tokens - 1, in_dim) * 0.02
-        )
+        query_count = num_style_tokens - 1
+        style_query_init = torch.empty(1, query_count, in_dim)
+        if query_count:
+            # Orthogonal rows start as distinct local stroke slots while matching
+            # the old N(0, 0.02) per-component scale in expectation.
+            nn.init.orthogonal_(style_query_init[0])
+            style_query_init.mul_(0.02 * (in_dim ** 0.5))
+        self.style_queries = nn.Parameter(style_query_init)
         self.style_cross_attn = nn.MultiheadAttention(
             embed_dim=in_dim, num_heads=4, batch_first=True
         )

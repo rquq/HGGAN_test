@@ -17,10 +17,12 @@ inference:
 
 training:
   dset_split: 'trnval'
-  epochs: 36
+  # Hold the learning rate through the empirically strong epoch-15 region,
+  # then use the remaining run for lower-LR refinement.
+  epochs: 32
   lr_policy: 'linear'
   start_decay_epoch: 12
-  n_epochs_decay: 24
+  n_epochs_decay: 20
   batch_size: 8
   eval_batch_size: 12
   sample_nrow: 4

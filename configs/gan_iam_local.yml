@@ -10,16 +10,17 @@ char_width: 32
 
 training:
   dset_split: 'trnval'
-  epochs: 70
+  # Batch 2 uses more, noisier updates per epoch; scale LR and shorten the run.
+  epochs: 32
   lr_policy: 'linear'
-  start_decay_epoch: 25
-  n_epochs_decay: 46
+  start_decay_epoch: 12
+  n_epochs_decay: 20
   batch_size: 2
   eval_batch_size: 2
   sample_nrow: 3
   # optimization:
-  lr: 2.0e-4
-  d_lr: 1.0e-4
+  lr: 1.25e-4
+  d_lr: 6.25e-5
   adam_b1: 0.5
   adam_b2: 0.999
   # sampling and saving

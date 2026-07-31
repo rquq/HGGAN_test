@@ -315,65 +315,6 @@ class PatchSampler(object):
             return patches
 
 
-def extract_patches_2d(img,patch_shape,step=[1.0,1.0],batch_first=False):
-    patch_H, patch_W = patch_shape[0], patch_shape[1]
-    if(img.size(2)<patch_H):
-        num_padded_H_Top = (patch_H - img.size(2))//2
-        num_padded_H_Bottom = patch_H - img.size(2) - num_padded_H_Top
-        padding_H = nn.ConstantPad2d((0,0,num_padded_H_Top,num_padded_H_Bottom),0)
-        img = padding_H(img)
-    if(img.size(3)<patch_W):
-        num_padded_W_Left = (patch_W - img.size(3))//2
-        num_padded_W_Right = patch_W - img.size(3) - num_padded_W_Left
-        padding_W = nn.ConstantPad2d((num_padded_W_Left,num_padded_W_Right,0,0),0)
-        img = padding_W(img)
-    step_int = [0,0]
-    step_int[0] = int(patch_H*step[0]) if(isinstance(step[0], float)) else step[0]
-    step_int[1] = int(patch_W*step[1]) if(isinstance(step[1], float)) else step[1]
-    patches_fold_H = img.unfold(2, patch_H, step_int[0])
-    if((img.size(2) - patch_H) % step_int[0] != 0):
-        patches_fold_H = torch.cat((patches_fold_H,img[:,:,-patch_H:,].permute(0,1,3,2).unsqueeze(2)),dim=2)
-    patches_fold_HW = patches_fold_H.unfold(3, patch_W, step_int[1])
-    if((img.size(3) - patch_W) % step_int[1] != 0):
-        patches_fold_HW = torch.cat((patches_fold_HW,patches_fold_H[:,:,:,-patch_W:,:].permute(0,1,2,4,3).unsqueeze(3)),dim=3)
-    patches = patches_fold_HW.permute(2,3,0,1,4,5)
-    patches = patches.reshape(-1,img.size(0),img.size(1),patch_H,patch_W)
-    if(batch_first):
-        patches = patches.permute(1,0,2,3,4)
-    return patches
-
-def extract_all_patches(org_imgs, org_img_lens, block_size=32, step=8, plot=False):
-    img_h = org_imgs.size(-2)
-    n_patch_row = (img_h - block_size) // step + 1
-    patches = extract_patches_2d(org_imgs, (block_size, block_size), step=[step, step], batch_first=True)
-    patch_lens = torch.div(org_img_lens - block_size, step, rounding_mode='trunc') + 1
-    mask = _len2mask(patch_lens, patches.size(1) // n_patch_row).repeat(1, n_patch_row).bool()
-    patches = patches.masked_select(mask.view(*mask.size(), 1, 1, 1))
-    patches = patches.view(-1, 1, block_size, block_size)
-    if plot:
-        idx = np.random.randint(1, org_imgs.size(0))
-
-        import matplotlib.pyplot as plt
-        from itertools import accumulate
-        from lib.utils import draw_image
-
-        plt.subplot(211)
-        plt.imshow(org_imgs[idx, 0, :, :org_img_lens[idx].cpu().detach().numpy()].cpu().detach().numpy(), cmap='binary')
-        # plt.axis('off')
-        plt.subplot(212)
-        sum_patch_lens = list(accumulate(patch_lens.cpu().detach().numpy() * n_patch_row))
-        print(sum_patch_lens)
-        patch_imgs = []
-        for i in range(sum_patch_lens[idx - 1], sum_patch_lens[idx]):
-            patch_imgs.append(patches[i])
-        img = draw_image(1 - torch.stack(patch_imgs, dim=0).repeat(1, 3, 1, 1).cpu(), nrow=patch_lens[idx],
-                         normalize=True)
-        plt.imshow(img, cmap='binary')
-        plt.axis('off')
-        plt.show()
-    return patches
-
-
 def adaptive_crop_count(valid_width, patch_size=32, min_crops=4, max_crops=8):
     """Choose bounded local coverage proportional to the valid word width."""
     if patch_size < 1 or min_crops < 1 or max_crops < min_crops:

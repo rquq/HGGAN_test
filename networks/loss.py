@@ -105,7 +105,7 @@ class CXLoss(nn.Module):
         relative_dist = self.calc_relative_distances(raw_dist, axis=1)
 
         CX = self.calc_CX(relative_dist, axis=1)
-        
+
         # Take max over spatial dimensions of Inference feature map (dim=2, which is P_I)
         CX_max = CX.max(dim=2)[0]
         CX_mean = torch.mean(CX_max, dim=1)
@@ -213,5 +213,3 @@ def supervised_contrastive_style_loss(styles, writer_ids, temperature=0.1):
         / positive_mask.sum(dim=1).clamp_min(1)
     )
     return -mean_positive_log_prob[valid_anchors].mean()
-
-

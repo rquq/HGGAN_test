@@ -264,7 +264,7 @@ class BaseModel(object):
             rng = getattr(self, '_restored_rng_state', None)
         if not rng:
             return
-        
+
         if 'torch' in rng and rng['torch'] is not None:
             try:
                 torch_rng = rng['torch'].cpu().to(torch.uint8) if isinstance(rng['torch'], torch.Tensor) else rng['torch']
@@ -758,17 +758,17 @@ class AdversarialModel(BaseModel):
                 block_idx = InceptionV3.BLOCK_INDEX_BY_DIM[2048]
                 if self.inception_model is None:
                     self.inception_model = InceptionV3([block_idx]).to(self.device).eval()
-                self.valid_real_stats = calculate_activation_statistics(eval_dloader, len(eval_dloader), 
-                                                                       self.inception_model, self.opt.valid.dims, 
+                self.valid_real_stats = calculate_activation_statistics(eval_dloader, len(eval_dloader),
+                                                                       self.inception_model, self.opt.valid.dims,
                                                                        self.device, crop=not test_stage)
-                                                                       
+
             from metric.val_metrics import calculate_hwd_score
 
             if test_stage:
-                res = calculate_fid_kid_is(self.opt.valid, eval_dloader, get_cached_generator(), n_rand_repeat, 
+                res = calculate_fid_kid_is(self.opt.valid, eval_dloader, get_cached_generator(), n_rand_repeat,
                                          self.device, real_stats=self.valid_real_stats, inceptionV3_model=self.inception_model)
             else:
-                res = calculate_fid_kid_is(self.opt.valid, eval_dloader, get_cached_generator(), n_rand_repeat, 
+                res = calculate_fid_kid_is(self.opt.valid, eval_dloader, get_cached_generator(), n_rand_repeat,
                                          self.device, crop=True, real_stats=self.valid_real_stats, inceptionV3_model=self.inception_model)
 
             if test_stage:
@@ -800,7 +800,7 @@ class AdversarialModel(BaseModel):
                             for i in range(imgs.size(0)):
                                 real_authors_list.append(str(wids[i].item()))
                         self.valid_real_hwd_dataset = ImageListDataset(real_imgs_list, real_authors_list)
-                    
+
                     from metric.val_metrics import HWDScore
                     hwd_scorer = HWDScore(batchsize=64).to(self.device)
                     self.valid_real_hwd_features = hwd_scorer.digest(self.valid_real_hwd_dataset)
@@ -817,7 +817,7 @@ class AdversarialModel(BaseModel):
                 should_run_cmmd = test_stage or (current_epoch is None)
                 if not should_run_cmmd:
                     should_run_cmmd = (current_epoch % every_n == 0)
-                    
+
                 if should_run_cmmd:
                     from metric.val_metrics import calculate_cmmd_score, compute_real_embeddings
                     if not hasattr(self, 'cmmd_embedding_model') or self.cmmd_embedding_model is None:
@@ -844,9 +844,9 @@ class AdversarialModel(BaseModel):
                             except Exception as e:
                                 self.print(f"Could not save real CMMD embeddings cache: {e}")
                     cmmd_val = calculate_cmmd_score(
-                        eval_dloader, 
-                        get_cached_generator(), 
-                        n_rand_repeat, 
+                        eval_dloader,
+                        get_cached_generator(),
+                        n_rand_repeat,
                         self.device,
                         real_embeddings=self.real_cmmd_embeddings,
                         embedding_model=self.cmmd_embedding_model
@@ -868,7 +868,7 @@ class AdversarialModel(BaseModel):
         # Use the already loaded recognizer from self.models instead of creating a new one
         # to avoid redundant memory allocation and potential OOM.
         recognizer = self.unwrap_model(self.models.R)
-        
+
         ctc_len_scale = recognizer.len_scale
         char_trans = 0
         total_chars = 0
@@ -1200,7 +1200,7 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                         branchname = folder_branch
                 if not branchname:
                     branchname = 'random_crop_recog'
-                
+
                 run_name = f"{branchname}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
 
                 wandb_key = os.environ.get('WANDB_API_KEY')
@@ -1401,7 +1401,7 @@ class GlobalLocalAdversarialModel(AdversarialModel):
             for i, batch in enumerate(self.train_loader):
                 if epoch == start_epoch and i < skip_batches:
                     continue
-                
+
                 if _should_restore_rng:
                     self.restore_rng_state()
                     _should_restore_rng = False
@@ -1461,12 +1461,12 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                 fake_img_lens = fake_lb_lens * self.opt.char_width
                 style_img_lens = fake_lb_lens * self.opt.char_width
                 recn_img_lens = real_lb_lens * self.opt.char_width
-                
+
                 # Batch forward all generated types through D to avoid multiple GPU kernel launches
                 d_fake_all = self.models.D(cat_fake_imgs.detach(), cat_fake_img_lens, cat_fake_lb_lens)
                 d_fake, d_style, d_recn = torch.chunk(d_fake_all, 3, dim=0)
-                fake_disc_loss = (torch.mean(F.relu(1.0 + d_fake)) + 
-                                  torch.mean(F.relu(1.0 + d_style)) + 
+                fake_disc_loss = (torch.mean(F.relu(1.0 + d_fake)) +
+                                  torch.mean(F.relu(1.0 + d_style)) +
                                   torch.mean(F.relu(1.0 + d_recn))) / 3
 
                 # Matched adaptive crop policy for every generated path.
@@ -1559,8 +1559,7 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                     self.z.sample_()
                     z_in = self.z
 
-                    # Keep style encoder inputs clean as masking is applied strictly to local patches
-                    masking_mode = getattr(self.opt.training, 'masking_mode', 'none')
+                    # Keep style encoder inputs clean; masking is local-critic only.
                     if self.vae_mode:
                         (enc_z, mu, logvar), real_img_feats = self.models.E(
                             style_refs, style_ref_lens, self.models.B,
@@ -1730,7 +1729,9 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                     self.averager_meters.update('g_total', g_loss.item())
                     self.averager_meters.update('g_adv', g_adv.item())
                     self.averager_meters.update('g_adv_global', adv_loss.item())
-                    self.averager_meters.update('g_adv_patch', weighted_adv_loss_patch.item())
+                    self.averager_meters.update(
+                        'g_adv_patch', weighted_adv_loss_patch.item()
+                    )
                     self.averager_meters.update('g_ctc', g_ctc.item())
                     self.averager_meters.update('g_ctc_rand', fake_ctc_loss_rand.item())
                     self.averager_meters.update('g_ctc_style', fake_ctc_loss_style.item())
@@ -1839,14 +1840,14 @@ class GlobalLocalAdversarialModel(AdversarialModel):
 
                 eval_epoch_val = self.opt.training.get('eval_epoch_val', 0.5)
                 save_epoch_val = self.opt.training.get('save_epoch_val', 1.0)
-                
+
                 eval_interval_iters = max(1, int(eval_epoch_val * len(self.train_loader)))
                 save_interval_iters = max(1, int(save_epoch_val * len(self.train_loader)))
-                
+
                 global_iter = (epoch - 1) * len(self.train_loader) + (i + 1)
                 is_eval = global_iter % eval_interval_iters == 0
                 is_save = global_iter % save_interval_iters == 0
-                
+
                 if getattr(self, 'is_resumed_start', False):
                     is_eval = False
                     self.is_resumed_start = False

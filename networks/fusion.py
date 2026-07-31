@@ -130,11 +130,13 @@ class AllographicModulation(nn.Module):
     """Route local style tokens to characters and predict bounded affine detail."""
 
     def __init__(self, d_model, routing_dim=16, vocab_size=256,
-                 modulation_limit=0.5):
+                 modulation_limit=0.5, character_gain_limit=0.25):
         super().__init__()
         self.vocab_size = vocab_size
         self.modulation_limit = float(modulation_limit)
+        self.character_gain_limit = float(character_gain_limit)
         self.warned_out_of_vocab = False
+        self.checked_char_range = False
         self.q_proj = nn.Linear(d_model, d_model)
         self.k_proj = nn.Linear(d_model, d_model)
         self.v_proj = nn.Linear(d_model, d_model)
@@ -146,12 +148,19 @@ class AllographicModulation(nn.Module):
         self.char_routing_emb = nn.Embedding(vocab_size, routing_dim)
         self.context_routing_proj = nn.Linear(d_model, routing_dim)
         self.style_routing_proj = nn.Linear(d_model, routing_dim)
+        # Decode identical writer evidence differently for each character.
+        # Zero initialization starts the character gain as an identity mapping.
+        self.char_style_norm = nn.LayerNorm(
+            routing_dim, elementwise_affine=False
+        )
+        self.char_style_gate = nn.Linear(routing_dim, d_model, bias=False)
         self.reset_stability_parameters()
 
     def reset_stability_parameters(self):
         # Identity-like but nonzero: all routing layers receive gradients immediately.
         nn.init.normal_(self.mod_proj[-1].weight, 0.0, 0.02)
         nn.init.zeros_(self.mod_proj[-1].bias)
+        nn.init.zeros_(self.char_style_gate.weight)
 
     def forward(self, content_seq, local_style_seq, char_ids=None, mask=None):
         local_style_seq = ensure_dim3(local_style_seq)
@@ -162,13 +171,20 @@ class AllographicModulation(nn.Module):
         value = self.v_proj(local_style_seq)
         scores = torch.matmul(query, key.transpose(-2, -1)) / (d_model ** 0.5)
 
+        char_query = None
         if char_ids is not None:
-            if not self.warned_out_of_vocab and (char_ids >= self.vocab_size).any():
-                self.warned_out_of_vocab = True
-                print(
-                    f'[Warning] Character ID exceeds vocab_size={self.vocab_size}; '
-                    f'clamping maximum {char_ids.max().item()}.'
-                )
+            # Configuration guarantees the range in normal training. Check once
+            # for diagnostics instead of synchronizing GPU -> CPU every G pass.
+            if not self.checked_char_range:
+                min_char = int(char_ids.detach().min().item())
+                max_char = int(char_ids.detach().max().item())
+                self.checked_char_range = True
+                if min_char < 0 or max_char >= self.vocab_size:
+                    self.warned_out_of_vocab = True
+                    print(
+                        f'[Warning] Character ID range [{min_char}, {max_char}] '
+                        f'exceeds vocab_size={self.vocab_size}; clamping.'
+                    )
             char_ids = char_ids.clamp(0, self.vocab_size - 1)
             char_query = (
                 self.char_routing_emb(char_ids)
@@ -182,6 +198,11 @@ class AllographicModulation(nn.Module):
 
         attention = torch.softmax(scores, dim=-1)
         character_style = torch.matmul(attention, value)
+        if char_query is not None:
+            character_gain = self.character_gain_limit * torch.tanh(
+                self.char_style_gate(self.char_style_norm(char_query))
+            )
+            character_style = character_style * (1.0 + character_gain)
         scale, shift = self.mod_proj(character_style).chunk(2, dim=-1)
         # Bounded affine parameters prevent one routing error from exploding G input.
         scale = self.modulation_limit * torch.tanh(scale)

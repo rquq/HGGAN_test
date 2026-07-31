@@ -56,11 +56,10 @@ if __name__ == '__main__':
 
     os.makedirs(os.path.dirname(os.path.abspath(dst)), exist_ok=True)
     torch.save(new_state_dict, dst)
-    
+
     orig_size_mb = os.path.getsize(ckpt) / (1024 * 1024)
     dst_size_mb = os.path.getsize(dst) / (1024 * 1024)
     print(f"Deployment Checkpoint Summary:")
     print(f" - Source Checkpoint : {ckpt} ({orig_size_mb:.2f} MB)")
     print(f" - Saved Checkpoint  : {dst} ({dst_size_mb:.2f} MB)")
     print(f" - Extracted Modules : {extracted_keys}")
-

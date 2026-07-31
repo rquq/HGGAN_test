@@ -163,7 +163,7 @@ def get_lexicon(path, true_alphabet, max_length=20, ignore_case=True):
 
 def word_capitalize(word):
     """Capitalize the first character of a word in a Unicode-safe way.
-    
+
     Works correctly with any script (Latin, Cyrillic, Arabic, CJK, etc.).
     For scripts without case distinctions the word is returned unchanged.
     """
