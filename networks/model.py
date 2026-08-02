@@ -1,3 +1,5 @@
+import csv
+import io
 import torch, os
 import wandb
 from PIL import Image
@@ -60,6 +62,14 @@ def seed_worker(worker_id):
 
 
 class BaseModel(object):
+    # Keep this schema stable across runs and configurations. Metrics that are
+    # disabled (or not scheduled for a particular epoch) remain empty in CSV.
+    EVAL_METRIC_COLUMNS = (
+        'epoch',
+        'fid', 'kid', 'hwd', 'cmmd', 'cer', 'wer',
+        'is_gen', 'is_org', 'psnr', 'mssim', 'wier',
+    )
+
     def __init__(self, opt, log_root='./'):
         self.opt = opt
         self.local_rank = getattr(opt, 'local_rank', -1)
@@ -70,6 +80,8 @@ class BaseModel(object):
         self.log_root = log_root
         self.logger = None
         self.is_resumed_start = False
+        self.eval_metric_columns = list(self.EVAL_METRIC_COLUMNS)
+        self.eval_history = []
         alphabet_key = 'rimes_word' if opt.dataset.startswith('rimes') else 'all'
         self.alphabet = Alphabets[alphabet_key]
         self.label_converter = strLabelConverter(alphabet_key)
@@ -134,6 +146,135 @@ class BaseModel(object):
             self.print(extra)
         self.print('=' * 20)
 
+    @staticmethod
+    def _eval_scalar(value):
+        """Convert metric scalars to checkpoint/CSV-safe Python values."""
+        if value is None:
+            return ''
+        if isinstance(value, torch.Tensor):
+            if value.numel() != 1:
+                return str(value.detach().cpu().tolist())
+            value = value.detach().cpu().item()
+        elif isinstance(value, np.ndarray):
+            if value.size != 1:
+                return str(value.tolist())
+            value = value.reshape(-1)[0].item()
+        elif isinstance(value, np.generic):
+            value = value.item()
+        if isinstance(value, (bool, int, float, str)):
+            return value
+        return str(value)
+
+    @staticmethod
+    def _eval_epoch_key(epoch):
+        try:
+            return ('number', round(float(epoch), 10))
+        except (TypeError, ValueError):
+            return ('text', str(epoch))
+
+    @staticmethod
+    def _eval_epoch_sort_key(epoch):
+        try:
+            return (0, float(epoch))
+        except (TypeError, ValueError):
+            return (1, str(epoch))
+
+    def _eval_csv_text(self):
+        stream = io.StringIO(newline='')
+        writer = csv.DictWriter(
+            stream,
+            fieldnames=self.eval_metric_columns,
+            extrasaction='ignore',
+            lineterminator='\n',
+        )
+        writer.writeheader()
+        for row in self.eval_history:
+            writer.writerow({key: row.get(key, '') for key in self.eval_metric_columns})
+        return stream.getvalue()
+
+    def write_eval_metrics_csv(self):
+        """Atomically materialize the complete validation history in the run root."""
+        if self.local_rank > 0 or not self.log_root:
+            return
+        os.makedirs(self.log_root, exist_ok=True)
+        csv_path = os.path.join(self.log_root, 'eval_metrics.csv')
+        tmp_path = csv_path + '.tmp'
+        with open(tmp_path, 'w', newline='', encoding='utf-8') as handle:
+            handle.write(self._eval_csv_text())
+        os.replace(tmp_path, csv_path)
+
+    def record_eval_metrics(self, epoch, scores):
+        """Insert or replace one epoch, then persist the complete CSV ledger."""
+        if self.local_rank > 0:
+            return
+        row = {key: '' for key in self.eval_metric_columns}
+        row['epoch'] = self._eval_scalar(epoch)
+
+        extra_columns = sorted(
+            key for key in scores.keys()
+            if key != 'epoch' and key not in self.eval_metric_columns
+        )
+        if extra_columns:
+            self.eval_metric_columns.extend(extra_columns)
+            for old_row in self.eval_history:
+                for key in extra_columns:
+                    old_row.setdefault(key, '')
+            for key in extra_columns:
+                row[key] = ''
+
+        for key, value in scores.items():
+            if key != 'epoch':
+                row[key] = self._eval_scalar(value)
+
+        epoch_key = self._eval_epoch_key(row['epoch'])
+        self.eval_history = [
+            old_row for old_row in self.eval_history
+            if self._eval_epoch_key(old_row.get('epoch', '')) != epoch_key
+        ]
+        self.eval_history.append(row)
+        self.eval_history.sort(
+            key=lambda item: self._eval_epoch_sort_key(item.get('epoch', ''))
+        )
+        self.write_eval_metrics_csv()
+
+    def restore_eval_history(self, ckpt_data):
+        """Restore the embedded ledger and recreate it under the new run root."""
+        restored_columns = ckpt_data.get('eval_metric_columns', [])
+        self.eval_metric_columns = list(self.EVAL_METRIC_COLUMNS)
+        for key in restored_columns:
+            if key not in self.eval_metric_columns:
+                self.eval_metric_columns.append(key)
+
+        restored_history = ckpt_data.get('eval_history', None)
+        if restored_history is None:
+            csv_text = ckpt_data.get('eval_metrics_csv', '')
+            if csv_text:
+                restored_history = list(csv.DictReader(io.StringIO(csv_text)))
+        if not isinstance(restored_history, (list, tuple)):
+            restored_history = []
+
+        self.eval_history = []
+        for restored_row in restored_history:
+            if not isinstance(restored_row, dict) or 'epoch' not in restored_row:
+                continue
+            for key in restored_row:
+                if key not in self.eval_metric_columns:
+                    self.eval_metric_columns.append(key)
+            row = {key: '' for key in self.eval_metric_columns}
+            for key, value in restored_row.items():
+                row[key] = self._eval_scalar(value)
+            self.eval_history.append(row)
+
+        self.eval_history.sort(
+            key=lambda item: self._eval_epoch_sort_key(item.get('epoch', ''))
+        )
+        self.write_eval_metrics_csv()
+        if self.eval_history:
+            self.print(
+                f"Restored {len(self.eval_history)} evaluation rows to "
+                f"{os.path.join(self.log_root, 'eval_metrics.csv')}"
+            )
+
     def save(self, tag='best', epoch_done=0, iter_count=None, best_fid=None, **kwargs):
         if self.local_rank > 0:
             return
@@ -178,6 +319,12 @@ class BaseModel(object):
         ckpt['Epoch'] = epoch_done
         if iter_count is not None:
             ckpt['iter_count'] = iter_count
+        # Embed both structured rows and an immediately usable CSV copy. The
+        # structured form supports lossless resume/upsert; the CSV string makes
+        # the complete table directly recoverable from the .pth itself.
+        ckpt['eval_metric_columns'] = list(self.eval_metric_columns)
+        ckpt['eval_history'] = [dict(row) for row in self.eval_history]
+        ckpt['eval_metrics_csv'] = self._eval_csv_text()
 
         # ── Best/Last Checkpoint Saving (Only last_fid_X.pth & best_fid_X.pth) ──
         import shutil, glob
@@ -392,6 +539,7 @@ class BaseModel(object):
             'last_eval_fid': getattr(self, 'last_eval_fid', None),
             'ema_step': ckpt_data.get('ema_step', None),
         }
+        self.restore_eval_history(ckpt_data)
 
         for name, model in self.models.items():
             if len(modules) > 0 and model not in modules:
@@ -717,14 +865,55 @@ class AdversarialModel(BaseModel):
                                                  style_guided, n_rand_repeat)
                 return generator
 
-            # OPTIMIZATION: Pre-generate and cache fake image batches on CPU.
-            # We compress images to int8 and drop style_imgs if not test_stage and not validate_ocr to fit within tight 15GB RAM limits.
-            validate_ocr_enabled = getattr(self.opt.valid, 'validate_ocr', False)
+            # Independent toggles supersede the old grouped flags. The grouped
+            # names remain read-only fallbacks so older YAML files still evaluate.
+            legacy_ocr = getattr(self.opt.valid, 'validate_ocr', None)
+            validate_cer_enabled = bool(getattr(
+                self.opt.valid, 'validate_cer',
+                legacy_ocr if legacy_ocr is not None else False,
+            ))
+            validate_wer_enabled = bool(getattr(
+                self.opt.valid, 'validate_wer',
+                legacy_ocr if legacy_ocr is not None else False,
+            ))
+            validate_psnr_enabled = bool(getattr(self.opt.valid, 'validate_psnr', False))
+            validate_mssim_enabled = bool(getattr(self.opt.valid, 'validate_mssim', False))
+            validate_wier_enabled = bool(getattr(self.opt.valid, 'validate_wier', False))
+            legacy_is = getattr(self.opt.valid, 'validate_is', None)
+            validate_is_gen_enabled = bool(getattr(
+                self.opt.valid, 'validate_is_gen',
+                legacy_is if legacy_is is not None else False,
+            ))
+            validate_is_org_enabled = bool(getattr(
+                self.opt.valid, 'validate_is_org',
+                legacy_is if legacy_is is not None else False,
+            ))
+            validate_is_enabled = (
+                validate_is_gen_enabled or validate_is_org_enabled
+            )
+            validate_fid_enabled = bool(getattr(
+                self.opt.valid, 'validate_fid', False
+            ))
+            validate_kid_enabled = bool(getattr(
+                self.opt.valid, 'validate_kid', False
+            ))
+            validate_distribution_metrics = any((
+                validate_fid_enabled, validate_kid_enabled,
+                validate_is_enabled,
+            ))
+            keep_style_images = any((
+                validate_cer_enabled, validate_wer_enabled,
+                validate_psnr_enabled, validate_mssim_enabled,
+                validate_wier_enabled,
+            ))
+
+            # Pre-generate and cache fake image batches on CPU. Images are kept
+            # as int8 until a metric first consumes them to limit host RAM.
             def batch_to_cpu(batch):
                 cpu_batch = {}
                 for k, v in batch.items():
                     if isinstance(v, torch.Tensor):
-                        if k == 'style_imgs' and not test_stage and not validate_ocr_enabled:
+                        if k == 'style_imgs' and not keep_style_images:
                             continue
                         if k in ['org_imgs', 'style_imgs']:
                             cpu_batch[k] = (v.cpu().clamp(-1.0, 1.0) * 127.0).round().to(torch.int8)
@@ -752,38 +941,69 @@ class AdversarialModel(BaseModel):
                         cached_decompressed_list.append(decompressed)
                 return cached_decompressed_list
 
-            if not hasattr(self, 'valid_real_stats') or self.valid_real_stats is None:
-                from metric.val_metrics import calculate_activation_statistics, InceptionV3
-                self.print("Precalculating validation set statistics...")
-                block_idx = InceptionV3.BLOCK_INDEX_BY_DIM[2048]
-                if self.inception_model is None:
-                    self.inception_model = InceptionV3([block_idx]).to(self.device).eval()
-                self.valid_real_stats = calculate_activation_statistics(eval_dloader, len(eval_dloader),
-                                                                       self.inception_model, self.opt.valid.dims,
-                                                                       self.device, crop=not test_stage)
+            res = {}
+            if validate_distribution_metrics:
+                if (not hasattr(self, 'valid_real_stats')
+                        or self.valid_real_stats is None):
+                    from metric.val_metrics import (
+                        calculate_activation_statistics, InceptionV3,
+                    )
+                    self.print("Precalculating validation set statistics...")
+                    block_idx = InceptionV3.BLOCK_INDEX_BY_DIM[2048]
+                    if self.inception_model is None:
+                        self.inception_model = InceptionV3(
+                            [block_idx]
+                        ).to(self.device).eval()
+                    self.valid_real_stats = calculate_activation_statistics(
+                        eval_dloader, len(eval_dloader), self.inception_model,
+                        self.opt.valid.dims, self.device,
+                        crop=not test_stage, eval_is=validate_is_enabled,
+                    )
+
+                if test_stage:
+                    res = calculate_fid_kid_is(
+                        self.opt.valid, eval_dloader,
+                        get_cached_generator(), n_rand_repeat, self.device,
+                        real_stats=self.valid_real_stats,
+                        inceptionV3_model=self.inception_model,
+                    )
+                else:
+                    res = calculate_fid_kid_is(
+                        self.opt.valid, eval_dloader,
+                        get_cached_generator(), n_rand_repeat, self.device,
+                        crop=True, real_stats=self.valid_real_stats,
+                        inceptionV3_model=self.inception_model,
+                    )
 
             from metric.val_metrics import calculate_hwd_score
 
-            if test_stage:
-                res = calculate_fid_kid_is(self.opt.valid, eval_dloader, get_cached_generator(), n_rand_repeat,
-                                         self.device, real_stats=self.valid_real_stats, inceptionV3_model=self.inception_model)
-            else:
-                res = calculate_fid_kid_is(self.opt.valid, eval_dloader, get_cached_generator(), n_rand_repeat,
-                                         self.device, crop=True, real_stats=self.valid_real_stats, inceptionV3_model=self.inception_model)
-
-            if test_stage:
-                if not self.opt.valid.use_rand_corpus:
-                    psnr_mssim = calculate_mssim_psnr(eval_dloader, get_cached_generator())
+            if ((validate_psnr_enabled or validate_mssim_enabled)
+                    and not self.opt.valid.use_rand_corpus):
+                psnr_mssim = calculate_mssim_psnr(
+                    eval_dloader, get_cached_generator()
+                )
+                if validate_psnr_enabled:
                     res['psnr'] = psnr_mssim['psnr']
+                if validate_mssim_enabled:
                     res['mssim'] = psnr_mssim['mssim']
-                if style_guided:
-                    wier = self.validate_wid(get_cached_generator(), real_dloader=eval_dloader, split=self.opt.valid.dset_split)
-                    res['wier'] = wier
 
-            if getattr(self.opt.valid, 'validate_ocr', True):
-                res['cer'], res['wer'] = self.validate_ocr(get_cached_generator(), n_iters=len(eval_dloader) * n_rand_repeat)
+            if validate_wier_enabled and style_guided:
+                res['wier'] = self.validate_wid(
+                    get_cached_generator(), real_dloader=eval_dloader,
+                    split=self.opt.valid.dset_split,
+                )
 
-            if getattr(self.opt.valid, 'validate_hwd', True):
+            if validate_cer_enabled or validate_wer_enabled:
+                cer, wer = self.validate_ocr(
+                    get_cached_generator(),
+                    n_iters=len(eval_dloader) * n_rand_repeat,
+                )
+                if validate_cer_enabled:
+                    res['cer'] = cer
+                if validate_wer_enabled:
+                    res['wer'] = wer
+
+            if getattr(self.opt.valid, 'validate_hwd', False):
                 # OPTIMIZATION: Cache real HWD features to avoid reprocessing real images every epoch.
                 if not hasattr(self, 'valid_real_hwd_features') or self.valid_real_hwd_features is None:
                     if not hasattr(self, 'valid_real_hwd_dataset') or self.valid_real_hwd_dataset is None:
@@ -811,7 +1031,7 @@ class AdversarialModel(BaseModel):
                 hwd_val = calculate_hwd_score(eval_dloader, get_cached_generator(), n_rand_repeat, self.device, real_features=self.valid_real_hwd_features)
                 res['hwd'] = hwd_val
 
-            if getattr(self.opt.valid, 'validate_cmmd', True):
+            if getattr(self.opt.valid, 'validate_cmmd', False):
                 current_epoch = kwargs.get('current_epoch', None)
                 every_n = getattr(self.opt.valid, 'validate_cmmd_every_n_epochs', 3)
                 should_run_cmmd = test_stage or (current_epoch is None)
@@ -1864,6 +2084,7 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                     if 'fid' in scores:
                         self.last_eval_fid = float(scores['fid'])
                     if _is_master:
+                        self.record_eval_metrics(eval_epoch, scores)
                         score_str = ", ".join([f"{k}: {v:.4f}" if isinstance(v, float) else f"{k}: {v}" for k, v in scores.items()])
                         self.print(f"Validation metrics at epoch {eval_epoch:.2f}: {score_str}")
                         import wandb as _wandb

@@ -75,13 +75,18 @@ training:
 valid:
   dset_name: 'iam_word_org'
   dset_split: 'test'
-  validate_ocr: false
   validate_fid: true
   validate_kid: true
-  validate_is: true
   validate_hwd: true
   validate_cmmd: false
   validate_cmmd_every_n_epochs: 4
+  validate_cer: false
+  validate_wer: false
+  validate_is_gen: true
+  validate_is_org: true
+  validate_psnr: false
+  validate_mssim: false
+  validate_wier: false
   use_rand_corpus: false
   n_rand_repeat: 10
   batch_size: 32
