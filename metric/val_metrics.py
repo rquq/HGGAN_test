@@ -408,9 +408,16 @@ def calculate_inception_score(logits, splits=1):
     return np.mean(split_scores)
 
 def calculate_fid_kid_is(cfg, data_loader, generator, n_rand_repeat, device, crop=False, real_stats=None, n_batches=None, inceptionV3_model=None):
-    eval_fid = getattr(cfg, 'validate_fid', True)
-    eval_kid = getattr(cfg, 'validate_kid', True)
-    eval_is = getattr(cfg, 'validate_is', True)
+    eval_fid = bool(getattr(cfg, 'validate_fid', False))
+    eval_kid = bool(getattr(cfg, 'validate_kid', False))
+    legacy_is = getattr(cfg, 'validate_is', None)
+    eval_is_gen = bool(getattr(
+        cfg, 'validate_is_gen', legacy_is if legacy_is is not None else False
+    ))
+    eval_is_org = bool(getattr(
+        cfg, 'validate_is_org', legacy_is if legacy_is is not None else False
+    ))
+    eval_is = eval_is_gen or eval_is_org
 
     res = {}
     if not (eval_fid or eval_kid or eval_is):
@@ -437,11 +444,10 @@ def calculate_fid_kid_is(cfg, data_loader, generator, n_rand_repeat, device, cro
         fid_value = calculate_frechet_distance(m1, s1, m2, s2)
         res['fid'] = fid_value
 
-    if eval_is:
-        is_org = calculate_inception_score(logits1)
-        is_gen = calculate_inception_score(logits2)
-        res['is_org'] = is_org
-        res['is_gen'] = is_gen
+    if eval_is_gen:
+        res['is_gen'] = calculate_inception_score(logits2)
+    if eval_is_org:
+        res['is_org'] = calculate_inception_score(logits1)
 
     if eval_kid:
         ret = polynomial_mmd_averages(

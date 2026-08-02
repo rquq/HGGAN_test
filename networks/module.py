@@ -192,17 +192,23 @@ def _gradient_reverse(x, scale):
 class StyleEncoder(nn.Module):
     def __init__(self, style_dim=32, in_dim=256, init='N02', num_style_tokens=8,
                  backbone_channels=(64, 128, 256), n_class=80, content_grl=1.0,
-                 local_query_residual=0.25, **kwargs):
+                 local_query_residual=0.5,
+                 local_attention_residual_init=0.25, **kwargs):
         super(StyleEncoder, self).__init__()
         self.style_dim = style_dim
         self._in_dim = in_dim
         self.num_style_tokens = num_style_tokens
         self.content_grl = content_grl
         self.local_query_residual = float(local_query_residual)
+        self.local_attention_residual_init = float(local_attention_residual_init)
         if num_style_tokens < 1:
             raise ValueError('num_style_tokens must be at least 1')
         if self.local_query_residual < 0:
             raise ValueError('local_query_residual must be non-negative')
+        if not 0.0 < self.local_attention_residual_init < 1.0:
+            raise ValueError(
+                'local_attention_residual_init must be strictly between 0 and 1'
+            )
 
         self.linear_style = nn.Sequential(
             nn.Linear(in_dim, in_dim),
@@ -235,6 +241,22 @@ class StyleEncoder(nn.Module):
             nn.init.orthogonal_(style_query_init[0])
             style_query_init.mul_(0.02 * (in_dim ** 0.5))
         self.style_queries = nn.Parameter(style_query_init)
+
+        # A fixed orthogonal code gives every local slot a permanent identity.
+        # Writer evidence is still learned; the code only prevents all slots from
+        # converging to the same direction after attention and projection.
+        slot_anchors = torch.empty(1, query_count, style_dim)
+        if query_count:
+            nn.init.orthogonal_(slot_anchors[0])
+            slot_anchors.mul_(style_dim ** 0.5)
+        self.register_buffer('local_slot_anchors', slot_anchors)
+
+        attention_gate_logit = torch.logit(torch.tensor(
+            self.local_attention_residual_init
+        )).item()
+        self.local_attention_gate_logits = nn.Parameter(
+            torch.full((in_dim,), attention_gate_logit)
+        )
         self.style_cross_attn = nn.MultiheadAttention(
             embed_dim=in_dim, num_heads=4, batch_first=True
         )
@@ -349,9 +371,12 @@ class StyleEncoder(nn.Module):
                 key_padding_mask=key_padding_mask,
                 need_weights=False,
             )
-            local_style = self.linear_style(
-                self.local_output_norm(style_queries + local_attended)
-            )
+            attention_strength = torch.sigmoid(
+                self.local_attention_gate_logits
+            ).view(1, 1, -1)
+            local_style = self.linear_style(self.local_output_norm(
+                style_queries + attention_strength * local_attended
+            ))
         else:
             local_style = style_queries
 
@@ -359,10 +384,19 @@ class StyleEncoder(nn.Module):
         style = torch.cat([global_style, local_style], dim=1)
         global_mu = self.mu(global_style)
         if local_style.size(1):
-            # Preserve query identity after cross-attention. Reusing mu.weight
-            # adds no parameters, keeping checkpoints and optimizer state valid.
-            local_mu = self.mu(local_style) + self.local_query_residual * F.linear(
-                style_queries, self.mu.weight, bias=None
+            local_data_mu = self.mu(local_style)
+            # Match the fixed code to each token's learned RMS. This makes the
+            # anti-collapse residual scale-aware without backpropagating through
+            # the scale estimate or overpowering writer-specific evidence.
+            local_data_rms = local_data_mu.detach().square().mean(
+                dim=-1, keepdim=True
+            ).sqrt().clamp_min(0.05)
+            local_identity = self.local_slot_anchors.expand(
+                batch_size, -1, -1
+            ).to(dtype=local_data_mu.dtype)
+            local_mu = (
+                local_data_mu
+                + self.local_query_residual * local_data_rms * local_identity
             )
         else:
             local_mu = self.mu(local_style)

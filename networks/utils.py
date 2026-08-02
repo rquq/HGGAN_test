@@ -108,10 +108,21 @@ def get_scheduler(optimizer, opt, last_epoch=-1, base_lr=None):
             group['initial_lr'] = base_lr if base_lr is not None else group.get('lr', 1e-4)
 
     if opt.lr_policy == 'linear':
+        min_lr_ratio = float(getattr(opt, 'min_lr_ratio', 0.001))
+        if not 0.0 < min_lr_ratio <= 1.0:
+            raise ValueError('min_lr_ratio must be in (0, 1]')
+
         def lambda_rule(epoch):
-            lr_l = 1.0 - min(max(0, (epoch - opt.start_decay_epoch) / float(opt.n_epochs_decay + 1)), 0.999)
-            return lr_l
-        scheduler = lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda_rule, last_epoch=last_epoch)
+            progress = max(
+                0.0,
+                (epoch - opt.start_decay_epoch)
+                / float(opt.n_epochs_decay + 1),
+            )
+            return max(min_lr_ratio, 1.0 - progress)
+
+        scheduler = lr_scheduler.LambdaLR(
+            optimizer, lr_lambda=lambda_rule, last_epoch=last_epoch
+        )
     elif opt.lr_policy == 'step':
         scheduler = lr_scheduler.StepLR(optimizer, step_size=opt.lr_decay_iters, gamma=0.1, last_epoch=last_epoch)
     elif opt.lr_policy == 'plateau':

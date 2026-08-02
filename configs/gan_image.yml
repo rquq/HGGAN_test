@@ -26,6 +26,18 @@ training:
 valid:
   dset_name: 'custom'
   dset_split: './data/image_samples/'
+  validate_fid: false
+  validate_kid: false
+  validate_hwd: false
+  validate_cmmd: false
+  validate_cmmd_every_n_epochs: 4
+  validate_cer: false
+  validate_wer: false
+  validate_is_gen: false
+  validate_is_org: false
+  validate_psnr: false
+  validate_mssim: false
+  validate_wier: false
 
 test:
   interp_num: 7
