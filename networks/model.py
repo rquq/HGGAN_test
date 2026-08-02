@@ -1230,6 +1230,11 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                     config=vars(self.opt) if hasattr(self.opt, '__dict__') else dict(self.opt),
                     resume='allow',
                 )
+                # Validation is emitted alongside iteration-based training logs.
+                # Give it an independent epoch axis instead of reusing W&B's
+                # monotonically increasing global iteration step.
+                _wandb.define_metric('valid/epoch')
+                _wandb.define_metric('valid/*', step_metric='valid/epoch')
             except Exception as e:
                 self.print(f"WandB initialization skipped or failed: {e}")
 
@@ -1853,16 +1858,21 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                     self.is_resumed_start = False
 
                 if is_eval:
-                    self.print('Calculate FID_KID (iter {})'.format(iter_count + 1)) if self.local_rank < 1 else None
+                    eval_epoch = global_iter / float(len(self.train_loader))
+                    self.print('Calculate FID_KID (epoch {:.2f})'.format(eval_epoch)) if self.local_rank < 1 else None
                     scores = self.validate(current_epoch=epoch)
                     if 'fid' in scores:
                         self.last_eval_fid = float(scores['fid'])
                     if _is_master:
                         score_str = ", ".join([f"{k}: {v:.4f}" if isinstance(v, float) else f"{k}: {v}" for k, v in scores.items()])
-                        self.print(f"Validation metrics at iter {iter_count + 1}: {score_str}")
+                        self.print(f"Validation metrics at epoch {eval_epoch:.2f}: {score_str}")
                         import wandb as _wandb
                         if _wandb.run:
-                            _wandb.log({'valid/' + k: v for k, v in scores.items()}, step=iter_count + 1)
+                            valid_log = {'valid/epoch': eval_epoch}
+                            valid_log.update(
+                                {'valid/' + k: v for k, v in scores.items()}
+                            )
+                            _wandb.log(valid_log, step=iter_count + 1)
 
                     if 'fid' in scores and scores['fid'] < best_fid:
                         best_fid = scores['fid']
