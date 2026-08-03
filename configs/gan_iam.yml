@@ -19,7 +19,7 @@ training:
   dset_split: 'trnval'
   # Hold the learning rate through the empirically strong epoch-15 region,
   # then use the remaining run for lower-LR refinement.
-  epochs: 32
+  epochs: 42
   lr_policy: 'linear'
   start_decay_epoch: 12
   n_epochs_decay: 20
