@@ -17,20 +17,21 @@ inference:
 
 training:
   dset_split: 'trnval'
-  # Hold the learning rate through the empirically strong epoch-15 region,
-  # then use the remaining run for lower-LR refinement.
-  epochs: 36
+  # Epoch-18 checkpoint refinement profile. Resuming starts at epoch 19, so
+  # epochs 19..29 are exactly eleven Kaggle epochs.
+  epochs: 29
   lr_policy: 'linear'
-  start_decay_epoch: 12
-  n_epochs_decay: 20
-  # Preserve a useful refinement rate instead of freezing near the run end.
+  # Rebase the restored scheduler at the checkpoint boundary, then decay the
+  # smaller refinement LR smoothly across the remaining eleven epochs.
+  start_decay_epoch: 18
+  n_epochs_decay: 11
   min_lr_ratio: 0.2
   batch_size: 8
   eval_batch_size: 12
   sample_nrow: 4
   # optimization:
-  lr: 2.0e-4
-  d_lr: 1.0e-4
+  lr: 1.0e-4
+  d_lr: 5.0e-5
   adam_b1: 0.5
   adam_b2: 0.999
   # sampling and saving
@@ -56,7 +57,9 @@ training:
   max_patch_crops: 8
   vae_mode: true
   lambda_ctc: 1.0
-  lambda_ctc_final: 0.4
+  # Epoch 18 peaked while CTC was still 0.52; holding a 0.60 floor prevents
+  # the style path from trading content integrity for lower HWD after epoch 20.
+  lambda_ctc_final: 0.6
   ctc_decay_start_epoch: 10
   ctc_decay_end_epoch: 20
   lambda_info: 1.0
