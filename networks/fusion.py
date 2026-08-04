@@ -127,49 +127,92 @@ class StyleConditionedSelfAttention(nn.Module):
 
 
 class AllographicModulation(nn.Module):
-    """Route local style tokens to characters and predict bounded affine detail."""
+    """Route distinct local style slots to characters with bounded residual detail."""
 
     def __init__(self, d_model, routing_dim=16, vocab_size=256,
-                 modulation_limit=0.5, character_gain_limit=0.25):
+                 modulation_limit=0.3, character_gain_limit=0.25,
+                 routing_temperature=0.7, modulation_residual_init=0.5):
         super().__init__()
+        if routing_temperature <= 0:
+            raise ValueError('routing_temperature must be positive')
+        if not 0.0 < modulation_residual_init < 1.0:
+            raise ValueError(
+                'modulation_residual_init must be strictly between 0 and 1'
+            )
         self.vocab_size = vocab_size
         self.modulation_limit = float(modulation_limit)
         self.character_gain_limit = float(character_gain_limit)
+        self.routing_temperature = float(routing_temperature)
+        self.modulation_residual_init = float(modulation_residual_init)
         self.warned_out_of_vocab = False
         self.checked_char_range = False
-        self.q_proj = nn.Linear(d_model, d_model)
-        self.k_proj = nn.Linear(d_model, d_model)
-        self.v_proj = nn.Linear(d_model, d_model)
+
+        # Bias-free projections cannot inject a common vector into every slot.
+        self.q_proj = nn.Linear(d_model, d_model, bias=False)
+        self.k_proj = nn.Linear(d_model, d_model, bias=False)
+        self.v_proj = nn.Linear(d_model, d_model, bias=False)
+        self.routing_logit_scale = nn.Parameter(torch.tensor(
+            math.log(1.0 / self.routing_temperature)
+        ))
+        self.char_routing_logit_scale = nn.Parameter(torch.tensor(
+            math.log(1.0 / self.routing_temperature)
+        ))
+
         self.mod_proj = nn.Sequential(
             nn.Linear(d_model, d_model),
             nn.SiLU(),
             nn.Linear(d_model, d_model * 2),
         )
+        self.character_style_norm = nn.LayerNorm(
+            d_model, elementwise_affine=False
+        )
+        self.modulation_gate_logits = nn.Parameter(torch.full(
+            (d_model,), _logit(self.modulation_residual_init)
+        ))
+
         self.char_routing_emb = nn.Embedding(vocab_size, routing_dim)
-        self.context_routing_proj = nn.Linear(d_model, routing_dim)
-        self.style_routing_proj = nn.Linear(d_model, routing_dim)
+        self.context_routing_proj = nn.Linear(
+            d_model, routing_dim, bias=False
+        )
+        self.style_routing_proj = nn.Linear(
+            d_model, routing_dim, bias=False
+        )
         # Decode identical writer evidence differently for each character.
         # Zero initialization starts the character gain as an identity mapping.
-        self.char_style_norm = nn.LayerNorm(
+        self.char_query_norm = nn.LayerNorm(
             routing_dim, elementwise_affine=False
         )
         self.char_style_gate = nn.Linear(routing_dim, d_model, bias=False)
         self.reset_stability_parameters()
 
     def reset_stability_parameters(self):
-        # Identity-like but nonzero: all routing layers receive gradients immediately.
-        nn.init.normal_(self.mod_proj[-1].weight, 0.0, 0.02)
+        # Small, nonzero modulation learns immediately but cannot begin saturated.
+        nn.init.normal_(self.mod_proj[-1].weight, 0.0, 0.01)
         nn.init.zeros_(self.mod_proj[-1].bias)
         nn.init.zeros_(self.char_style_gate.weight)
+        with torch.no_grad():
+            self.routing_logit_scale.fill_(
+                math.log(1.0 / self.routing_temperature)
+            )
+            self.char_routing_logit_scale.fill_(
+                math.log(1.0 / self.routing_temperature)
+            )
+            self.modulation_gate_logits.fill_(
+                _logit(self.modulation_residual_init)
+            )
 
     def forward(self, content_seq, local_style_seq, char_ids=None, mask=None):
         local_style_seq = ensure_dim3(local_style_seq)
-        _, _, d_model = content_seq.shape
 
-        query = self.q_proj(content_seq)
-        key = self.k_proj(local_style_seq)
+        # Cosine logits make routing depend on slot direction instead of vector
+        # magnitude, with a learned but bounded sharpness.
+        query = F.normalize(self.q_proj(content_seq), dim=-1, eps=1e-6)
+        key = F.normalize(self.k_proj(local_style_seq), dim=-1, eps=1e-6)
         value = self.v_proj(local_style_seq)
-        scores = torch.matmul(query, key.transpose(-2, -1)) / (d_model ** 0.5)
+        routing_scale = self.routing_logit_scale.exp().clamp(max=10.0)
+        scores = routing_scale * torch.matmul(
+            query, key.transpose(-2, -1)
+        )
 
         char_query = None
         if char_ids is not None:
@@ -190,24 +233,36 @@ class AllographicModulation(nn.Module):
                 self.char_routing_emb(char_ids)
                 + self.context_routing_proj(content_seq)
             )
-            style_routing = self.style_routing_proj(local_style_seq)
-            routing_prior = torch.matmul(
-                char_query, style_routing.transpose(-2, -1)
-            ) / (char_query.size(-1) ** 0.5)
-            scores = scores + routing_prior
+            normalized_char_query = F.normalize(
+                char_query, dim=-1, eps=1e-6
+            )
+            style_routing = F.normalize(
+                self.style_routing_proj(local_style_seq), dim=-1, eps=1e-6
+            )
+            char_scale = self.char_routing_logit_scale.exp().clamp(max=10.0)
+            scores = scores + char_scale * torch.matmul(
+                normalized_char_query, style_routing.transpose(-2, -1)
+            )
 
         attention = torch.softmax(scores, dim=-1)
-        character_style = torch.matmul(attention, value)
+        character_style = self.character_style_norm(
+            torch.matmul(attention, value)
+        )
         if char_query is not None:
             character_gain = self.character_gain_limit * torch.tanh(
-                self.char_style_gate(self.char_style_norm(char_query))
+                self.char_style_gate(self.char_query_norm(char_query))
             )
             character_style = character_style * (1.0 + character_gain)
+
         scale, shift = self.mod_proj(character_style).chunk(2, dim=-1)
-        # Bounded affine parameters prevent one routing error from exploding G input.
         scale = self.modulation_limit * torch.tanh(scale)
         shift = self.modulation_limit * torch.tanh(shift)
-        output = content_seq * (1.0 + scale) + shift
+        modulation_strength = torch.sigmoid(
+            self.modulation_gate_logits
+        ).view(1, 1, -1)
+        output = content_seq + modulation_strength * (
+            content_seq * scale + shift
+        )
         if mask is not None:
             output = output * mask.unsqueeze(-1).to(output.dtype)
         return output
@@ -217,14 +272,27 @@ class StyleContentAttentionFusion(nn.Module):
     """Coarse-to-fine content/style fusion with one unambiguous job per stage."""
 
     def __init__(self, d_model, style_dim, nhead=4, attn_dim=128,
-                 ffn_dim=None, max_seq_len=32, vocab_size=256):
+                 ffn_dim=None, max_seq_len=32, vocab_size=256,
+                 local_projection_residual_init=0.1,
+                 routing_temperature=0.7, modulation_limit=0.3,
+                 modulation_residual_init=0.5):
         super().__init__()
+        if not 0.0 < local_projection_residual_init < 1.0:
+            raise ValueError(
+                'local_projection_residual_init must be strictly between 0 and 1'
+            )
         self.d_model = d_model
-        self.local_style_proj = nn.Sequential(
-            nn.Linear(style_dim, d_model),
-            nn.SiLU(),
-            nn.Linear(d_model, d_model),
+        self.local_projection_residual_init = float(
+            local_projection_residual_init
         )
+        self.local_style_proj = nn.Sequential(
+            nn.Linear(style_dim, d_model, bias=False),
+            nn.SiLU(),
+            nn.Linear(d_model, d_model, bias=False),
+        )
+        self.local_projection_gate_logits = nn.Parameter(torch.full(
+            (d_model,), _logit(self.local_projection_residual_init)
+        ))
         self.local_style_input_norm = nn.LayerNorm(style_dim, elementwise_affine=False)
         self.local_style_output_norm = nn.LayerNorm(d_model, elementwise_affine=False)
         self.content_context = StyleConditionedSelfAttention(
@@ -243,14 +311,24 @@ class StyleContentAttentionFusion(nn.Module):
             torch.full((d_model,), _logit(0.25))
         )
         self.allograph_mod = AllographicModulation(
-            d_model, vocab_size=vocab_size
+            d_model, vocab_size=vocab_size,
+            routing_temperature=routing_temperature,
+            modulation_limit=modulation_limit,
+            modulation_residual_init=modulation_residual_init,
         )
         self.reset_stability_parameters()
 
     def reset_stability_parameters(self):
         self.content_context.reset_stability_parameters()
         self.allograph_mod.reset_stability_parameters()
+        # The tall bias-free base projection preserves angles in style space;
+        # the learned MLP is only a small residual refinement.
+        nn.init.orthogonal_(self.local_style_proj[0].weight)
+        nn.init.normal_(self.local_style_proj[2].weight, 0.0, 0.01)
         with torch.no_grad():
+            self.local_projection_gate_logits.fill_(
+                _logit(self.local_projection_residual_init)
+            )
             self.local_residual_gate_logits.fill_(_logit(0.25))
 
     def forward(self, content_seq, style_seq, char_ids=None, y_lens=None):
@@ -274,9 +352,14 @@ class StyleContentAttentionFusion(nn.Module):
         # identical vector while these existing weights can form a good residual.
         local_style_input = self.local_style_input_norm(style_seq[:, 1:])
         local_style_hidden = self.local_style_proj[0](local_style_input)
+        projection_strength = torch.sigmoid(
+            self.local_projection_gate_logits
+        ).view(1, 1, -1)
         local_style = self.local_style_output_norm(
             local_style_hidden
-            + self.local_style_proj[2](F.silu(local_style_hidden))
+            + projection_strength * self.local_style_proj[2](
+                F.silu(local_style_hidden)
+            )
         )
 
         # Stage 1: global style changes word-level content relationships, not glyph routing.

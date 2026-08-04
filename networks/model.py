@@ -61,6 +61,20 @@ def seed_worker(worker_id):
     random.seed(worker_seed)
 
 
+def linear_epoch_weight(initial, final, epoch, start_epoch, end_epoch):
+    """Linearly move a loss weight, with exact constant endpoints."""
+    initial = float(initial)
+    final = float(final)
+    if end_epoch <= start_epoch:
+        return final if epoch >= end_epoch else initial
+    progress = min(max(
+        (float(epoch) - float(start_epoch))
+        / (float(end_epoch) - float(start_epoch)),
+        0.0,
+    ), 1.0)
+    return initial + progress * (final - initial)
+
+
 class BaseModel(object):
     # Keep this schema stable across runs and configurations. Metrics that are
     # disabled (or not scheduled for a particular epoch) remain empty in CSV.
@@ -1918,7 +1932,16 @@ class GlobalLocalAdversarialModel(AdversarialModel):
 
                     kl_loss = KLloss(mu, logvar) if self.vae_mode else torch.tensor(0.0, device=self.device)
 
-                    lambda_ctc = float(getattr(self.opt.training, 'lambda_ctc', 1.0))
+                    lambda_ctc = linear_epoch_weight(
+                        getattr(self.opt.training, 'lambda_ctc', 1.0),
+                        getattr(
+                            self.opt.training, 'lambda_ctc_final',
+                            getattr(self.opt.training, 'lambda_ctc', 1.0),
+                        ),
+                        epoch,
+                        getattr(self.opt.training, 'ctc_decay_start_epoch', epoch),
+                        getattr(self.opt.training, 'ctc_decay_end_epoch', epoch),
+                    )
                     lambda_info = float(getattr(self.opt.training, 'lambda_info', 1.0))
                     lambda_wid = float(getattr(self.opt.training, 'lambda_wid', 1.0))
                     lambda_recn = float(getattr(self.opt.training, 'lambda_recn', 10.0))

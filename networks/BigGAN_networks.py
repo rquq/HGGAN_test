@@ -61,8 +61,11 @@ class Generator(nn.Module):
                  G_activation=nn.ReLU(inplace=False),
                  BN_eps=1e-5, SN_eps=1e-12, G_fp16=False,
                  init='ortho', G_param='SN', norm_style='bn', bn_linear='embed', input_nc=3,
-                 embed_pad_idx=0, embed_max_norm=1.0, fusion_gate_init=0.25
-                 ):
+                 embed_pad_idx=0, embed_max_norm=1.0, fusion_gate_init=0.25,
+                 local_projection_residual_init=0.1,
+                 allograph_routing_temperature=0.7,
+                 allograph_modulation_limit=0.3,
+                 allograph_residual_init=0.5):
         super(Generator, self).__init__()
         dim_z = style_dim
         self.style_dim = style_dim
@@ -141,7 +144,11 @@ class Generator(nn.Module):
         self.filter_linear = self.which_linear(self.embed_dim,
                                         self.arch['in_channels'][0] * (self.bottom_width * self.bottom_height))
         self.style_content_mix = StyleContentAttentionFusion(
-            self.embed_dim, self.style_dim, vocab_size=self.n_classes
+            self.embed_dim, self.style_dim, vocab_size=self.n_classes,
+            local_projection_residual_init=local_projection_residual_init,
+            routing_temperature=allograph_routing_temperature,
+            modulation_limit=allograph_modulation_limit,
+            modulation_residual_init=allograph_residual_init,
         )
         if not 0.0 < fusion_gate_init < 1.0:
             raise ValueError('fusion_gate_init must be strictly between 0 and 1')
