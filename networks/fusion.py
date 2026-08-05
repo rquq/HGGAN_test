@@ -131,7 +131,8 @@ class AllographicModulation(nn.Module):
 
     def __init__(self, d_model, routing_dim=16, vocab_size=256,
                  modulation_limit=0.3, character_gain_limit=0.25,
-                 routing_temperature=0.7, modulation_residual_init=0.5):
+                 routing_temperature=0.7, modulation_residual_init=0.5,
+                 modulation_rms_cap=1.0):
         super().__init__()
         if routing_temperature <= 0:
             raise ValueError('routing_temperature must be positive')
@@ -139,11 +140,14 @@ class AllographicModulation(nn.Module):
             raise ValueError(
                 'modulation_residual_init must be strictly between 0 and 1'
             )
+        if modulation_rms_cap <= 0:
+            raise ValueError('modulation_rms_cap must be positive')
         self.vocab_size = vocab_size
         self.modulation_limit = float(modulation_limit)
         self.character_gain_limit = float(character_gain_limit)
         self.routing_temperature = float(routing_temperature)
         self.modulation_residual_init = float(modulation_residual_init)
+        self.modulation_rms_cap = float(modulation_rms_cap)
         self.warned_out_of_vocab = False
         self.checked_char_range = False
 
@@ -201,13 +205,27 @@ class AllographicModulation(nn.Module):
                 _logit(self.modulation_residual_init)
             )
 
+    def _cap_modulation_rms(self, value):
+        # Do not amplify well-scaled predictions. Only compress a channel
+        # vector after its RMS exceeds the configured safe operating range.
+        rms = value.float().square().mean(dim=-1, keepdim=True).sqrt()
+        divisor = (rms / self.modulation_rms_cap).clamp_min(1.0)
+        return value / divisor.to(dtype=value.dtype)
+
     def forward(self, content_seq, local_style_seq, char_ids=None, mask=None):
         local_style_seq = ensure_dim3(local_style_seq)
+
+        # Writer information common to every slot belongs in the values, not
+        # in routing keys. Centering only the key path makes routing depend on
+        # allographic differences and is invariant to common writer offsets.
+        routing_style = (
+            local_style_seq - local_style_seq.mean(dim=1, keepdim=True)
+        )
 
         # Cosine logits make routing depend on slot direction instead of vector
         # magnitude, with a learned but bounded sharpness.
         query = F.normalize(self.q_proj(content_seq), dim=-1, eps=1e-6)
-        key = F.normalize(self.k_proj(local_style_seq), dim=-1, eps=1e-6)
+        key = F.normalize(self.k_proj(routing_style), dim=-1, eps=1e-6)
         value = self.v_proj(local_style_seq)
         routing_scale = self.routing_logit_scale.exp().clamp(max=10.0)
         scores = routing_scale * torch.matmul(
@@ -237,7 +255,7 @@ class AllographicModulation(nn.Module):
                 char_query, dim=-1, eps=1e-6
             )
             style_routing = F.normalize(
-                self.style_routing_proj(local_style_seq), dim=-1, eps=1e-6
+                self.style_routing_proj(routing_style), dim=-1, eps=1e-6
             )
             char_scale = self.char_routing_logit_scale.exp().clamp(max=10.0)
             scores = scores + char_scale * torch.matmul(
@@ -255,6 +273,8 @@ class AllographicModulation(nn.Module):
             character_style = character_style * (1.0 + character_gain)
 
         scale, shift = self.mod_proj(character_style).chunk(2, dim=-1)
+        scale = self._cap_modulation_rms(scale)
+        shift = self._cap_modulation_rms(shift)
         scale = self.modulation_limit * torch.tanh(scale)
         shift = self.modulation_limit * torch.tanh(shift)
         modulation_strength = torch.sigmoid(
@@ -275,7 +295,8 @@ class StyleContentAttentionFusion(nn.Module):
                  ffn_dim=None, max_seq_len=32, vocab_size=256,
                  local_projection_residual_init=0.1,
                  routing_temperature=0.7, modulation_limit=0.3,
-                 modulation_residual_init=0.5):
+                 modulation_residual_init=0.5,
+                 modulation_rms_cap=1.0):
         super().__init__()
         if not 0.0 < local_projection_residual_init < 1.0:
             raise ValueError(
@@ -315,6 +336,7 @@ class StyleContentAttentionFusion(nn.Module):
             routing_temperature=routing_temperature,
             modulation_limit=modulation_limit,
             modulation_residual_init=modulation_residual_init,
+            modulation_rms_cap=modulation_rms_cap,
         )
         self.reset_stability_parameters()
 
