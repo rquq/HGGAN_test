@@ -1944,7 +1944,19 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                     )
                     lambda_info = float(getattr(self.opt.training, 'lambda_info', 1.0))
                     lambda_wid = float(getattr(self.opt.training, 'lambda_wid', 1.0))
-                    lambda_recn = float(getattr(self.opt.training, 'lambda_recn', 10.0))
+                    # Reconstruction establishes alignment early, then yields
+                    # capacity to adversarial refinement instead of enforcing an
+                    # L1-smoothed solution for the entire run.
+                    lambda_recn = linear_epoch_weight(
+                        getattr(self.opt.training, 'lambda_recn', 10.0),
+                        getattr(
+                            self.opt.training, 'lambda_recn_final',
+                            getattr(self.opt.training, 'lambda_recn', 10.0),
+                        ),
+                        epoch,
+                        getattr(self.opt.training, 'recn_decay_start_epoch', epoch),
+                        getattr(self.opt.training, 'recn_decay_end_epoch', epoch),
+                    )
 
                     # Optimize and log weighted contributions. Raw loss values
                     # alone are misleading when their scales differ this much.

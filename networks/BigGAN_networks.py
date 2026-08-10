@@ -65,7 +65,11 @@ class Generator(nn.Module):
                  local_projection_residual_init=0.1,
                  allograph_routing_temperature=0.7,
                  allograph_modulation_limit=0.3,
-                 allograph_residual_init=0.5):
+                 allograph_residual_init=0.5,
+                 allograph_modulation_rms_cap=1.0,
+                 allograph_routing_center_init=0.5,
+                 allograph_routing_scale_max=2.0,
+                 allograph_routing_uniform_mix=0.05):
         super(Generator, self).__init__()
         dim_z = style_dim
         self.style_dim = style_dim
@@ -149,6 +153,10 @@ class Generator(nn.Module):
             routing_temperature=allograph_routing_temperature,
             modulation_limit=allograph_modulation_limit,
             modulation_residual_init=allograph_residual_init,
+            modulation_rms_cap=allograph_modulation_rms_cap,
+            routing_center_init=allograph_routing_center_init,
+            routing_scale_max=allograph_routing_scale_max,
+            routing_uniform_mix=allograph_routing_uniform_mix,
         )
         if not 0.0 < fusion_gate_init < 1.0:
             raise ValueError('fusion_gate_init must be strictly between 0 and 1')

@@ -131,7 +131,9 @@ class AllographicModulation(nn.Module):
 
     def __init__(self, d_model, routing_dim=16, vocab_size=256,
                  modulation_limit=0.3, character_gain_limit=0.25,
-                 routing_temperature=0.7, modulation_residual_init=0.5):
+                 routing_temperature=0.7, modulation_residual_init=0.5,
+                 modulation_rms_cap=1.0, routing_center_init=0.5,
+                 routing_scale_max=2.0, routing_uniform_mix=0.05):
         super().__init__()
         if routing_temperature <= 0:
             raise ValueError('routing_temperature must be positive')
@@ -139,11 +141,28 @@ class AllographicModulation(nn.Module):
             raise ValueError(
                 'modulation_residual_init must be strictly between 0 and 1'
             )
+        if modulation_rms_cap <= 0:
+            raise ValueError('modulation_rms_cap must be positive')
+        if not 0.0 < routing_center_init < 1.0:
+            raise ValueError(
+                'routing_center_init must be strictly between 0 and 1'
+            )
+        initial_routing_scale = 1.0 / float(routing_temperature)
+        if routing_scale_max <= initial_routing_scale:
+            raise ValueError(
+                'routing_scale_max must exceed the initial inverse temperature'
+            )
+        if not 0.0 <= routing_uniform_mix < 1.0:
+            raise ValueError('routing_uniform_mix must be in [0, 1)')
         self.vocab_size = vocab_size
         self.modulation_limit = float(modulation_limit)
         self.character_gain_limit = float(character_gain_limit)
         self.routing_temperature = float(routing_temperature)
         self.modulation_residual_init = float(modulation_residual_init)
+        self.modulation_rms_cap = float(modulation_rms_cap)
+        self.routing_center_init = float(routing_center_init)
+        self.routing_scale_max = float(routing_scale_max)
+        self.routing_uniform_mix = float(routing_uniform_mix)
         self.warned_out_of_vocab = False
         self.checked_char_range = False
 
@@ -152,10 +171,13 @@ class AllographicModulation(nn.Module):
         self.k_proj = nn.Linear(d_model, d_model, bias=False)
         self.v_proj = nn.Linear(d_model, d_model, bias=False)
         self.routing_logit_scale = nn.Parameter(torch.tensor(
-            math.log(1.0 / self.routing_temperature)
+            _logit(initial_routing_scale / self.routing_scale_max)
         ))
         self.char_routing_logit_scale = nn.Parameter(torch.tensor(
-            math.log(1.0 / self.routing_temperature)
+            _logit(initial_routing_scale / self.routing_scale_max)
+        ))
+        self.routing_center_logit = nn.Parameter(torch.tensor(
+            _logit(self.routing_center_init)
         ))
 
         self.mod_proj = nn.Sequential(
@@ -191,25 +213,50 @@ class AllographicModulation(nn.Module):
         nn.init.zeros_(self.mod_proj[-1].bias)
         nn.init.zeros_(self.char_style_gate.weight)
         with torch.no_grad():
-            self.routing_logit_scale.fill_(
-                math.log(1.0 / self.routing_temperature)
+            bounded_scale_logit = _logit(
+                (1.0 / self.routing_temperature)
+                / self.routing_scale_max
             )
-            self.char_routing_logit_scale.fill_(
-                math.log(1.0 / self.routing_temperature)
+            self.routing_logit_scale.fill_(bounded_scale_logit)
+            self.char_routing_logit_scale.fill_(bounded_scale_logit)
+            self.routing_center_logit.fill_(
+                _logit(self.routing_center_init)
             )
             self.modulation_gate_logits.fill_(
                 _logit(self.modulation_residual_init)
             )
 
+    def _cap_modulation_rms(self, value):
+        # Do not amplify well-scaled predictions. Only compress a channel
+        # vector after its RMS exceeds the configured safe operating range.
+        rms = value.float().square().mean(dim=-1, keepdim=True).sqrt()
+        divisor = (rms / self.modulation_rms_cap).clamp_min(1.0)
+        return value / divisor.to(dtype=value.dtype)
+
+    def _bounded_routing_scale(self, parameter):
+        # A smooth bound keeps gradients alive near the maximum, unlike clamp.
+        return self.routing_scale_max * torch.sigmoid(parameter)
+
     def forward(self, content_seq, local_style_seq, char_ids=None, mask=None):
         local_style_seq = ensure_dim3(local_style_seq)
+
+        # Blend absolute writer evidence with slot-relative allographic
+        # detail. Full centering discarded useful writer structure, whereas no
+        # centering let a common component dominate every routing key.
+        center_strength = torch.sigmoid(self.routing_center_logit)
+        routing_style = (
+            local_style_seq
+            - center_strength * local_style_seq.mean(dim=1, keepdim=True)
+        )
 
         # Cosine logits make routing depend on slot direction instead of vector
         # magnitude, with a learned but bounded sharpness.
         query = F.normalize(self.q_proj(content_seq), dim=-1, eps=1e-6)
-        key = F.normalize(self.k_proj(local_style_seq), dim=-1, eps=1e-6)
+        key = F.normalize(self.k_proj(routing_style), dim=-1, eps=1e-6)
         value = self.v_proj(local_style_seq)
-        routing_scale = self.routing_logit_scale.exp().clamp(max=10.0)
+        routing_scale = self._bounded_routing_scale(
+            self.routing_logit_scale
+        )
         scores = routing_scale * torch.matmul(
             query, key.transpose(-2, -1)
         )
@@ -237,14 +284,23 @@ class AllographicModulation(nn.Module):
                 char_query, dim=-1, eps=1e-6
             )
             style_routing = F.normalize(
-                self.style_routing_proj(local_style_seq), dim=-1, eps=1e-6
+                self.style_routing_proj(routing_style), dim=-1, eps=1e-6
             )
-            char_scale = self.char_routing_logit_scale.exp().clamp(max=10.0)
+            char_scale = self._bounded_routing_scale(
+                self.char_routing_logit_scale
+            )
             scores = scores + char_scale * torch.matmul(
                 normalized_char_query, style_routing.transpose(-2, -1)
             )
 
         attention = torch.softmax(scores, dim=-1)
+        if self.routing_uniform_mix:
+            # Preserve a small gradient path to every local slot so rare
+            # allographs do not starve the slots they have not selected yet.
+            attention = (
+                (1.0 - self.routing_uniform_mix) * attention
+                + self.routing_uniform_mix / attention.size(-1)
+            )
         character_style = self.character_style_norm(
             torch.matmul(attention, value)
         )
@@ -255,6 +311,8 @@ class AllographicModulation(nn.Module):
             character_style = character_style * (1.0 + character_gain)
 
         scale, shift = self.mod_proj(character_style).chunk(2, dim=-1)
+        scale = self._cap_modulation_rms(scale)
+        shift = self._cap_modulation_rms(shift)
         scale = self.modulation_limit * torch.tanh(scale)
         shift = self.modulation_limit * torch.tanh(shift)
         modulation_strength = torch.sigmoid(
@@ -275,7 +333,9 @@ class StyleContentAttentionFusion(nn.Module):
                  ffn_dim=None, max_seq_len=32, vocab_size=256,
                  local_projection_residual_init=0.1,
                  routing_temperature=0.7, modulation_limit=0.3,
-                 modulation_residual_init=0.5):
+                 modulation_residual_init=0.5,
+                 modulation_rms_cap=1.0, routing_center_init=0.5,
+                 routing_scale_max=2.0, routing_uniform_mix=0.05):
         super().__init__()
         if not 0.0 < local_projection_residual_init < 1.0:
             raise ValueError(
@@ -315,6 +375,10 @@ class StyleContentAttentionFusion(nn.Module):
             routing_temperature=routing_temperature,
             modulation_limit=modulation_limit,
             modulation_residual_init=modulation_residual_init,
+            modulation_rms_cap=modulation_rms_cap,
+            routing_center_init=routing_center_init,
+            routing_scale_max=routing_scale_max,
+            routing_uniform_mix=routing_uniform_mix,
         )
         self.reset_stability_parameters()
 
