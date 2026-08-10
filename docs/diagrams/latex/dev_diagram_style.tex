@@ -1,0 +1,84 @@
+% Shared TikZ style for the DEV architecture diagrams.
+% Requires only TikZ and standard TikZ libraries.
+\usetikzlibrary{arrows.meta,backgrounds,calc,fit,positioning}
+
+\definecolor{DevInk}{HTML}{172033}
+\definecolor{DevMuted}{HTML}{526078}
+\definecolor{DevLine}{HTML}{475569}
+\definecolor{DevPanel}{HTML}{F8FAFC}
+\definecolor{DevPanelBorder}{HTML}{CBD5E1}
+\definecolor{DevContent}{HTML}{DBEAFE}
+\definecolor{DevContentBorder}{HTML}{2563EB}
+\definecolor{DevStyle}{HTML}{F3E8FF}
+\definecolor{DevStyleBorder}{HTML}{9333EA}
+\definecolor{DevStable}{HTML}{DCFCE7}
+\definecolor{DevStableBorder}{HTML}{16A34A}
+\definecolor{DevAllograph}{HTML}{FFEDD5}
+\definecolor{DevAllographBorder}{HTML}{EA580C}
+\definecolor{DevCritic}{HTML}{FEE2E2}
+\definecolor{DevCriticBorder}{HTML}{DC2626}
+\definecolor{DevLoss}{HTML}{FEF3C7}
+\definecolor{DevLossBorder}{HTML}{D97706}
+
+\tikzset{
+  devtext/.style={font=\sffamily\small, text=DevInk, align=center},
+  devbox/.style={
+    devtext,
+    draw=DevPanelBorder,
+    fill=white,
+    rounded corners=2.2mm,
+    line width=0.75pt,
+    inner xsep=3.2mm,
+    inner ysep=2.4mm,
+    minimum height=9mm
+  },
+  devinput/.style={devbox, draw=DevContentBorder, fill=DevContent},
+  devcontent/.style={devbox, draw=DevContentBorder, fill=DevContent},
+  devstyle/.style={devbox, draw=DevStyleBorder, fill=DevStyle},
+  devstable/.style={devbox, draw=DevStableBorder, fill=DevStable},
+  devallograph/.style={devbox, draw=DevAllographBorder, fill=DevAllograph},
+  devcritic/.style={devbox, draw=DevCriticBorder, fill=DevCritic},
+  devloss/.style={devbox, draw=DevLossBorder, fill=DevLoss},
+  devgroup/.style={
+    draw=DevPanelBorder,
+    fill=DevPanel,
+    rounded corners=3mm,
+    line width=0.75pt,
+    inner sep=4mm
+  },
+  devflow/.style={
+    -{Latex[length=2.8mm,width=1.9mm]},
+    draw=DevLine,
+    line width=0.85pt,
+    rounded corners=1.4mm
+  },
+  devaux/.style={
+    devflow,
+    draw=DevStableBorder,
+    densely dashed
+  },
+  devlossflow/.style={
+    devflow,
+    draw=DevLossBorder,
+    densely dashed
+  },
+  devlabel/.style={
+    font=\sffamily\scriptsize,
+    text=DevMuted,
+    fill=white,
+    inner sep=1.2pt
+  },
+  devgrouptitle/.style={
+    font=\sffamily\bfseries\small,
+    text=DevInk,
+    fill=DevPanel,
+    inner xsep=2mm,
+    inner ysep=0.6mm
+  },
+  devnote/.style={
+    font=\sffamily\scriptsize,
+    text=DevMuted,
+    align=left
+  }
+}
+

@@ -1,0 +1,139 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="2040" height="1160" viewBox="0 0 2040 1160" role="img" aria-labelledby="diagram-title diagram-desc">
+<title id="diagram-title">DEV content–style fusion</title>
+<desc id="diagram-desc">StyleContentAttentionFusion only — the diagram stops before filter_linear and GBlocks.</desc>
+<defs>
+<marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="strokeWidth">
+<path d="M0,0 L10,5 L0,10 z" fill="#475569"/>
+</marker>
+<filter id="soft-shadow" x="-15%" y="-15%" width="130%" height="140%">
+<feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#0F172A" flood-opacity="0.10"/>
+</filter>
+</defs>
+<rect width="2040" height="1160" fill="#FFFFFF"/>
+<text x="42" y="54" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="30" font-weight="600" fill="#172033"><tspan x="42" dy="0">DEV content–style fusion</tspan></text>
+<text x="42" y="86" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="16" font-weight="400" fill="#526078"><tspan x="42" dy="0">StyleContentAttentionFusion only — the diagram stops before filter_linear and GBlocks.</tspan></text>
+<rect x="42" y="128" width="205" height="104" rx="14" fill="#F3E8FF" stroke="#9333EA" stroke-width="1.5" filter="url(#soft-shadow)"/>
+<text x="60" y="158" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="18" font-weight="600" fill="#172033"><tspan x="60" dy="0">Style code z</tspan></text>
+<text x="60" y="185" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="15" font-weight="400" fill="#526078"><tspan x="60" dy="0">B × 8 × 32</tspan><tspan x="60" dy="21">token 0 + tokens 1–7</tspan></text>
+<rect x="290" y="128" width="190" height="104" rx="14" fill="#F3E8FF" stroke="#9333EA" stroke-width="1.5" filter="url(#soft-shadow)"/>
+<text x="308" y="158" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="18" font-weight="600" fill="#172033"><tspan x="308" dy="0">Split tokens</tspan></text>
+<text x="308" y="185" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="15" font-weight="400" fill="#526078"><tspan x="308" dy="0">global: B × 32</tspan><tspan x="308" dy="21">local: B × 7 × 32</tspan></text>
+<rect x="540" y="120" width="286" height="120" rx="14" fill="#F3E8FF" stroke="#9333EA" stroke-width="1.5" filter="url(#soft-shadow)"/>
+<text x="558" y="150" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="18" font-weight="600" fill="#172033"><tspan x="558" dy="0">Global style contract</tspan></text>
+<text x="558" y="177" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="15" font-weight="400" fill="#526078"><tspan x="558" dy="0">Conditions content context</tspan><tspan x="558" dy="21">Never used as local K/V</tspan></text>
+<rect x="885" y="112" width="350" height="136" rx="14" fill="#F3E8FF" stroke="#9333EA" stroke-width="1.5" filter="url(#soft-shadow)"/>
+<text x="903" y="142" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="18" font-weight="600" fill="#172033"><tspan x="903" dy="0">Local-style projection</tspan></text>
+<text x="903" y="169" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="15" font-weight="400" fill="#526078"><tspan x="903" dy="0">LN(32) → bias-free 32→120</tspan><tspan x="903" dy="21">orthogonal base + gated MLP</tspan><tspan x="903" dy="21">projection residual init = 0.10</tspan></text>
+<polyline points="247,180 290,180" fill="none" stroke="#475569" stroke-width="2.0" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<polyline points="480,161 540,161" fill="none" stroke="#475569" stroke-width="2.0" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<polyline points="480,207 700,207 700,270 885,270 885,206" fill="none" stroke="#475569" stroke-width="2.0" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<rect x="663.0" y="251" width="74" height="25" rx="4" fill="#FFFFFF" stroke="#FFFFFF" stroke-width="0"/>
+<text x="700" y="270" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="13" font-weight="600" fill="#475569"><tspan x="700" dy="0">tokens 1–7</tspan></text>
+<rect x="42" y="445" width="205" height="110" rx="14" fill="#DBEAFE" stroke="#2563EB" stroke-width="1.5" filter="url(#soft-shadow)"/>
+<text x="60" y="475" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="18" font-weight="600" fill="#172033"><tspan x="60" dy="0">Character IDs y</tspan></text>
+<text x="60" y="502" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="15" font-weight="400" fill="#526078"><tspan x="60" dy="0">B × L</tspan><tspan x="60" dy="21">vocabulary = 80</tspan></text>
+<rect x="42" y="592" width="205" height="100" rx="14" fill="#DCFCE7" stroke="#16A34A" stroke-width="1.5" filter="url(#soft-shadow)"/>
+<text x="60" y="622" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="18" font-weight="600" fill="#172033"><tspan x="60" dy="0">Valid lengths</tspan></text>
+<text x="60" y="649" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="15" font-weight="400" fill="#526078"><tspan x="60" dy="0">y_lens → token mask</tspan></text>
+<rect x="290" y="445" width="190" height="110" rx="14" fill="#DBEAFE" stroke="#2563EB" stroke-width="1.5" filter="url(#soft-shadow)"/>
+<text x="308" y="475" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="18" font-weight="600" fill="#172033"><tspan x="308" dy="0">Text embedding</tspan></text>
+<text x="308" y="502" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="15" font-weight="400" fill="#526078"><tspan x="308" dy="0">80 → 120</tspan><tspan x="308" dy="21">content: B × L × 120</tspan></text>
+<polyline points="247,500 290,500" fill="none" stroke="#475569" stroke-width="2.0" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<rect x="525" y="315" width="370" height="500" rx="18" fill="#F8FAFC" stroke="#2563EB" stroke-width="1.3"/>
+<text x="545" y="346" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="19" font-weight="600" fill="#172033"><tspan x="545" dy="0">1  Global content context</tspan></text>
+<text x="545" y="370" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="14" font-weight="400" fill="#526078"><tspan x="545" dy="0">Style-conditioned self-attention; no local-style K/V.</tspan></text>
+<rect x="558" y="392" width="304" height="102" rx="14" fill="#F3E8FF" stroke="#9333EA" stroke-width="1.5"/>
+<text x="576" y="422" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="18" font-weight="600" fill="#172033"><tspan x="576" dy="0">Bounded style modulation</tspan></text>
+<text x="576" y="449" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="15" font-weight="400" fill="#526078"><tspan x="576" dy="0">global style → shift/scale</tspan><tspan x="576" dy="21">conditioning limit = ±0.50</tspan></text>
+<rect x="558" y="520" width="304" height="112" rx="14" fill="#DBEAFE" stroke="#2563EB" stroke-width="1.5"/>
+<text x="576" y="550" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="18" font-weight="600" fill="#172033"><tspan x="576" dy="0">4-head self-attention</tspan></text>
+<text x="576" y="577" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="15" font-weight="400" fill="#526078"><tspan x="576" dy="0">affine-free LN + relative bias</tspan><tspan x="576" dy="21">attention residual init = 0.25</tspan></text>
+<rect x="558" y="658" width="304" height="112" rx="14" fill="#DBEAFE" stroke="#2563EB" stroke-width="1.5"/>
+<text x="576" y="688" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="18" font-weight="600" fill="#172033"><tspan x="576" dy="0">Gated FFN residual</tspan></text>
+<text x="576" y="715" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="15" font-weight="400" fill="#526078"><tspan x="576" dy="0">Linear → SiLU gate → Linear</tspan><tspan x="576" dy="21">FFN residual init = 0.25</tspan></text>
+<polyline points="710,494 710,520" fill="none" stroke="#475569" stroke-width="2.0" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<polyline points="710,632 710,658" fill="none" stroke="#475569" stroke-width="2.0" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<polyline points="480,500 525,500" fill="none" stroke="#475569" stroke-width="2.0" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<polyline points="683,240 683,315" fill="none" stroke="#475569" stroke-width="2.0" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<rect x="639.2" y="296" width="87.6" height="25" rx="4" fill="#FFFFFF" stroke="#FFFFFF" stroke-width="0"/>
+<text x="683" y="315" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="13" font-weight="600" fill="#475569"><tspan x="683" dy="0">global style</tspan></text>
+<rect x="930" y="380" width="260" height="372" rx="18" fill="#F8FAFC" stroke="#16A34A" stroke-width="1.3"/>
+<text x="950" y="411" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="19" font-weight="600" fill="#172033"><tspan x="950" dy="0">2  Local continuity</tspan></text>
+<text x="950" y="435" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="14" font-weight="400" fill="#526078"><tspan x="950" dy="0">Character-neighborhood smoothing.</tspan></text>
+<rect x="960" y="452" width="200" height="88" rx="14" fill="#DCFCE7" stroke="#16A34A" stroke-width="1.5"/>
+<text x="978" y="482" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="18" font-weight="600" fill="#172033"><tspan x="978" dy="0">Depthwise Conv1D</tspan></text>
+<text x="978" y="509" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="15" font-weight="400" fill="#526078"><tspan x="978" dy="0">kernel 5, 120 groups</tspan></text>
+<rect x="960" y="564" width="200" height="96" rx="14" fill="#DCFCE7" stroke="#16A34A" stroke-width="1.5"/>
+<text x="978" y="594" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="18" font-weight="600" fill="#172033"><tspan x="978" dy="0">Pointwise + selector</tspan></text>
+<text x="978" y="621" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="15" font-weight="400" fill="#526078"><tspan x="978" dy="0">SiLU projection</tspan><tspan x="978" dy="21">content-dependent gate</tspan></text>
+<rect x="960" y="684" width="200" height="48" rx="14" fill="#DCFCE7" stroke="#16A34A" stroke-width="1.5"/>
+<text x="978" y="714" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="15" font-weight="600" fill="#172033"><tspan x="978" dy="0">Residual init = 0.25</tspan></text>
+<text x="978" y="741" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="15" font-weight="400" fill="#526078"></text>
+<polyline points="895,576 930,576" fill="none" stroke="#475569" stroke-width="2.0" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<polyline points="1060,540 1060,564" fill="none" stroke="#475569" stroke-width="2.0" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<polyline points="1060,660 1060,684" fill="none" stroke="#475569" stroke-width="2.0" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<rect x="1225" y="286" width="500" height="624" rx="18" fill="#F8FAFC" stroke="#EA580C" stroke-width="1.3"/>
+<text x="1245" y="317" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="19" font-weight="600" fill="#172033"><tspan x="1245" dy="0">3  Allograph routing and modulation</tspan></text>
+<text x="1245" y="341" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="14" font-weight="400" fill="#526078"><tspan x="1245" dy="0">The only content-to-local-style attention in DEV fusion.</tspan></text>
+<rect x="1255" y="372" width="205" height="100" rx="14" fill="#DBEAFE" stroke="#2563EB" stroke-width="1.5"/>
+<text x="1273" y="402" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="18" font-weight="600" fill="#172033"><tspan x="1273" dy="0">Content query</tspan></text>
+<text x="1273" y="429" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="15" font-weight="400" fill="#526078"><tspan x="1273" dy="0">bias-free Q projection</tspan><tspan x="1273" dy="21">cosine normalization</tspan></text>
+<rect x="1485" y="372" width="205" height="100" rx="14" fill="#F3E8FF" stroke="#9333EA" stroke-width="1.5"/>
+<text x="1503" y="402" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="18" font-weight="600" fill="#172033"><tspan x="1503" dy="0">Centered style keys</tspan></text>
+<text x="1503" y="429" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="15" font-weight="400" fill="#526078"><tspan x="1503" dy="0">local − mean(local)</tspan><tspan x="1503" dy="21">bias-free cosine K</tspan></text>
+<rect x="1255" y="505" width="205" height="108" rx="14" fill="#FFEDD5" stroke="#EA580C" stroke-width="1.5"/>
+<text x="1273" y="535" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="18" font-weight="600" fill="#172033"><tspan x="1273" dy="0">Character prior</tspan></text>
+<text x="1273" y="562" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="15" font-weight="400" fill="#526078"><tspan x="1273" dy="0">character embedding</tspan><tspan x="1273" dy="21">+ content-context query</tspan></text>
+<rect x="1485" y="505" width="205" height="108" rx="14" fill="#FFEDD5" stroke="#EA580C" stroke-width="1.5"/>
+<text x="1503" y="535" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="18" font-weight="600" fill="#172033"><tspan x="1503" dy="0">Routing softmax</tspan></text>
+<text x="1503" y="562" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="15" font-weight="400" fill="#526078"><tspan x="1503" dy="0">content score + char score</tspan><tspan x="1503" dy="21">temperature = 0.50</tspan></text>
+<rect x="1255" y="648" width="205" height="110" rx="14" fill="#F3E8FF" stroke="#9333EA" stroke-width="1.5"/>
+<text x="1273" y="678" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="18" font-weight="600" fill="#172033"><tspan x="1273" dy="0">Uncentered values</tspan></text>
+<text x="1273" y="705" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="15" font-weight="400" fill="#526078"><tspan x="1273" dy="0">weighted local-style sum</tspan><tspan x="1273" dy="21">retain writer-common evidence</tspan></text>
+<rect x="1485" y="648" width="205" height="110" rx="14" fill="#DCFCE7" stroke="#16A34A" stroke-width="1.5"/>
+<text x="1503" y="678" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="18" font-weight="600" fill="#172033"><tspan x="1503" dy="0">Bounded modulation</tspan></text>
+<text x="1503" y="705" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="15" font-weight="400" fill="#526078"><tspan x="1503" dy="0">char gain ±0.25</tspan><tspan x="1503" dy="21">RMS cap 1.0; tanh ±0.30</tspan></text>
+<rect x="1370" y="793" width="205" height="82" rx="14" fill="#DCFCE7" stroke="#16A34A" stroke-width="1.5"/>
+<text x="1388" y="823" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="18" font-weight="600" fill="#172033"><tspan x="1388" dy="0">Residual modulation</tspan></text>
+<text x="1388" y="850" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="15" font-weight="400" fill="#526078"><tspan x="1388" dy="0">initial strength = 0.50</tspan></text>
+<polyline points="1460,422 1485,422" fill="none" stroke="#475569" stroke-width="2.0" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<polyline points="1357,472 1357,505" fill="none" stroke="#475569" stroke-width="2.0" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<polyline points="1460,559 1485,559" fill="none" stroke="#475569" stroke-width="2.0" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<polyline points="1587,613 1587,648" fill="none" stroke="#475569" stroke-width="2.0" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<polyline points="1460,703 1485,703" fill="none" stroke="#475569" stroke-width="2.0" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<polyline points="1587,758 1587,777 1472,777 1472,793" fill="none" stroke="#475569" stroke-width="2.0" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<polyline points="1190,576 1225,576" fill="none" stroke="#475569" stroke-width="2.0" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<polyline points="1060,248 1060,272 1587,272 1587,372" fill="none" stroke="#475569" stroke-width="2.0" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<rect x="1535.9" y="253" width="102.2" height="25" rx="4" fill="#FFFFFF" stroke="#FFFFFF" stroke-width="0"/>
+<text x="1587" y="272" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="13" font-weight="600" fill="#475569"><tspan x="1587" dy="0">7 local tokens</tspan></text>
+<polyline points="247,475 265,475 265,558 1255,558" fill="none" stroke="#475569" stroke-width="2.0" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<rect x="217.55" y="539" width="94.89999999999999" height="25" rx="4" fill="#FFFFFF" stroke="#FFFFFF" stroke-width="0"/>
+<text x="265" y="558" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="13" font-weight="600" fill="#475569"><tspan x="265" dy="0">character IDs</tspan></text>
+<rect x="1760" y="400" width="238" height="330" rx="18" fill="#F8FAFC" stroke="#16A34A" stroke-width="1.3"/>
+<text x="1780" y="431" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="19" font-weight="600" fill="#172033"><tspan x="1780" dy="0">Fusion handoff</tspan></text>
+<text x="1780" y="455" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="14" font-weight="400" fill="#526078"><tspan x="1780" dy="0">Stops before the generator.</tspan></text>
+<rect x="1783" y="476" width="192" height="126" rx="14" fill="#DCFCE7" stroke="#16A34A" stroke-width="1.5"/>
+<text x="1801" y="506" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="18" font-weight="600" fill="#172033"><tspan x="1801" dy="0">Outer residual gate</tspan></text>
+<text x="1801" y="533" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="15" font-weight="400" fill="#526078"><tspan x="1801" dy="0">content + σ(g)·</tspan><tspan x="1801" dy="21">(fused − content)</tspan><tspan x="1801" dy="21">initial gate = 0.25</tspan></text>
+<rect x="1783" y="632" width="192" height="72" rx="14" fill="#FEF3C7" stroke="#D97706" stroke-width="1.5"/>
+<text x="1801" y="662" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="18" font-weight="600" fill="#172033"><tspan x="1801" dy="0">Output</tspan></text>
+<text x="1801" y="689" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="15" font-weight="400" fill="#526078"><tspan x="1801" dy="0">B × L × 120</tspan></text>
+<polyline points="1575,834 1738,834 1738,539 1783,539" fill="none" stroke="#475569" stroke-width="2.0" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<rect x="1701.0" y="520" width="74" height="25" rx="4" fill="#FFFFFF" stroke="#FFFFFF" stroke-width="0"/>
+<text x="1738" y="539" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="13" font-weight="600" fill="#475569"><tspan x="1738" dy="0">fused</tspan></text>
+<polyline points="480,500 500,500 500,945 1748,945 1748,572 1783,572" fill="none" stroke="#475569" stroke-width="2.0" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<rect x="1707.85" y="926" width="80.3" height="25" rx="4" fill="#FFFFFF" stroke="#FFFFFF" stroke-width="0"/>
+<text x="1748" y="945" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="13" font-weight="600" fill="#475569"><tspan x="1748" dy="0">raw content</tspan></text>
+<polyline points="1879,602 1879,632" fill="none" stroke="#475569" stroke-width="2.0" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<polyline points="247,642 505,642 505,840 1880,840 1880,730" fill="none" stroke="#16A34A" stroke-width="2.0" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)" stroke-dasharray="7 6"/>
+<rect x="461.2" y="821" width="87.6" height="25" rx="4" fill="#FFFFFF" stroke="#FFFFFF" stroke-width="0"/>
+<text x="505" y="840" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="13" font-weight="600" fill="#16A34A"><tspan x="505" dy="0">padding mask</tspan></text>
+<rect x="525" y="888" width="315" height="92" rx="14" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="1.5"/>
+<text x="543" y="918" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="18" font-weight="600" fill="#172033"><tspan x="543" dy="0">Global/local separation</tspan></text>
+<text x="543" y="945" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="15" font-weight="400" fill="#526078"><tspan x="543" dy="0">global style: Stage 1 only</tspan><tspan x="543" dy="21">local style: Stage 3 only</tspan></text>
+<rect x="880" y="888" width="315" height="92" rx="14" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="1.5"/>
+<text x="898" y="918" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="18" font-weight="600" fill="#172033"><tspan x="898" dy="0">Identity-safe initialization</tspan></text>
+<text x="898" y="945" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="15" font-weight="400" fill="#526078"><tspan x="898" dy="0">all new branches start as</tspan><tspan x="898" dy="21">small non-zero residuals</tspan></text>
+<line x1="42" y1="1090" x2="1998" y2="1090" stroke="#CBD5E1" stroke-width="1"/>
+<text x="42" y="1117" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="13" font-weight="400" fill="#526078"><tspan x="42" dy="0">Source: dev/networks/fusion.py::StyleContentAttentionFusion and AllographicModulation;</tspan><tspan x="42" dy="18">outer residual handoff: dev/networks/BigGAN_networks.py::Generator.forward. No GBlock is included.</tspan></text>
+</svg>

@@ -17,19 +17,20 @@ inference:
 
 training:
   dset_split: 'trnval'
-  # Stable cumulative scratch schedule for repeated Kaggle resumes.
-  # Keep these values unchanged while continuing checkpoints toward epoch 50.
-  epochs: 50
+  # Cumulative scratch schedule: preserve useful adversarial updates through
+  # the refinement phase, then keep a non-trivial floor for stable GAN polishing.
+  # Keep these values unchanged across Kaggle resumes.
+  epochs: 60
   lr_policy: 'linear'
-  start_decay_epoch: 10
-  n_epochs_decay: 20
-  min_lr_ratio: 0.1
+  start_decay_epoch: 12
+  n_epochs_decay: 40
+  min_lr_ratio: 0.2
   batch_size: 8
   eval_batch_size: 12
   sample_nrow: 4
   # optimization:
-  lr: 1.5e-4
-  d_lr: 5.0e-5
+  lr: 2.0e-4
+  d_lr: 1.0e-4
   adam_b1: 0.5
   adam_b2: 0.999
   # sampling and saving
@@ -47,21 +48,24 @@ training:
   capitalize_ratio: 0.5
   blank_ratio: 0.
   sort_input: true
-  # Two critic steps retain throughput; the lower D LR prevents global-D dominance.
+  # Two critic steps with half-rate D/P matched the strongest DEV trajectory.
   num_critic_train: 2
-  lambda_patch_adv: 0.75
+  lambda_patch_adv: 0.5
   patch_size: 32
   min_patch_crops: 4
   max_patch_crops: 8
   vae_mode: true
   lambda_ctc: 1.0
   # Preserve content while gradually releasing capacity for writer style.
-  lambda_ctc_final: 0.6
+  lambda_ctc_final: 0.4
   ctc_decay_start_epoch: 10
   ctc_decay_end_epoch: 20
   lambda_info: 1.0
   lambda_wid: 0.5
   lambda_recn: 10.0
+  lambda_recn_final: 5.0
+  recn_decay_start_epoch: 18
+  recn_decay_end_epoch: 40
   lambda_style_cycle: 1.0
   lambda_content_adv: 0.02
   lambda_kl: 0.1
@@ -70,7 +74,7 @@ training:
   r1_interval: 16
   lambda_r1: 0.01
   update_ema: true
-  ema_beta: 0.999
+  ema_beta: 0.9995
   pretrained_w: './pretrained/wid_iam_new.pth'
   pretrained_r: './pretrained/ocr_iam_new.pth'
   pretrained_ckpt: ''
@@ -129,7 +133,10 @@ GenModel:
   style_dim: 32
   fusion_gate_init: 0.25
   local_projection_residual_init: 0.1
-  allograph_routing_temperature: 0.5
+  allograph_routing_temperature: 0.7
+  allograph_routing_center_init: 0.5
+  allograph_routing_scale_max: 2.0
+  allograph_routing_uniform_mix: 0.05
   allograph_modulation_limit: 0.3
   allograph_residual_init: 0.5
   allograph_modulation_rms_cap: 1.0
@@ -214,6 +221,7 @@ EncModel:
   content_grl: 1.0
   local_query_residual: 0.5
   local_attention_residual_init: 0.25
+  local_query_anchor_strength: 0.5
   init: 'none'
 
 

@@ -193,7 +193,8 @@ class StyleEncoder(nn.Module):
     def __init__(self, style_dim=32, in_dim=256, init='N02', num_style_tokens=8,
                  backbone_channels=(64, 128, 256), n_class=80, content_grl=1.0,
                  local_query_residual=0.5,
-                 local_attention_residual_init=0.25, **kwargs):
+                 local_attention_residual_init=0.25,
+                 local_query_anchor_strength=0.5, **kwargs):
         super(StyleEncoder, self).__init__()
         self.style_dim = style_dim
         self._in_dim = in_dim
@@ -201,6 +202,9 @@ class StyleEncoder(nn.Module):
         self.content_grl = content_grl
         self.local_query_residual = float(local_query_residual)
         self.local_attention_residual_init = float(local_attention_residual_init)
+        self.local_query_anchor_strength = float(
+            local_query_anchor_strength
+        )
         if num_style_tokens < 1:
             raise ValueError('num_style_tokens must be at least 1')
         if self.local_query_residual < 0:
@@ -208,6 +212,10 @@ class StyleEncoder(nn.Module):
         if not 0.0 < self.local_attention_residual_init < 1.0:
             raise ValueError(
                 'local_attention_residual_init must be strictly between 0 and 1'
+            )
+        if not 0.0 <= self.local_query_anchor_strength <= 1.0:
+            raise ValueError(
+                'local_query_anchor_strength must be in [0, 1]'
             )
 
         self.linear_style = nn.Sequential(
@@ -241,6 +249,12 @@ class StyleEncoder(nn.Module):
             nn.init.orthogonal_(style_query_init[0])
             style_query_init.mul_(0.02 * (in_dim ** 0.5))
         self.style_queries = nn.Parameter(style_query_init)
+        # Keep spatial-attention queries separated throughout long training.
+        # The trainable component still adapts, while the fixed copy prevents
+        # the partial query collapse measured in the epoch-50 checkpoint.
+        self.register_buffer(
+            'style_query_anchors', style_query_init.detach().clone()
+        )
 
         # A fixed orthogonal code gives every local slot a permanent identity.
         # Writer evidence is still learned; the code only prevents all slots from
@@ -356,7 +370,10 @@ class StyleEncoder(nn.Module):
         key_padding_mask = torch.cat(padding_masks, dim=1) if padding_masks else None
 
         batch_size = img.size(0)
-        style_queries = self.style_queries.expand(batch_size, -1, -1)
+        style_queries = (
+            self.style_queries
+            + self.local_query_anchor_strength * self.style_query_anchors
+        ).expand(batch_size, -1, -1)
         if style_queries.size(1):
             pe_queries = get_1d_sinusoidal_embeddings(
                 style_queries.size(1), self._in_dim, style_queries.device
