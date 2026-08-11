@@ -127,6 +127,46 @@ class BaseModel(object):
         start_epoch = int(epoch_done) + (1 if skip_batches == 0 else 0)
         return max(1, start_epoch), skip_batches, iter_count
 
+    @staticmethod
+    def capture_process_rng_state():
+        """Capture RNGs that validation libraries may consume."""
+        import random
+        return {
+            'torch': torch.get_rng_state(),
+            'cuda': (
+                torch.cuda.get_rng_state_all()
+                if torch.cuda.is_available() else None
+            ),
+            'numpy': np.random.get_state(),
+            'python': random.getstate(),
+        }
+
+    @staticmethod
+    def seed_process_rng(seed):
+        """Use a repeatable validation RNG without changing cuDNN policy."""
+        import random
+        seed = int(seed)
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
+        np.random.seed(seed)
+        random.seed(seed)
+
+    @staticmethod
+    def restore_process_rng_state(state):
+        """Restore training RNGs after deterministic validation."""
+        import random
+        torch.set_rng_state(state['torch'].cpu().to(torch.uint8))
+        if state.get('cuda') is not None and torch.cuda.is_available():
+            for device_index, device_state in enumerate(state['cuda']):
+                if device_index < torch.cuda.device_count():
+                    torch.cuda.set_rng_state(
+                        device_state.cpu().to(torch.uint8),
+                        device=device_index,
+                    )
+        np.random.set_state(state['numpy'])
+        random.setstate(state['python'])
+
     def print(self, info):
         if self.local_rank > 0:
             return
@@ -176,6 +216,26 @@ class BaseModel(object):
         elif isinstance(value, np.generic):
             value = value.item()
         if isinstance(value, (bool, int, float, str)):
+            return value
+        return str(value)
+
+    @staticmethod
+    def _checkpoint_safe_config(value):
+        """Recursively convert Munch/config values to portable primitives."""
+        if isinstance(value, dict):
+            return {
+                str(key): BaseModel._checkpoint_safe_config(item)
+                for key, item in value.items()
+            }
+        if isinstance(value, (list, tuple)):
+            return [
+                BaseModel._checkpoint_safe_config(item) for item in value
+            ]
+        if isinstance(value, torch.device):
+            return str(value)
+        if isinstance(value, np.generic):
+            return value.item()
+        if value is None or isinstance(value, (bool, int, float, str)):
             return value
         return str(value)
 
@@ -293,10 +353,26 @@ class BaseModel(object):
         if self.local_rank > 0:
             return
         ckpt = {}
+        model_manifest = {}
         for name, model in self.models.items():
             m_unwrapped = self.unwrap_model(model)
             m_dict = m_unwrapped.state_dict()
             ckpt[name] = m_dict
+            model_manifest[name] = {
+                'class': (
+                    f'{type(m_unwrapped).__module__}.'
+                    f'{type(m_unwrapped).__name__}'
+                ),
+                'parameters': sum(
+                    parameter.numel()
+                    for parameter in m_unwrapped.parameters()
+                ),
+                'module_types': sorted({
+                    type(module).__name__
+                    for module in m_unwrapped.modules()
+                }),
+            }
+        ckpt['model_manifest'] = model_manifest
 
         if hasattr(self, 'models_ema') and self.models_ema:
             for name, model_ema in self.models_ema.items():
@@ -330,6 +406,8 @@ class BaseModel(object):
         for key, val in kwargs.items():
             ckpt[key] = val
 
+        ckpt['checkpoint_format_version'] = 2
+        ckpt['config_snapshot'] = self._checkpoint_safe_config(self.opt)
         ckpt['Epoch'] = epoch_done
         if iter_count is not None:
             ckpt['iter_count'] = iter_count
@@ -348,21 +426,36 @@ class BaseModel(object):
         if this_fid is not None:
             try:
                 this_fid = float(this_fid)
-                self.last_eval_fid = this_fid
-            except Exception:
+                if not np.isfinite(this_fid):
+                    self.print(
+                        f'Ignoring non-finite checkpoint FID: {this_fid}'
+                    )
+                    this_fid = None
+                else:
+                    self.last_eval_fid = this_fid
+            except (TypeError, ValueError):
                 this_fid = None
 
         cached_best = getattr(self, 'best_fid', None)
         if cached_best is None:
-            cached_best = getattr(self, 'restored_metadata', {}).get('best_fid', np.inf)
-            if cached_best is None: cached_best = np.inf
-            try: cached_best = float(cached_best)
-            except Exception: cached_best = np.inf
+            cached_best = getattr(
+                self, 'restored_metadata', {}
+            ).get('best_fid', np.inf)
+        try:
+            cached_best = float(cached_best)
+        except (TypeError, ValueError):
+            cached_best = np.inf
+        if not np.isfinite(cached_best):
+            cached_best = np.inf
 
         if best_fid is not None:
-            try: best_fid_val = float(best_fid)
-            except Exception: best_fid_val = cached_best
+            try:
+                best_fid_val = float(best_fid)
+            except (TypeError, ValueError):
+                best_fid_val = cached_best
         else:
+            best_fid_val = cached_best
+        if not np.isfinite(best_fid_val):
             best_fid_val = cached_best
 
         is_new_best = (tag == 'best') or (this_fid is not None and this_fid < cached_best)
@@ -380,45 +473,80 @@ class BaseModel(object):
         ckpt_dir = os.path.join(self.log_root, self.opt.training.ckpt_dir)
         os.makedirs(ckpt_dir, exist_ok=True)
 
-        # Write once to a temporary file
-        tmp_path = os.path.join(ckpt_dir, f".tmp_{tag}.pth")
+        # Serialize once, then atomically publish named checkpoints. Publish
+        # before removing stale files so an interrupted Kaggle session never
+        # leaves the run without a recoverable last/best checkpoint.
+        tmp_path = os.path.join(ckpt_dir, f'.tmp_{tag}.pth')
         torch.save(ckpt, tmp_path)
 
-        if tag == 'last':
-            fid_str = f"{this_fid:.4f}" if (this_fid is not None and np.isfinite(this_fid)) else "inf"
-            
-            for old_last in glob.glob(os.path.join(ckpt_dir, "last_fid_*.pth")) + glob.glob(os.path.join(ckpt_dir, "last.pth")):
-                try: os.remove(old_last)
-                except Exception: pass
+        def publish_checkpoint(destination):
+            staged = destination + f'.tmp-{os.getpid()}'
+            try:
+                shutil.copyfile(tmp_path, staged)
+                os.replace(staged, destination)
+            finally:
+                if os.path.exists(staged):
+                    os.remove(staged)
 
-            last_fid_path = os.path.join(ckpt_dir, f"last_fid_{fid_str}.pth")
-            shutil.copy(tmp_path, last_fid_path)
-            self.print(f"--> Saved last checkpoint: last_fid_{fid_str}.pth")
+        def remove_stale(patterns, keep_path):
+            for pattern in patterns:
+                for stale_path in glob.glob(os.path.join(ckpt_dir, pattern)):
+                    if os.path.abspath(stale_path) == os.path.abspath(keep_path):
+                        continue
+                    try:
+                        os.remove(stale_path)
+                    except OSError as error:
+                        self.print(
+                            f'Could not remove stale checkpoint {stale_path}: {error}'
+                        )
 
-            if is_new_best:
-                best_str = f"{best_fid_val:.4f}" if (best_fid_val is not None and np.isfinite(best_fid_val)) else fid_str
-                for old_best in glob.glob(os.path.join(ckpt_dir, "best_fid_*.pth")) + glob.glob(os.path.join(ckpt_dir, "best.pth")):
-                    try: os.remove(old_best)
-                    except Exception: pass
+        try:
+            if tag == 'last':
+                fid_str = (
+                    f'{this_fid:.4f}' if this_fid is not None else 'inf'
+                )
+                last_fid_path = os.path.join(
+                    ckpt_dir, f'last_fid_{fid_str}.pth'
+                )
+                publish_checkpoint(last_fid_path)
+                remove_stale(('last_fid_*.pth', 'last.pth'), last_fid_path)
+                self.print(f'--> Saved last checkpoint: last_fid_{fid_str}.pth')
 
-                best_fid_path = os.path.join(ckpt_dir, f"best_fid_{best_str}.pth")
-                shutil.copy(tmp_path, best_fid_path)
-                self.print(f"--> Saved new best checkpoint: best_fid_{best_str}.pth (FID: {best_fid_val:.4f})")
-
-        else:
-            if is_new_best or tag == 'best':
-                best_str = f"{best_fid_val:.4f}" if (best_fid_val is not None and np.isfinite(best_fid_val)) else "inf"
-                for old_best in glob.glob(os.path.join(ckpt_dir, "best_fid_*.pth")) + glob.glob(os.path.join(ckpt_dir, "best.pth")):
-                    try: os.remove(old_best)
-                    except Exception: pass
-
-                best_fid_path = os.path.join(ckpt_dir, f"best_fid_{best_str}.pth")
-                shutil.copy(tmp_path, best_fid_path)
-                self.print(f"--> Saved best checkpoint: best_fid_{best_str}.pth (FID: {best_fid_val:.4f})")
-
-        # Clean up temporary file
-        if os.path.exists(tmp_path):
-            os.remove(tmp_path)
+                if is_new_best:
+                    best_str = (
+                        f'{best_fid_val:.4f}'
+                        if np.isfinite(best_fid_val) else fid_str
+                    )
+                    best_fid_path = os.path.join(
+                        ckpt_dir, f'best_fid_{best_str}.pth'
+                    )
+                    publish_checkpoint(best_fid_path)
+                    remove_stale(
+                        ('best_fid_*.pth', 'best.pth'), best_fid_path
+                    )
+                    self.print(
+                        f'--> Saved new best checkpoint: '
+                        f'best_fid_{best_str}.pth (FID: {best_fid_val:.4f})'
+                    )
+            elif is_new_best or tag == 'best':
+                best_str = (
+                    f'{best_fid_val:.4f}'
+                    if np.isfinite(best_fid_val) else 'inf'
+                )
+                best_fid_path = os.path.join(
+                    ckpt_dir, f'best_fid_{best_str}.pth'
+                )
+                publish_checkpoint(best_fid_path)
+                remove_stale(
+                    ('best_fid_*.pth', 'best.pth'), best_fid_path
+                )
+                self.print(
+                    f'--> Saved best checkpoint: best_fid_{best_str}.pth '
+                    f'(FID: {best_fid_val:.4f})'
+                )
+        finally:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
 
     def restore_rng_state(self, rng=None):
         if rng is None:
@@ -481,19 +609,42 @@ class BaseModel(object):
                 self.print(f'Restoring eval_y RNG warning: {e}')
 
     def resolve_resume_path(self, resume_path):
+        """Resolve a checkpoint file, run directory, or ``latest`` request."""
         if not resume_path:
             return None
-        if os.path.isfile(resume_path):
+        if isinstance(resume_path, os.PathLike):
+            resume_path = os.fspath(resume_path)
+        if isinstance(resume_path, str) and os.path.isfile(resume_path):
             return resume_path
-        if isinstance(resume_path, bool) or str(resume_path).lower() in ('true', 'latest'):
-            candidate_dir = os.path.join(self.log_root, getattr(self.opt.training, 'ckpt_dir', 'ckpts'))
-            if os.path.isdir(candidate_dir):
-                import glob
-                pths = glob.glob(os.path.join(candidate_dir, "last_fid_*.pth")) + glob.glob(os.path.join(candidate_dir, "last.pth"))
-                pths = [p for p in pths if not os.path.basename(p).startswith('.tmp_')]
-                if pths:
-                    return max(set(pths), key=os.path.getmtime)
-        return None
+
+        requested_latest = (
+            isinstance(resume_path, bool)
+            or str(resume_path).lower() in ('true', 'latest')
+        )
+        candidate_roots = []
+        if requested_latest:
+            candidate_roots.append(self.log_root)
+        elif isinstance(resume_path, str) and os.path.isdir(resume_path):
+            candidate_roots.append(resume_path)
+        else:
+            return None
+
+        import glob
+        ckpt_subdir = getattr(self.opt.training, 'ckpt_dir', 'ckpts')
+        candidates = []
+        for root in candidate_roots:
+            for candidate_dir in (root, os.path.join(root, ckpt_subdir)):
+                candidates.extend(glob.glob(
+                    os.path.join(candidate_dir, 'last_fid_*.pth')
+                ))
+                candidates.extend(glob.glob(
+                    os.path.join(candidate_dir, 'last.pth')
+                ))
+        candidates = [
+            path for path in set(candidates)
+            if not os.path.basename(path).startswith('.tmp_')
+        ]
+        return max(candidates, key=os.path.getmtime) if candidates else None
 
     def load(self, ckpt, map_location=None, modules=None):
         if modules is None:
@@ -650,6 +801,37 @@ class AdversarialModel(BaseModel):
         self.max_valid_image_width = self.opt.char_width * self.opt.training.max_word_len
         self.vae_mode = self.opt.training.vae_mode
         self.collect_fn = get_collect_fn(self.opt.training.sort_input, sort_style=True)
+        train_workers = int(getattr(self.opt.training, 'num_workers', 4))
+        eval_workers = int(getattr(self.opt.training, 'eval_num_workers', train_workers))
+        sample_workers = int(getattr(self.opt.training, 'sample_num_workers', 0))
+        prefetch_factor = int(getattr(self.opt.training, 'prefetch_factor', 2))
+        persistent_workers = bool(getattr(
+            self.opt.training, 'persistent_workers', True
+        ))
+        if min(train_workers, eval_workers, sample_workers) < 0:
+            raise ValueError(
+                'num_workers, eval_num_workers, and sample_num_workers '
+                'must be non-negative'
+            )
+        if prefetch_factor < 1:
+            raise ValueError('prefetch_factor must be at least 1')
+
+        def worker_options(worker_count):
+            options = {
+                'num_workers': worker_count,
+                'pin_memory': self.device.type == 'cuda',
+                'worker_init_fn': seed_worker,
+            }
+            if worker_count > 0:
+                options.update(
+                    persistent_workers=persistent_workers,
+                    prefetch_factor=prefetch_factor,
+                )
+            return options
+
+        self.train_loader_worker_options = worker_options(train_workers)
+        self.eval_loader_worker_options = worker_options(eval_workers)
+        self.sample_loader_worker_options = worker_options(sample_workers)
         self.inception_model = None
         self.valid_real_stats = None
         dataset = get_dataset(opt.dataset, opt.training.dset_split,
@@ -669,29 +851,27 @@ class AdversarialModel(BaseModel):
             shuffle=shuffle,
             sampler=self.train_sampler,
             collate_fn=self.collect_fn,
-            num_workers=4,
             drop_last=True,
-            pin_memory=(self.device.type == 'cuda'),
-            persistent_workers=True,
-            worker_init_fn=seed_worker,
+            **self.train_loader_worker_options,
         )
 
+        sample_batch_size = max(1, opt.training.eval_batch_size // 2)
         self.tst_loader = DataLoader(
             get_dataset(opt.dataset, opt.valid.dset_split,
                         recogn_aug=False, wid_aug=False, process_style=True),
-            batch_size=opt.training.eval_batch_size // 2,
+            batch_size=sample_batch_size,
             shuffle=True,
             collate_fn=self.collect_fn,
-            pin_memory=(self.device.type == 'cuda')
+            **self.sample_loader_worker_options,
         )
 
         self.tst_loader2 = DataLoader(
             get_dataset(opt.dataset, opt.training.dset_split,
                         recogn_aug=False, wid_aug=False, process_style=True),
-            batch_size=opt.training.eval_batch_size // 2,
+            batch_size=sample_batch_size,
             shuffle=True,
             collate_fn=self.collect_fn,
-            pin_memory=(self.device.type == 'cuda')
+            **self.sample_loader_worker_options,
         )
 
         self.models = None
@@ -843,6 +1023,14 @@ class AdversarialModel(BaseModel):
                     yield fake_batch
 
     def validate(self, style_guided=True, test_stage=False, *args, **kwargs):
+        # KID subset selection and a few validation helpers use process-global
+        # RNGs. Isolate them so metric toggles/frequency cannot change training.
+        training_rng_state = self.capture_process_rng_state()
+        eval_seed = int(getattr(
+            self.opt.valid, 'eval_seed', getattr(self.opt, 'seed', 123456)
+        ))
+        self.seed_process_rng(eval_seed)
+
         use_ema = getattr(self, 'use_ema', False)
         if use_ema:
             active_G = self.models.G
@@ -860,10 +1048,7 @@ class AdversarialModel(BaseModel):
                     collate_fn=self.collect_fn,
                     batch_size=self.opt.valid.batch_size,
                     shuffle=False,
-                    num_workers=4,
-                    pin_memory=(self.device.type == 'cuda'),
-                    persistent_workers=True,
-                    worker_init_fn=seed_worker
+                    **self.eval_loader_worker_options,
                 )
             eval_dloader = self.eval_dloader
 
@@ -940,20 +1125,24 @@ class AdversarialModel(BaseModel):
             self.print("Generating and caching validation fake images...")
             generator_list = [batch_to_cpu(b) for b in get_generator()]
 
-            cached_decompressed_list = None
             def get_cached_generator():
-                nonlocal cached_decompressed_list
-                if cached_decompressed_list is None:
-                    cached_decompressed_list = []
+                # Return a fresh streaming view for every metric. Keeping both
+                # int8 and full float32 copies of the complete validation set
+                # multiplied host RAM and caused avoidable local/Kaggle crashes.
+                def decompressed_batches():
                     for batch in generator_list:
                         decompressed = {}
-                        for k, v in batch.items():
-                            if k in ['org_imgs', 'style_imgs'] and isinstance(v, torch.Tensor):
-                                decompressed[k] = (v.to(torch.float32) / 127.0).pin_memory()
+                        for key, value in batch.items():
+                            if (key in ('org_imgs', 'style_imgs')
+                                    and isinstance(value, torch.Tensor)):
+                                value = value.to(torch.float32).div_(127.0)
+                                if self.device.type == 'cuda':
+                                    value = value.pin_memory()
+                                decompressed[key] = value
                             else:
-                                decompressed[k] = v
-                        cached_decompressed_list.append(decompressed)
-                return cached_decompressed_list
+                                decompressed[key] = value
+                        yield decompressed
+                return decompressed_batches()
 
             res = {}
             if validate_distribution_metrics:
@@ -1094,6 +1283,7 @@ class AdversarialModel(BaseModel):
             if use_ema:
                 self.models.G = active_G
                 self.models.E = active_E
+            self.restore_process_rng_state(training_rng_state)
 
         return res
 
@@ -1509,12 +1699,18 @@ class GlobalLocalAdversarialModel(AdversarialModel):
             self.ema_tracker = EMA(self.ema_beta)
 
         epoch_done = 1
-        resume_path = getattr(self.opt.training, 'resume', None)
-        if not resume_path or not os.path.exists(resume_path):
-            resume_path = getattr(self.opt.training, 'pretrained_ckpt', None)
+        requested_resume = getattr(self.opt.training, 'resume', None)
+        resume_path = self.resolve_resume_path(requested_resume)
+        if requested_resume and resume_path is None:
+            self.print(f'Could not resolve requested resume target: {requested_resume}')
+        if resume_path is None:
+            resume_path = self.resolve_resume_path(
+                getattr(self.opt.training, 'pretrained_ckpt', None)
+            )
 
-        is_resuming = resume_path is not None and os.path.exists(resume_path)
+        is_resuming = resume_path is not None
         if is_resuming:
+            self.print(f'Resuming from resolved checkpoint: {resume_path}')
             epoch_done = self.load(resume_path, self.device)
             torch.cuda.empty_cache()
         else:
@@ -1604,6 +1800,51 @@ class GlobalLocalAdversarialModel(AdversarialModel):
             getattr(self.opt.training, 'lambda_patch_adv', 0.5)
         )
         masking_mode = getattr(self.opt.training, 'masking_mode', 'none')
+        num_critic_train = int(self.opt.training.num_critic_train)
+        r1_interval = int(getattr(self.opt.training, 'r1_interval', 16))
+        if num_critic_train < 1:
+            raise ValueError('num_critic_train must be at least 1')
+        if r1_interval < 1:
+            raise ValueError('r1_interval must be at least 1')
+        if patch_size < 1:
+            raise ValueError('patch_size must be at least 1')
+        if min_patch_crops < 1 or max_patch_crops < min_patch_crops:
+            raise ValueError(
+                'patch crop bounds must satisfy 1 <= min_patch_crops '
+                '<= max_patch_crops'
+            )
+        if patch_adv_weight < 0:
+            raise ValueError('lambda_patch_adv must be non-negative')
+
+        loader_length = len(self.train_loader)
+        eval_epoch_interval = float(
+            getattr(self.opt.training, 'eval_epoch_val', 1.0)
+        )
+        save_epoch_interval = float(
+            getattr(self.opt.training, 'save_epoch_val', 1.0)
+        )
+        if eval_epoch_interval <= 0 or save_epoch_interval <= 0:
+            raise ValueError('evaluation/save epoch intervals must be positive')
+        eval_interval_iters = max(
+            1, int(round(eval_epoch_interval * loader_length))
+        )
+        save_interval_iters = max(
+            1, int(round(save_epoch_interval * loader_length))
+        )
+        start_save_epoch = float(getattr(
+            self.opt.training, 'start_save_epoch_val', 0
+        ))
+        start_eval_epoch = float(getattr(
+            self.opt.training, 'start_eval_epoch_val', start_save_epoch
+        ))
+
+        self.print(
+            f'GAN schedule: G lr={opt.training.lr:.6g}, '
+            f'D/P lr={getattr(opt.training, "d_lr", opt.training.lr):.6g}, '
+            f'full LR through epoch {opt.training.start_decay_epoch}, '
+            f'floor={getattr(opt.training, "min_lr_ratio", 0.001):.3f}x; '
+            f'critic ratio={num_critic_train}:1'
+        )
 
         def prepare_stroke_patches(images, image_lens):
             patches, _ = sample_adaptive_patches(
@@ -1628,7 +1869,7 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                 self.ema_tracker.step = restored_ema_step
                 self.print(f"Restored EMA tracker step={self.ema_tracker.step} from checkpoint")
             else:
-                self.ema_tracker.step = iter_count // opt.training.num_critic_train
+                self.ema_tracker.step = iter_count // num_critic_train
                 self.print(f"Set EMA tracker step to {self.ema_tracker.step} based on iter_count={iter_count}")
         is_best = False
         best_scores = None
@@ -1728,7 +1969,6 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                 # Random crops are local views, not complete word samples. Feeding
                 # them to the global discriminator taught D that truncated words
                 # were real; keep them exclusively for the patch discriminator.
-                r1_interval = int(getattr(self.opt.training, 'r1_interval', 16))
                 apply_r1 = iter_count % r1_interval == 0
                 real_for_disc = real_imgs.detach().requires_grad_(apply_r1)
                 real_disc = self.models.D(real_for_disc, real_img_lens, real_lb_lens)
@@ -1777,7 +2017,7 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                 #############################
                 # Optimizing Generator
                 #############################
-                if iter_count % self.opt.training.num_critic_train == 0:
+                if iter_count % num_critic_train == 0:
                     self.optimizers.G.zero_grad(set_to_none=True)
                     set_requires_grad([self.models.D, self.models.P, self.models.R, self.models.W, self.models.B], False)
                     set_requires_grad([self.models.G, self.models.E], True)
@@ -2098,22 +2338,22 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                         os.makedirs(sample_root) if self.local_rank < 1 else None
                     self.sample_images(iter_count + 1) if self.local_rank < 1 else None
 
-                eval_epoch_val = self.opt.training.get('eval_epoch_val', 0.5)
-                save_epoch_val = self.opt.training.get('save_epoch_val', 1.0)
-
-                eval_interval_iters = max(1, int(eval_epoch_val * len(self.train_loader)))
-                save_interval_iters = max(1, int(save_epoch_val * len(self.train_loader)))
-
-                global_iter = (epoch - 1) * len(self.train_loader) + (i + 1)
-                is_eval = global_iter % eval_interval_iters == 0
-                is_save = global_iter % save_interval_iters == 0
+                global_iter = (epoch - 1) * loader_length + (i + 1)
+                eval_epoch = global_iter / float(loader_length)
+                is_eval = (
+                    eval_epoch >= start_eval_epoch
+                    and global_iter % eval_interval_iters == 0
+                )
+                is_save = (
+                    eval_epoch >= start_save_epoch
+                    and global_iter % save_interval_iters == 0
+                )
 
                 if getattr(self, 'is_resumed_start', False):
                     is_eval = False
                     self.is_resumed_start = False
 
                 if is_eval:
-                    eval_epoch = global_iter / float(len(self.train_loader))
                     self.print('Calculate FID_KID (epoch {:.2f})'.format(eval_epoch)) if self.local_rank < 1 else None
                     scores = self.validate(current_epoch=epoch)
                     if 'fid' in scores:
@@ -2133,15 +2373,35 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                     if 'fid' in scores and scores['fid'] < best_fid:
                         best_fid = scores['fid']
                         best_scores = scores
-                        if _is_master:
-                            self.save('best', epoch, iter_count=iter_count, best_fid=best_fid, **(best_scores or {}))
+                        # When eval and regular saving coincide, save('last')
+                        # publishes both last and best atomically. Avoid serializing
+                        # the same large checkpoint twice at every best epoch.
+                        if _is_master and not is_save:
+                            self.save(
+                                'best', epoch, iter_count=iter_count,
+                                best_fid=best_fid, **(best_scores or {})
+                            )
 
                 if is_save:
                     if _is_master:
-                        current_eval_fid = float(scores['fid']) if (is_eval and 'scores' in locals() and isinstance(scores, dict) and 'fid' in scores) else getattr(self, 'last_eval_fid', None)
-                        if current_eval_fid is None and hasattr(self, 'restored_metadata'):
-                            current_eval_fid = self.restored_metadata.get('last_eval_fid', self.restored_metadata.get('best_fid', None))
-                        self.save('last', epoch, iter_count=iter_count, best_fid=best_fid, fid=current_eval_fid)
+                        current_scores = (
+                            dict(scores)
+                            if is_eval and isinstance(scores, dict) else {}
+                        )
+                        current_eval_fid = current_scores.get(
+                            'fid', getattr(self, 'last_eval_fid', None)
+                        )
+                        if (current_eval_fid is None
+                                and hasattr(self, 'restored_metadata')):
+                            current_eval_fid = self.restored_metadata.get(
+                                'last_eval_fid',
+                                self.restored_metadata.get('best_fid', None),
+                            )
+                        current_scores['fid'] = current_eval_fid
+                        self.save(
+                            'last', epoch, iter_count=iter_count,
+                            best_fid=best_fid, **current_scores
+                        )
 
                 iter_count += 1
                 if getattr(self, 'is_resumed_start', False):
