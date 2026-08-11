@@ -22,11 +22,17 @@ training:
   # Keep these values unchanged across Kaggle resumes.
   epochs: 60
   lr_policy: 'linear'
-  start_decay_epoch: 12
-  n_epochs_decay: 40
-  min_lr_ratio: 0.2
+  # Epochs 1-24 use full LR; epoch 25 is the first reduced-LR epoch.
+  start_decay_epoch: 24
+  n_epochs_decay: 36
+  min_lr_ratio: 0.25
   batch_size: 8
   eval_batch_size: 12
+  num_workers: 4
+  eval_num_workers: 4
+  sample_num_workers: 0
+  persistent_workers: true
+  prefetch_factor: 2
   sample_nrow: 4
   # optimization:
   lr: 2.0e-4
@@ -84,6 +90,9 @@ training:
 valid:
   dset_name: 'iam_word_org'
   dset_split: 'test'
+  # Fixed validation seed makes KID subsets and generated validation data
+  # directly comparable without perturbing the subsequent training RNG.
+  eval_seed: 123456
   validate_fid: true
   validate_kid: true
   validate_hwd: true

@@ -109,14 +109,25 @@ def get_scheduler(optimizer, opt, last_epoch=-1, base_lr=None):
 
     if opt.lr_policy == 'linear':
         min_lr_ratio = float(getattr(opt, 'min_lr_ratio', 0.001))
+        start_decay_epoch = int(opt.start_decay_epoch)
+        n_epochs_decay = int(opt.n_epochs_decay)
         if not 0.0 < min_lr_ratio <= 1.0:
             raise ValueError('min_lr_ratio must be in (0, 1]')
+        if start_decay_epoch < 1:
+            raise ValueError('start_decay_epoch must be at least 1')
+        if n_epochs_decay < 1:
+            raise ValueError('n_epochs_decay must be at least 1')
 
-        def lambda_rule(epoch):
+        def lambda_rule(scheduler_epoch):
+            # LambdaLR uses zero-based scheduler epochs. Convert that index to
+            # the one-based training epoch whose updates will use this LR. Thus
+            # start_decay_epoch=24 means epochs 1-24 stay at the base LR and
+            # epoch 25 is the first reduced-LR epoch.
+            training_epoch = scheduler_epoch + 1
             progress = max(
                 0.0,
-                (epoch - opt.start_decay_epoch)
-                / float(opt.n_epochs_decay + 1),
+                (training_epoch - start_decay_epoch)
+                / float(n_epochs_decay),
             )
             return max(min_lr_ratio, 1.0 - progress)
 
