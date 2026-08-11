@@ -1677,12 +1677,24 @@ class GlobalLocalAdversarialModel(AdversarialModel):
         self.eval_y = prepare_y_dist(opt.training.eval_batch_size, len(self.lexicon), self.device,
                                      seed=self.opt.seed)
 
+        d_lr = float(getattr(opt.training, 'd_lr', opt.training.lr))
+        patch_d_lr = float(getattr(opt.training, 'patch_d_lr', d_lr))
+        if d_lr <= 0 or patch_d_lr <= 0:
+            raise ValueError('d_lr and patch_d_lr must be positive')
         self.optimizers = Munch(
-            G=torch.optim.Adam(chain(self.models.G.parameters(), self.models.E.parameters()),
-                               lr=opt.training.lr, betas=(opt.training.adam_b1, opt.training.adam_b2)),
-            D=torch.optim.Adam(chain(self.models.D.parameters(), self.models.P.parameters()),
-                               lr=getattr(opt.training, 'd_lr', opt.training.lr),
-                               betas=(opt.training.adam_b1, opt.training.adam_b2)),
+            G=torch.optim.Adam(
+                chain(self.models.G.parameters(), self.models.E.parameters()),
+                lr=opt.training.lr,
+                betas=(opt.training.adam_b1, opt.training.adam_b2),
+            ),
+            D=torch.optim.Adam(
+                self.models.D.parameters(), lr=d_lr,
+                betas=(opt.training.adam_b1, opt.training.adam_b2),
+            ),
+            P=torch.optim.Adam(
+                self.models.P.parameters(), lr=patch_d_lr,
+                betas=(opt.training.adam_b1, opt.training.adam_b2),
+            ),
         )
 
         # EMA only trainable generation modules. The frozen pretrained backbone
@@ -1749,11 +1761,22 @@ class GlobalLocalAdversarialModel(AdversarialModel):
 
         scheduler_base_lrs = {
             'G': float(opt.training.lr),
-            'D': float(getattr(opt.training, 'd_lr', opt.training.lr)),
+            'D': d_lr,
+            'P': patch_d_lr,
         }
         self.lr_schedulers = Munch(
-            G=get_scheduler(self.optimizers.G, opt.training, base_lr=scheduler_base_lrs['G']),
-            D=get_scheduler(self.optimizers.D, opt.training, base_lr=scheduler_base_lrs['D']),
+            G=get_scheduler(
+                self.optimizers.G, opt.training,
+                base_lr=scheduler_base_lrs['G'],
+            ),
+            D=get_scheduler(
+                self.optimizers.D, opt.training,
+                base_lr=scheduler_base_lrs['D'],
+            ),
+            P=get_scheduler(
+                self.optimizers.P, opt.training,
+                base_lr=scheduler_base_lrs['P'],
+            ),
         )
         if is_resuming:
             scheduler_states = getattr(self, '_ckpt_sched_data', {})
@@ -1839,11 +1862,12 @@ class GlobalLocalAdversarialModel(AdversarialModel):
         ))
 
         self.print(
-            f'GAN schedule: G lr={opt.training.lr:.6g}, '
-            f'D/P lr={getattr(opt.training, "d_lr", opt.training.lr):.6g}, '
+            f'GAN schedule: G/D/P lr={opt.training.lr:.6g}/'
+            f'{d_lr:.6g}/{patch_d_lr:.6g}, '
             f'full LR through epoch {opt.training.start_decay_epoch}, '
             f'floor={getattr(opt.training, "min_lr_ratio", 0.001):.3f}x; '
-            f'critic ratio={num_critic_train}:1'
+            f'D/P:G={num_critic_train}:1; '
+            f'patch G weight={patch_adv_weight:.3g}'
         )
 
         def prepare_stroke_patches(images, image_lens):
@@ -1904,6 +1928,7 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                 # Optimizing Discriminator
                 #############################
                 self.optimizers.D.zero_grad(set_to_none=True)
+                self.optimizers.P.zero_grad(set_to_none=True)
                 set_requires_grad([self.models.G, self.models.E, self.models.R, self.models.W, self.models.B], False)
                 set_requires_grad([self.models.D, self.models.P], True)
                 # self.models.B.frozen_bn()
@@ -1999,9 +2024,7 @@ class GlobalLocalAdversarialModel(AdversarialModel):
 
                 disc_loss = (
                     real_disc_loss + fake_disc_loss
-                    + patch_adv_weight * (
-                        real_disc_loss_patch + fake_disc_loss_patch
-                    )
+                    + (real_disc_loss_patch + fake_disc_loss_patch)
                     + r1_loss
                 )
                 self.averager_meters.update('d_total', disc_loss.item())
@@ -2013,6 +2036,7 @@ class GlobalLocalAdversarialModel(AdversarialModel):
 
                 disc_loss.backward()
                 self.optimizers.D.step()
+                self.optimizers.P.step()
 
                 #############################
                 # Optimizing Generator
@@ -2261,6 +2285,7 @@ class GlobalLocalAdversarialModel(AdversarialModel):
 
                     lr_g = self.optimizers.G.param_groups[0]['lr']
                     lr_d = self.optimizers.D.param_groups[0]['lr']
+                    lr_p = self.optimizers.P.param_groups[0]['lr']
 
                     info = (
                         f"[{epoch:3d}|{self.opt.training.epochs:3d}]-"
@@ -2270,7 +2295,7 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                         f"Style:{meter_vals['g_style']:.3f} Wid:{meter_vals['g_writer']:.3f} Ctx:{meter_vals['g_context']:.3f} KL:{meter_vals['g_kl']:.3f} | "
                         f"R1:{meter_vals['r1_loss']:.3f} Fuse:{meter_vals['fusion_strength']:.3f}"
                         f"[{meter_vals['fusion_gate_min']:.3f},{meter_vals['fusion_gate_max']:.3f}] "
-                        f"Lr: G={lr_g:.6g}/D={lr_d:.6g}"
+                        f"Lr: G={lr_g:.6g}/D={lr_d:.6g}/P={lr_p:.6g}"
                     )
                     self.print(info) if self.local_rank < 1 else None
 
@@ -2279,6 +2304,7 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                             # ── Train Category (Schedules, LRs, and Training State) ──
                             'train/lr_g': lr_g,
                             'train/lr_d': lr_d,
+                            'train/lr_p': lr_p,
                             'train/epoch': epoch,
                             'train/fusion_strength': meter_vals['fusion_strength'],
                             'train/fusion_gate_min': meter_vals['fusion_gate_min'],
