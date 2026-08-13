@@ -1,3 +1,6 @@
+import os
+import time
+import urllib.request
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -9,9 +12,60 @@ except ImportError:
     from torch.utils.model_zoo import load_url as load_state_dict_from_url
 
 
-FID_WEIGHTS_URL = (
-    "https://github.com/mseitzer/pytorch-fid/releases/download/fid_weights/pt_inception-2015-12-05-6726825d.pth"
-)
+FID_WEIGHTS_URLS = [
+    "https://huggingface.co/chaofengc/IQA-PyTorch-Weights/resolve/main/pt_inception-2015-12-05-6726825d.pth",
+    "https://huggingface.co/RaphaelLiu/EvalCrafter-Models/resolve/main/pt_inception-2015-12-05-6726825d.pth",
+    "https://github.com/mseitzer/pytorch-fid/releases/download/fid_weights/pt_inception-2015-12-05-6726825d.pth",
+]
+FID_WEIGHTS_URL = FID_WEIGHTS_URLS[2]
+
+
+def load_fid_inception_state_dict():
+    filename = "pt_inception-2015-12-05-6726825d.pth"
+    hub_dir = torch.hub.get_dir()
+    model_dir = os.path.join(hub_dir, "checkpoints")
+    os.makedirs(model_dir, exist_ok=True)
+    cached_file = os.path.join(model_dir, filename)
+
+    search_paths = [
+        cached_file,
+        f"/root/.cache/torch/hub/checkpoints/{filename}",
+        os.path.join(os.getcwd(), filename),
+        os.path.join(os.getcwd(), "pretrained", filename),
+        f"/kaggle/working/{filename}",
+        f"/kaggle/input/{filename}",
+    ]
+    for path in search_paths:
+        if os.path.isfile(path) and os.path.getsize(path) > 90000000:
+            try:
+                return torch.load(path, map_location="cpu")
+            except Exception:
+                pass
+
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+    for url in FID_WEIGHTS_URLS:
+        for attempt in range(1, 4):
+            tmp_file = cached_file + ".tmp"
+            try:
+                req = urllib.request.Request(url, headers=headers)
+                with urllib.request.urlopen(req, timeout=30) as resp, open(tmp_file, "wb") as f:
+                    while True:
+                        chunk = resp.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                os.replace(tmp_file, cached_file)
+                return torch.load(cached_file, map_location="cpu")
+            except Exception as e:
+                if os.path.exists(tmp_file):
+                    try:
+                        os.remove(tmp_file)
+                    except Exception:
+                        pass
+                time.sleep(2)
+
+    return load_state_dict_from_url(FID_WEIGHTS_URLS[0], progress=True)
+
 
 
 class InceptionV3(nn.Module):
@@ -211,7 +265,7 @@ def fid_inception_v3():
     inception.Mixed_7b = FIDInceptionE_1(1280)
     inception.Mixed_7c = FIDInceptionE_2(2048)
 
-    state_dict = load_state_dict_from_url(FID_WEIGHTS_URL, progress=True)
+    state_dict = load_fid_inception_state_dict()
     inception.load_state_dict(state_dict)
     return inception
 
