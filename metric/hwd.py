@@ -1,3 +1,5 @@
+import os
+import urllib.request
 import torch
 import torch.nn as nn
 from typing import Any
@@ -295,7 +297,19 @@ class VGG16Backbone(BaseBackbone):
                 _local_path = _cache_dir / "VGG16_class_10400.pth"
                 if not _local_path.exists():
                     print(f"Downloading HWD VGG16 checkpoint to {_local_path}...")
-                    torch.hub.download_url_to_file(self.url, str(_local_path))
+                    try:
+                        req = urllib.request.Request(self.url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
+                        tmp_p = str(_local_path) + ".tmp"
+                        with urllib.request.urlopen(req, timeout=60) as resp, open(tmp_p, "wb") as f:
+                            while True:
+                                chunk = resp.read(1024 * 1024)
+                                if not chunk:
+                                    break
+                                f.write(chunk)
+                        os.replace(tmp_p, str(_local_path))
+                    except Exception as err:
+                        print(f"Direct download failed: {err}, falling back to torch.hub...")
+                        torch.hub.download_url_to_file(self.url, str(_local_path))
                 checkpoint = torch.load(str(_local_path), map_location="cpu")
             else:
                 checkpoint = torch.load(self.url, map_location="cpu")
