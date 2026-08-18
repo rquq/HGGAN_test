@@ -151,37 +151,33 @@ def mmd(x, y):
 def preprocess_images_gpu(imgs, lens, size, device):
     batch_size = imgs.size(0)
     
-    # Check min on batch level to avoid batch_size CPU-GPU syncs
-    if (imgs.min() < 0).item():
-        imgs = (imgs + 1) / 2
-    imgs = torch.clamp(imgs, 0, 1)
+    # Normalize on-device without CPU-GPU synchronization stalls
+    imgs = torch.where(imgs < 0, (imgs + 1.0) / 2.0, imgs).clamp(0.0, 1.0)
+    if imgs.size(1) == 1:
+        imgs = imgs.repeat(1, 3, 1, 1)
+        
+    lens_list = lens.tolist() if isinstance(lens, torch.Tensor) else list(lens)
     
     preprocessed = []
     for i in range(batch_size):
-        img = imgs[i]
-        length = lens[i].item()
+        length = int(lens_list[i])
+        img = imgs[i:i+1, :, :, :length]
         
-        if img.shape[0] == 1:
-            img = img.repeat(3, 1, 1)
-            
-        img = img[:, :, :length]
-        
-        c, h, w = img.shape
+        _, c, h, w = img.shape
         l = min(h, w)
         top = (h - l) // 2
         left = (w - l) // 2
-        img = img[:, top:top+l, left:left+l]
+        cropped = img[:, :, top:top+l, left:left+l]
         
-        img = torch.nn.functional.interpolate(
-            img.unsqueeze(0),
+        resized = torch.nn.functional.interpolate(
+            cropped,
             size=(size, size),
             mode='bicubic',
             align_corners=False
-        ).squeeze(0)
+        )
+        preprocessed.append(resized)
         
-        preprocessed.append(img)
-        
-    return torch.stack(preprocessed, dim=0)
+    return torch.cat(preprocessed, dim=0).clamp(0.0, 1.0)
 
 
 def compute_real_embeddings(data_loader, embedding_model, n_batches=None, device='cuda'):

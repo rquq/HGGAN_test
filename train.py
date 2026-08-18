@@ -19,7 +19,7 @@ def seed_everything(seed):
     torch.cuda.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
     torch.backends.cudnn.deterministic = False
-    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.benchmark = True
 
 
 if __name__ == "__main__":
@@ -76,5 +76,15 @@ if __name__ == "__main__":
             seed_everything(cfg.seed)
 
     model = get_model(cfg.model)(cfg, logdir)
-    model.train()
+    try:
+        model.train()
+    except KeyboardInterrupt:
+        print("\n[Notice] Training interrupted by user.")
+        if hasattr(model, 'save') and getattr(model, 'local_rank', 0) <= 0:
+            print("[Notice] Saving emergency checkpoint (tag='interrupted')...")
+            try:
+                model.save('interrupted')
+                print("[Notice] Emergency checkpoint saved successfully.")
+            except Exception as e:
+                print(f"[Warning] Failed to save interrupted checkpoint: {e}")
 

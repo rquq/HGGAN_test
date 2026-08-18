@@ -106,7 +106,7 @@ class StyleFrequencyRefinement(nn.Module):
             local_mean = local_style.mean(dim=1)
             local_variance = (
                 local_style - local_mean.unsqueeze(1)
-            ).square().mean(dim=1)
+            ).square().mean(dim=1).clamp_min(0.0)
             local_std = torch.sqrt(local_variance + 1e-6)
         else:
             local_mean = torch.zeros_like(global_style)

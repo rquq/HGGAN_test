@@ -274,8 +274,7 @@ class DeepLSTM(nn.Module):
 
     def forward(self, x, x_len=None):
         """Propogate input forward through the network."""
-        init_hidden = self.get_init_state(x.size(0), x.device)
-        out, _ = self.lstm(x, init_hidden)
+        out, _ = self.lstm(x)
         return out
 
     def get_init_state(self, batch_size, device):
@@ -284,22 +283,19 @@ class DeepLSTM(nn.Module):
         hidden_dim = self.hidden_size
 
         h0_encoder_bi = torch.zeros(
-            deepth,
-            batch_size,
-            hidden_dim, requires_grad=False)
+            deepth, batch_size, hidden_dim, device=device
+        )
         c0_encoder_bi = torch.zeros(
-            deepth,
-            batch_size,
-            hidden_dim, requires_grad=False)
-        return h0_encoder_bi.to(device), c0_encoder_bi.to(device)
-
+            deepth, batch_size, hidden_dim, device=device
+        )
+        return h0_encoder_bi, c0_encoder_bi
 
 
 class DeepGRU(nn.Module):
-    r"""A Deep LSTM with the first layer being unidirectional."""
+    r"""A Deep GRU with the first layer being bidirectional."""
     def __init__(
         self, input_size, hidden_size, n_layers=2,
-        dropout=0., batch_first=True
+        dropout=0., batch_first=True, bidirectional=True
     ):
         """Initialize params."""
         super(DeepGRU, self).__init__()
@@ -308,34 +304,43 @@ class DeepGRU(nn.Module):
         self.dropout = dropout
         self.batch_first = batch_first
         self.n_layer = n_layers
+        self.bidirectional = bidirectional
+        hidden_split = 2 if self.bidirectional else 1
 
-        self.lstm = nn.GRU(input_size,
-                            self.hidden_size,
-                            n_layers,
-                            bidirectional=False,
-                            batch_first=True,
-                            dropout=self.dropout
-                            )
+        self.gru = nn.GRU(input_size,
+                          self.hidden_size // hidden_split,
+                          n_layers,
+                          bidirectional=self.bidirectional,
+                          batch_first=True,
+                          dropout=self.dropout
+                          )
 
-        self.lstm.flatten_parameters()
+        self.gru.flatten_parameters()
 
     def forward(self, x, x_len=None):
         """Propogate input forward through the network."""
-        init_hidden = self.get_init_state(x.size(0), x.device)
-        out, _ = self.lstm(x, init_hidden)
+        self.gru.flatten_parameters()
+        if x_len is None:
+            x_len = torch.full((x.size(0),), x.size(1), dtype=torch.long, device='cpu')
+        elif isinstance(x_len, torch.Tensor):
+            x_len = torch.clamp(x_len.cpu(), min=1)
+        x_pack = pack_padded_sequence(x, x_len, batch_first=self.batch_first, enforce_sorted=False)
+        out_pack, _ = self.gru(x_pack)
+        out, out_len = pad_packed_sequence(out_pack, batch_first=self.batch_first, total_length=x.size(1))
         return out
 
     def get_init_state(self, batch_size, device):
         """Get cell states and hidden states."""
         deepth = self.n_layer
         hidden_dim = self.hidden_size
+        if self.bidirectional:
+            deepth *= 2
+            hidden_dim //= 2
 
         h0_encoder_bi = torch.zeros(
-            deepth,
-            batch_size,
-            hidden_dim, requires_grad=False)
-        return h0_encoder_bi.to(device)
-
+            deepth, batch_size, hidden_dim, device=device
+        )
+        return h0_encoder_bi
 
 
 class DeepBLSTM(nn.Module):
@@ -372,8 +377,7 @@ class DeepBLSTM(nn.Module):
         elif isinstance(x_len, torch.Tensor):
             x_len = torch.clamp(x_len.cpu(), min=1)
         x_pack = pack_padded_sequence(x, x_len, batch_first=self.batch_first, enforce_sorted=False)
-        init_hidden = self.get_init_state(x.size(0), x.device)
-        out_pack, _ = self.lstm(x_pack, init_hidden)
+        out_pack, _ = self.lstm(x_pack)
         out, out_len = pad_packed_sequence(out_pack, batch_first=self.batch_first, total_length=x.size(1))
         return out
 
@@ -386,14 +390,12 @@ class DeepBLSTM(nn.Module):
             hidden_dim //= 2
 
         h0_encoder_bi = torch.zeros(
-            deepth,
-            batch_size,
-            hidden_dim, requires_grad=False)
+            deepth, batch_size, hidden_dim, device=device
+        )
         c0_encoder_bi = torch.zeros(
-            deepth,
-            batch_size,
-            hidden_dim, requires_grad=False)
-        return h0_encoder_bi.to(device), c0_encoder_bi.to(device)
+            deepth, batch_size, hidden_dim, device=device
+        )
+        return h0_encoder_bi, c0_encoder_bi
 
 
 class CosMargin(nn.Module):

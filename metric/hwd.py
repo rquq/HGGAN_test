@@ -341,8 +341,9 @@ class VGG16Backbone(BaseBackbone):
         if verbose:
             print(" OK")
 
-        ids = torch.Tensor(sum(ids, [])).long()
-        labels = sum(labels, [])
+        import itertools
+        ids = torch.tensor(list(itertools.chain.from_iterable(ids)), dtype=torch.long)
+        labels = list(itertools.chain.from_iterable(labels))
         features = torch.cat(features, dim=0)
         return ids, labels, features
 

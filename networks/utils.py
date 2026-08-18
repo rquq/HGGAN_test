@@ -594,7 +594,8 @@ def augment_images(imgs, img_lens, lbs, lb_lens):
 def rescale_images(imgs, img_lens, ref_img_lens):
     bz, c, h, w = imgs.size()
     max_ref = int(torch.as_tensor(ref_img_lens).max().item())
-    pad_imgs = -np.ones((bz, c, h, _recalc_len(max_ref, h)))
+    pad_width = _recalc_len(max_ref, h)
+    pad_imgs = torch.full((bz, c, h, pad_width), -1.0, dtype=imgs.dtype, device=imgs.device)
     for i, (img, img_len, ref_img_len) in enumerate(zip(imgs, img_lens, ref_img_lens)):
         i_len = int(img_len)
         r_len = int(ref_img_len)
@@ -604,10 +605,9 @@ def rescale_images(imgs, img_lens, ref_img_lens):
                                     (h, r_len),
                                     mode=mode,
                                     align_corners=align_corners)
-        pad_imgs[i, :, :, :r_len] = resized_img[0].cpu().numpy()
+        pad_imgs[i, :, :, :r_len] = resized_img[0]
 
-    resized_imgs = torch.from_numpy(pad_imgs).float().to(imgs.device)
-    return resized_imgs, ref_img_lens
+    return pad_imgs, ref_img_lens
 
 
 def rescale_images2(imgs, img_lens, lb_lens, ref_img_lens, ref_lb_lens):
