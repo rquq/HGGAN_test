@@ -72,7 +72,14 @@ def parse_bool(val):
         return True
     elif s in ('false', '0', 'no', 'f', 'n'):
         return False
-    raise argparse.ArgumentTypeError(f"Boolean value expected, got '{val}'.")
+def seed_everything(seed):
+    random.seed(seed)
+    os.environ['PYTHONHASHSEED'] = str(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
 
 
 if __name__ == '__main__':
@@ -148,6 +155,8 @@ if __name__ == '__main__':
         seed = cfg.seed
     else:
         seed = random.randint(0, 10000)
+
+    seed_everything(seed)
 
     cfg.device = device
     cfg.seed = seed

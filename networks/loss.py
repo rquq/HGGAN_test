@@ -98,7 +98,7 @@ class CXLoss(nn.Module):
         featT_flat = featureT.reshape(N, C, H_T * W_T)
 
         # batched matrix multiplication: (N, P_T, C) x (N, C, P_I) -> (N, P_T, P_I)
-        dist = torch.bmm(featT_flat.transpose(1, 2), featI_flat)
+        dist = torch.bmm(featT_flat.transpose(1, 2), featI_flat).clamp(-1.0, 1.0)
 
         raw_dist = (1. - dist) / 2.
 
@@ -165,8 +165,16 @@ class GramStyleLoss(nn.Module):
 
 class GramMatrix(nn.Module):
     def forward(self, input, feat_len=None):
-        device_type = input.device.type
-        with torch.amp.autocast(device_type, enabled=False):
+        autocast_ctx = (
+            torch.cuda.amp.autocast(enabled=False)
+            if input.device.type == 'cuda'
+            else (
+                torch.amp.autocast(input.device.type, enabled=False)
+                if hasattr(torch, 'amp') and hasattr(torch.amp, 'autocast')
+                else torch.autograd.set_grad_enabled(torch.is_grad_enabled())
+            )
+        )
+        with autocast_ctx:
             input = input.float()
             a, b, c, d = input.size()
 

@@ -156,7 +156,7 @@ def get_activations(data_source, n_batches, model, dims, device, crop=False, eva
         is_neg_one = (imgs_fid == -1)
         all_neg_one_in_padding = (is_neg_one | ~padding_mask).flatten(1).all(dim=1)
         replace_mask = padding_mask & all_neg_one_in_padding.view(batch_size, 1, 1, 1)
-        imgs_fid = torch.where(replace_mask, torch.tensor(1.0, device=device), imgs_fid)
+        imgs_fid.masked_fill_(replace_mask, 1.0)
 
 
         # Normalize to [0, 1]

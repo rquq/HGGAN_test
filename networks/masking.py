@@ -127,6 +127,6 @@ def apply_light_mixed_patch_mask(patches, mask_ratio_range=(0.02, 0.05), stripe_
     w_mask = apply_w & (col_idx >= starts_w) & (col_idx < starts_w + widths)
 
     combined_mask = h_mask | w_mask
-    masked_patches = torch.where(combined_mask, torch.tensor(-1.0, device=device, dtype=patches.dtype), patches)
+    masked_patches = patches.masked_fill(combined_mask, -1.0)
 
     return masked_patches

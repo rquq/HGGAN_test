@@ -332,9 +332,10 @@ class WidthContextMixer(nn.Module):
         # attention probabilities numerically stable.
         scores = torch.matmul(query, key.transpose(-2, -1)) * self.scale
         if valid_mask is not None:
+            mask_value = -1e4 if scores.dtype == torch.float16 else -1e9
             scores = scores.masked_fill(
                 ~valid_mask[:, None, None, :],
-                torch.finfo(scores.dtype).min,
+                mask_value,
             )
         attention = torch.softmax(scores.float(), dim=-1).to(scores.dtype)
         context = torch.matmul(attention, value)
