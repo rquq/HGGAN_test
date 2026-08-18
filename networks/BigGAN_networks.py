@@ -508,6 +508,7 @@ class PatchDiscriminator(nn.Module):
         init='ortho',
         D_param='SN',
         input_nc=1,
+        n_class=80,
     ):
         super().__init__()
         self.name = 'P'
@@ -541,12 +542,36 @@ class PatchDiscriminator(nn.Module):
         self.logits = which_conv(
             in_channels, output_dim, kernel_size=1, padding=0
         )
+        # Projection conditioning asks whether this local stroke is plausible
+        # for the character it was sampled from, rather than only whether it
+        # resembles generic ink.  The spatial projection retains PatchGAN's
+        # local decisions instead of collapsing each crop to one score.
+        self.char_embedding = nn.Embedding(
+            n_class, in_channels, padding_idx=0
+        )
 
         if init != 'none':
             init_weights(self, init)
+        with torch.no_grad():
+            self.char_embedding.weight[0].zero_()
 
-    def forward(self, x, **kwargs):
+    def forward(self, x, char_ids=None, **kwargs):
         h = self.stem(x)
         for block in self.blocks:
             h = block(h)
-        return self.logits(self.activation(h))
+        h = self.activation(h)
+        output = self.logits(h)
+        if char_ids is not None:
+            if char_ids.ndim != 1 or char_ids.numel() != x.size(0):
+                raise ValueError(
+                    'char_ids must have shape (number_of_patches,)'
+                )
+            char_ids = char_ids.to(h.device).long().clamp_(
+                0, self.char_embedding.num_embeddings - 1
+            )
+            condition = self.char_embedding(char_ids)
+            projection = torch.sum(
+                h * condition.unsqueeze(-1).unsqueeze(-1), dim=1, keepdim=True
+            ) / (h.size(1) ** 0.5)
+            output = output + projection
+        return output

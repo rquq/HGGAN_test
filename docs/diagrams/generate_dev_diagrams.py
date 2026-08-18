@@ -552,7 +552,7 @@ def draw_stroke_patch_d(path: Path) -> None:
 
     d.footer([
         "Source: dev/networks/BigGAN_networks.py::StrokePatchBlock and PatchDiscriminator;",
-        "crop policy: dev/networks/utils.py::sample_adaptive_patches; patch weight: dev/configs/gan_iam.yml. Global D is omitted.",
+        "crop policy: dev/networks/utils.py::sample_character_patches; patch weight: dev/configs/gan_iam.yml. Global D is omitted.",
     ])
     d.save(path)
 
