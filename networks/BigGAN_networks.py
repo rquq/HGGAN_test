@@ -8,7 +8,7 @@ import torch.nn.functional as F
 
 from . import BigGAN_layers as layers
 from .fusion import StyleContentAttentionFusion
-from .rapidnet import ConditionedRapidBlock
+from .texture_generator import StyleFrequencyRefinement
 from networks.utils import init_weights, _len2mask
 
 # Architectures for G
@@ -174,19 +174,15 @@ class Generator(nn.Module):
         # while the inner loop is over a given block
         self.blocks = []
         for index in range(len(self.arch['out_channels'])):
-            self.blocks += [[ConditionedRapidBlock(
-                in_channels=self.arch['in_channels'][index],
-                out_channels=self.arch['out_channels'][index],
-                which_conv=self.which_conv,
-                which_bn=self.which_bn,
-                activation=self.activation,
-                upsample=functools.partial(
-                    F.interpolate,
-                    scale_factor=self.arch['upsample'][index],
-                    mode='bilinear',
-                    align_corners=False,
-                ),
-            )]]
+            self.blocks += [[layers.GBlock(in_channels=self.arch['in_channels'][index],
+                                           out_channels=self.arch['out_channels'][index],
+                                           which_conv1=self.which_conv,
+                                           which_conv2=self.which_conv,
+                                           which_bn=self.which_bn,
+                                           activation=self.activation,
+                                           upsample=(functools.partial(F.interpolate,
+                                                                       scale_factor=self.arch['upsample'][index])
+                                                     if index < len(self.arch['upsample']) else None))]]
 
             if self.arch['attention'][self.arch['resolution'][index]]:
                 self.blocks[-1] += [layers.Attention(self.arch['out_channels'][index], self.which_conv)]
@@ -201,6 +197,12 @@ class Generator(nn.Module):
                                                     mybn=self.mybn),
                                           self.activation,
                                           self.which_conv(self.arch['out_channels'][-1], input_nc))
+        self.texture_refinement = StyleFrequencyRefinement(
+            channels=self.arch['out_channels'][-1],
+            style_dim=self.style_dim,
+            output_channels=input_nc,
+            which_conv=self.which_conv,
+        )
 
         # Initialize weights. Optionally skip init for testing.
         if self.init != 'none':
@@ -208,6 +210,7 @@ class Generator(nn.Module):
         # General initialization touches fusion Linear weights; restore its
         # identity-like nonzero residual handoffs afterwards.
         self.style_content_mix.reset_stability_parameters()
+        self.texture_refinement.reset_stability_parameters()
 
     def forward(self, z, y, y_lens):
         # Distribution is a reusable sampler container, not an activation
@@ -249,8 +252,11 @@ class Generator(nn.Module):
                     h = block(h, y=ys[index])
             len_scale *= self.arch['upsample'][index][1]
 
-        # Apply batchnorm-relu-conv-tanh at output
-        output = torch.tanh(self.output_layer(h))
+        # Preserve DEV's reliable base image and add only a bounded,
+        # style-distribution-conditioned high-frequency residual.
+        base_logits = self.output_layer(h)
+        texture_detail = self.texture_refinement(h, z)
+        output = torch.tanh(base_logits + texture_detail)
 
         # Mask blanks
         if not self.training:
@@ -513,6 +519,7 @@ class PatchDiscriminator(nn.Module):
         init='ortho',
         D_param='SN',
         input_nc=1,
+        n_class=80,
     ):
         super().__init__()
         self.name = 'P'
@@ -546,12 +553,36 @@ class PatchDiscriminator(nn.Module):
         self.logits = which_conv(
             in_channels, output_dim, kernel_size=1, padding=0
         )
+        # Projection conditioning asks whether this local stroke is plausible
+        # for the character it was sampled from, rather than only whether it
+        # resembles generic ink.  The spatial projection retains PatchGAN's
+        # local decisions instead of collapsing each crop to one score.
+        self.char_embedding = nn.Embedding(
+            n_class, in_channels, padding_idx=0
+        )
 
         if init != 'none':
             init_weights(self, init)
+        with torch.no_grad():
+            self.char_embedding.weight[0].zero_()
 
-    def forward(self, x, **kwargs):
+    def forward(self, x, char_ids=None, **kwargs):
         h = self.stem(x)
         for block in self.blocks:
             h = block(h)
-        return self.logits(self.activation(h))
+        h = self.activation(h)
+        output = self.logits(h)
+        if char_ids is not None:
+            if char_ids.ndim != 1 or char_ids.numel() != x.size(0):
+                raise ValueError(
+                    'char_ids must have shape (number_of_patches,)'
+                )
+            char_ids = char_ids.to(h.device).long().clamp_(
+                0, self.char_embedding.num_embeddings - 1
+            )
+            condition = self.char_embedding(char_ids)
+            projection = torch.sum(
+                h * condition.unsqueeze(-1).unsqueeze(-1), dim=1, keepdim=True
+            ) / (h.size(1) ** 0.5)
+            output = output + projection
+        return output

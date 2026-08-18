@@ -345,27 +345,35 @@ def adaptive_crop_count(valid_width, patch_size=32, min_crops=4, max_crops=8):
     return max(min_crops, min(max_crops, width_crops))
 
 
-def sample_adaptive_patches(
+def sample_character_patches(
     images,
     image_lens,
+    labels,
+    label_lens,
     patch_size=32,
     min_crops=4,
     max_crops=8,
+    horizontal_jitter=4,
     fill_value=-1.0,
 ):
-    """Sample stratified random square crops using one policy for real and fake.
+    """Sample character-aligned stroke crops and return their character IDs.
 
-    The number of crops grows with valid word width and is bounded to keep the
-    local critic predictable on small GPUs. Horizontal stratification avoids
-    repeatedly sampling the same character region while random vertical bands
-    expose ascenders, baselines, and descenders.
+    Each crop is centered on a character-width stratum, while alternate crops
+    cover the upper and lower writing bands.  This preserves the old bounded
+    4--8 crop budget but gives StrokePatchD an explicit allograph label.
     """
     if images.ndim != 4:
         raise ValueError('images must have shape (B, C, H, W)')
-    if images.size(0) != len(image_lens):
-        raise ValueError('image_lens must contain one length per image')
+    if labels.ndim != 2:
+        raise ValueError('labels must have shape (B, L)')
+    if images.size(0) != len(image_lens) or images.size(0) != labels.size(0):
+        raise ValueError('images, image_lens, and labels must share a batch size')
+    if images.size(0) != len(label_lens):
+        raise ValueError('label_lens must contain one length per image')
     if patch_size < 1 or min_crops < 1 or max_crops < min_crops:
         raise ValueError('invalid adaptive crop configuration')
+    if horizontal_jitter < 0:
+        raise ValueError('horizontal_jitter must be non-negative')
 
     pad_bottom = max(0, patch_size - images.size(-2))
     pad_right = max(0, patch_size - images.size(-1))
@@ -375,29 +383,42 @@ def sample_adaptive_patches(
         )
 
     image_height, image_width = images.shape[-2:]
-    lengths = image_lens.detach().to('cpu').long().tolist()
-    patches = []
-    crop_counts = []
+    widths = image_lens.detach().cpu().long().tolist()
+    lengths = label_lens.detach().cpu().long().tolist()
+    patches, crop_counts, character_ids = [], [], []
     max_top = image_height - patch_size
 
-    for row, raw_width in enumerate(lengths):
+    for row, (raw_width, raw_label_len) in enumerate(zip(widths, lengths)):
         valid_width = max(1, min(int(raw_width), image_width))
+        valid_label_len = max(1, min(int(raw_label_len), labels.size(1)))
         crop_count = adaptive_crop_count(
             valid_width, patch_size, min_crops, max_crops
         )
         crop_counts.append(crop_count)
-        horizontal_positions = max(valid_width - patch_size + 1, 1)
         vertical_positions = max(max_top + 1, 1)
 
         for crop_index in range(crop_count):
-            left_start = crop_index * horizontal_positions // crop_count
-            left_end = max(
-                (crop_index + 1) * horizontal_positions // crop_count,
-                left_start + 1,
+            char_start = crop_index * valid_label_len // crop_count
+            char_end = max(
+                (crop_index + 1) * valid_label_len // crop_count,
+                char_start + 1,
             )
-            left = left_start + int(
-                torch.randint(0, left_end - left_start, (1,)).item()
-            )
+            char_end = min(char_end, valid_label_len)
+            if char_start >= valid_label_len:
+                char_index = valid_label_len - 1
+            else:
+                char_index = char_start + int(torch.randint(
+                    0, max(char_end - char_start, 1), (1,)
+                ).item())
+
+            span_start = char_index * valid_width / valid_label_len
+            span_end = (char_index + 1) * valid_width / valid_label_len
+            left = int(round((span_start + span_end - patch_size) / 2.0))
+            if horizontal_jitter:
+                left += int(torch.randint(
+                    -horizontal_jitter, horizontal_jitter + 1, (1,)
+                ).item())
+            left = max(0, min(left, max(valid_width - patch_size, 0)))
 
             vertical_slot = crop_index % 2
             top_start = vertical_slot * vertical_positions // 2
@@ -410,19 +431,88 @@ def sample_adaptive_patches(
             )
             top = min(top, max_top)
 
-            patches.append(
-                images[
-                    row,
-                    :,
-                    top:top + patch_size,
-                    left:left + patch_size,
-                ]
-            )
+            patches.append(images[
+                row, :, top:top + patch_size, left:left + patch_size
+            ])
+            character_ids.append(labels[row, char_index])
 
     return (
         torch.stack(patches, dim=0),
         torch.tensor(crop_counts, dtype=torch.long, device=images.device),
+        torch.stack(character_ids).long().to(images.device),
     )
+
+
+def augment_word_batch(
+    images,
+    image_lens,
+    max_translation=4,
+    width_scale=0.05,
+    fill_value=-1.0,
+):
+    """Apply mild differentiable word-safe geometry to a D input batch.
+
+    The canvas and valid widths do not change.  Only horizontal scale and
+    translation are used so text content, baseline, and label lengths remain
+    valid.  Applying this same policy family to real and generated words avoids
+    teaching D an augmentation shortcut.
+    """
+    if images.ndim != 4:
+        raise ValueError('images must have shape (B, C, H, W)')
+    if images.size(0) != len(image_lens):
+        raise ValueError('image_lens must contain one length per image')
+    if max_translation < 0 or not 0.0 <= width_scale < 1.0:
+        raise ValueError('invalid discriminator augmentation configuration')
+    if max_translation == 0 and width_scale == 0:
+        return images, image_lens
+
+    output = torch.full_like(images, float(fill_value))
+    lengths = image_lens.detach().cpu().long().tolist()
+    canvas_width = images.size(-1)
+    for row, raw_width in enumerate(lengths):
+        valid_width = max(1, min(int(raw_width), canvas_width))
+        word = images[row:row + 1, :, :, :valid_width]
+        if width_scale:
+            scale = 1.0 + (2.0 * torch.rand(()).item() - 1.0) * width_scale
+            scaled_width = max(1, int(round(valid_width * scale)))
+            word = F.interpolate(
+                word, size=(images.size(-2), scaled_width),
+                mode='bilinear', align_corners=False,
+            )
+        else:
+            scaled_width = valid_width
+
+        if scaled_width >= valid_width:
+            excess = scaled_width - valid_width
+            crop_left = int(torch.randint(0, excess + 1, (1,)).item()) if excess else 0
+            word = word[..., crop_left:crop_left + valid_width]
+        else:
+            pad_total = valid_width - scaled_width
+            pad_left = int(torch.randint(0, pad_total + 1, (1,)).item())
+            word = F.pad(
+                word, (pad_left, pad_total - pad_left, 0, 0),
+                value=float(fill_value),
+            )
+
+        shift = int(torch.randint(
+            -max_translation, max_translation + 1, (1,)
+        ).item()) if max_translation else 0
+        shift = max(-(valid_width - 1), min(shift, valid_width - 1))
+        if shift > 0:
+            word = F.pad(
+                word[..., :valid_width - shift], (shift, 0, 0, 0),
+                value=float(fill_value),
+            )
+        elif shift < 0:
+            amount = -shift
+            word = F.pad(
+                word[..., amount:], (0, amount, 0, 0),
+                value=float(fill_value),
+            )
+        output[row:row + 1, :, :, :valid_width] = word
+
+    return output, image_lens
+
 
 def rand_clip_images(imgs, img_lens, min_clip_width=64):
     device = imgs.device

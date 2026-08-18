@@ -35,7 +35,7 @@ training:
   prefetch_factor: 2
   sample_nrow: 4
   # optimization:
-  lr: 2.0e-4
+  lr: 1.5e-4
   d_lr: 1.0e-4
   # StrokePatchD is compact and was underfitting at the global critic LR.
   patch_d_lr: 1.5e-4
@@ -63,6 +63,13 @@ training:
   patch_size: 32
   min_patch_crops: 4
   max_patch_crops: 8
+  # Keep character-centered crops close enough to the intended allograph while
+  # retaining small translation tolerance for real handwriting alignment.
+  patch_char_jitter: 4
+  # Mild word-safe DiffAug is applied to both real and fake global-D inputs.
+  d_diffaug: true
+  d_aug_translate: 4
+  d_aug_width_scale: 0.05
   vae_mode: true
   lambda_ctc: 1.0
   # Preserve content while gradually releasing capacity for writer style.
@@ -72,7 +79,7 @@ training:
   lambda_info: 1.0
   lambda_wid: 0.5
   lambda_recn: 10.0
-  lambda_recn_final: 5.0
+  lambda_recn_final: 2.5
   recn_decay_start_epoch: 24
   recn_decay_end_epoch: 42
   lambda_style_cycle: 1.0
@@ -81,9 +88,9 @@ training:
   lambda_ctx: 0.1
   grad_clip: 5.0
   r1_interval: 16
-  lambda_r1: 0.01
+  lambda_r1: 0.02
   update_ema: true
-  ema_beta: 0.999
+  ema_beta: 0.9998
   pretrained_w: './pretrained/wid_iam_new.pth'
   pretrained_r: './pretrained/ocr_iam_new.pth'
   pretrained_ckpt: ''
@@ -201,6 +208,7 @@ PatchDiscModel:
   init: 'N02'
   D_param: 'SN'
   input_nc: 1
+  n_class: 80
 
 OcrModel:
   resolution: 16

@@ -382,6 +382,48 @@ class bn(nn.Module):
                                 self.bias, self.training, self.momentum, self.eps)
 
 
+# Generator blocks
+# Note that this class assumes the kernel size and padding (and any other
+# settings) have been selected in the main generator module and passed in
+# through the which_conv arg. Similar rules apply with which_bn (the input
+# size [which is actually the number of channels of the conditional info] must
+# be preselected)
+class GBlock(nn.Module):
+    def __init__(self, in_channels, out_channels,
+                 which_conv1=nn.Conv2d, which_conv2=nn.Conv2d, which_bn=bn, activation=None,
+                 upsample=None):
+        super(GBlock, self).__init__()
+
+        self.in_channels, self.out_channels = in_channels, out_channels
+        self.which_conv1, self.which_conv2, self.which_bn = which_conv1, which_conv2, which_bn
+        self.activation = activation
+        self.upsample = upsample
+        # Conv layers
+        self.conv1 = self.which_conv1(self.in_channels, self.out_channels)
+        self.conv2 = self.which_conv2(self.out_channels, self.out_channels)
+        self.learnable_sc = in_channels != out_channels or upsample
+        if self.learnable_sc:
+            self.conv_sc = self.which_conv1(in_channels, out_channels,
+                                           kernel_size=1, padding=0)
+        # Batchnorm layers
+        self.bn1 = self.which_bn(in_channels)
+        self.bn2 = self.which_bn(out_channels)
+        # upsample layers
+        self.upsample = upsample
+
+    def forward(self, x, y, **kwargs):
+        h = self.activation(self.bn1(x, y))
+        if self.upsample:
+            h = self.upsample(h)
+            x = self.upsample(x)
+        h = self.conv1(h)
+        h = self.activation(self.bn2(h, y))
+        h = self.conv2(h)
+        if self.learnable_sc:
+            x = self.conv_sc(x)
+        return h + x
+
+
 # Residual block for the discriminator
 class DBlock(nn.Module):
     def __init__(self, in_channels, out_channels, which_conv=SNConv2d, wide=True,

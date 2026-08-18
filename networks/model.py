@@ -16,7 +16,7 @@ import torch.nn.functional as F
 from metric.val_metrics import calculate_fid_kid_is
 from metric.mssim_psnr import calculate_mssim_psnr
 from networks.utils import _info, set_requires_grad, get_scheduler, idx_to_words, rescale_images, rescale_images2, \
-                            words_to_images, ctc_greedy_decoder, sample_adaptive_patches, frozen_bn, restore_scheduler_state
+                            words_to_images, ctc_greedy_decoder, sample_character_patches, augment_word_batch, frozen_bn, restore_scheduler_state
 from networks.BigGAN_networks import Generator, Discriminator, PatchDiscriminator
 from networks.module import Recognizer, WriterIdentifier, StyleEncoder, StyleBackbone
 from lib.datasets import get_dataset, get_collect_fn, Hdf5Dataset
@@ -834,8 +834,13 @@ class AdversarialModel(BaseModel):
         self.sample_loader_worker_options = worker_options(sample_workers)
         self.inception_model = None
         self.valid_real_stats = None
-        dataset = get_dataset(opt.dataset, opt.training.dset_split,
-                              recogn_aug=True, wid_aug=True, process_style=True)
+        # The GAN path consumes clean style/org images.  Its former RandomScale
+        # + RandomClip tensor is no longer used; D now owns a matched,
+        # differentiable real/fake augmentation policy.
+        dataset = get_dataset(
+            opt.dataset, opt.training.dset_split,
+            recogn_aug=False, wid_aug=False, process_style=True,
+        )
         if self.local_rank > -1:
             from torch.utils.data.distributed import DistributedSampler
             self.train_sampler = DistributedSampler(
@@ -1819,6 +1824,18 @@ class GlobalLocalAdversarialModel(AdversarialModel):
         patch_size = int(getattr(self.opt.training, 'patch_size', 32))
         min_patch_crops = int(getattr(self.opt.training, 'min_patch_crops', 4))
         max_patch_crops = int(getattr(self.opt.training, 'max_patch_crops', 8))
+        patch_char_jitter = int(getattr(
+            self.opt.training, 'patch_char_jitter', 4
+        ))
+        use_d_diffaug = bool(getattr(
+            self.opt.training, 'd_diffaug', False
+        ))
+        d_aug_translate = int(getattr(
+            self.opt.training, 'd_aug_translate', 4
+        ))
+        d_aug_width_scale = float(getattr(
+            self.opt.training, 'd_aug_width_scale', 0.05
+        ))
         patch_adv_weight = float(
             getattr(self.opt.training, 'lambda_patch_adv', 0.5)
         )
@@ -1836,6 +1853,10 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                 'patch crop bounds must satisfy 1 <= min_patch_crops '
                 '<= max_patch_crops'
             )
+        if patch_char_jitter < 0:
+            raise ValueError('patch_char_jitter must be non-negative')
+        if d_aug_translate < 0 or not 0.0 <= d_aug_width_scale < 1.0:
+            raise ValueError('invalid discriminator augmentation configuration')
         if patch_adv_weight < 0:
             raise ValueError('lambda_patch_adv must be non-negative')
 
@@ -1867,20 +1888,36 @@ class GlobalLocalAdversarialModel(AdversarialModel):
             f'full LR through epoch {opt.training.start_decay_epoch}, '
             f'floor={getattr(opt.training, "min_lr_ratio", 0.001):.3f}x; '
             f'D/P:G={num_critic_train}:1; '
-            f'patch G weight={patch_adv_weight:.3g}'
+            f'patch G weight={patch_adv_weight:.3g}; '
+            f'DiffAug={"on" if use_d_diffaug else "off"}'
         )
 
-        def prepare_stroke_patches(images, image_lens):
-            patches, _ = sample_adaptive_patches(
+        def prepare_stroke_patches(
+            images, image_lens, labels, label_lens
+        ):
+            patches, _, character_ids = sample_character_patches(
                 images,
                 image_lens,
+                labels,
+                label_lens,
                 patch_size=patch_size,
                 min_crops=min_patch_crops,
                 max_crops=max_patch_crops,
+                horizontal_jitter=patch_char_jitter,
             )
             if masking_mode != 'none':
                 patches = apply_light_mixed_patch_mask(patches)
-            return patches
+            return patches, character_ids
+
+        def prepare_global_discriminator_input(images, image_lens):
+            if not use_d_diffaug:
+                return images, image_lens
+            return augment_word_batch(
+                images,
+                image_lens,
+                max_translation=d_aug_translate,
+                width_scale=d_aug_width_scale,
+            )
 
         best_fid = restored_meta.get('best_fid', None)
         if best_fid is None:
@@ -1918,8 +1955,6 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                 style_refs = batch['org_imgs'].to(device, non_blocking=True)
                 style_ref_lens = batch['org_img_lens'].to(device, non_blocking=True)
                 real_wids = batch['wids'].to(device, non_blocking=True)
-                real_aug_imgs = batch['aug_imgs'].to(device, non_blocking=True)
-                real_aug_img_lens = batch['aug_img_lens'].to(device, non_blocking=True)
                 real_lbs = batch['lbs'].to(device, non_blocking=True)
                 real_lb_lens = batch['lb_lens'].to(device, non_blocking=True)
                 max_label_len = real_lbs.size(-1)
@@ -1967,8 +2002,14 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                 style_img_lens = fake_lb_lens * self.opt.char_width
                 recn_img_lens = real_lb_lens * self.opt.char_width
 
-                # Batch forward all generated types through D to avoid multiple GPU kernel launches
-                d_fake_all = self.models.D(cat_fake_imgs.detach(), cat_fake_img_lens, cat_fake_lb_lens)
+                # DiffAug is applied to both sides of D, including the G path,
+                # so D cannot identify the augmentation itself as real or fake.
+                fake_disc_input, fake_disc_lens = prepare_global_discriminator_input(
+                    cat_fake_imgs.detach(), cat_fake_img_lens
+                )
+                d_fake_all = self.models.D(
+                    fake_disc_input, fake_disc_lens, cat_fake_lb_lens
+                )
                 d_fake, d_style, d_recn = torch.chunk(d_fake_all, 3, dim=0)
                 fake_disc_loss = (torch.mean(F.relu(1.0 + d_fake)) +
                                   torch.mean(F.relu(1.0 + d_style)) +
@@ -1976,12 +2017,21 @@ class GlobalLocalAdversarialModel(AdversarialModel):
 
                 # Matched adaptive crop policy for every generated path.
                 fake_patch_groups = [
-                    prepare_stroke_patches(fake_imgs.detach(), fake_img_lens),
-                    prepare_stroke_patches(style_imgs.detach(), style_img_lens),
-                    prepare_stroke_patches(recn_imgs.detach(), recn_img_lens),
+                    prepare_stroke_patches(
+                        fake_imgs.detach(), fake_img_lens, fake_lbs, fake_lb_lens
+                    ),
+                    prepare_stroke_patches(
+                        style_imgs.detach(), style_img_lens, fake_lbs, fake_lb_lens
+                    ),
+                    prepare_stroke_patches(
+                        recn_imgs.detach(), recn_img_lens, real_lbs, real_lb_lens
+                    ),
                 ]
-                fake_patch_sizes = [group.size(0) for group in fake_patch_groups]
-                p_all = self.models.P(torch.cat(fake_patch_groups, dim=0))
+                fake_patch_sizes = [group[0].size(0) for group in fake_patch_groups]
+                p_all = self.models.P(
+                    torch.cat([group[0] for group in fake_patch_groups], dim=0),
+                    torch.cat([group[1] for group in fake_patch_groups], dim=0),
+                )
                 p_fake, p_style, p_recn = torch.split(
                     p_all, fake_patch_sizes, dim=0
                 )
@@ -1996,7 +2046,12 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                 # were real; keep them exclusively for the patch discriminator.
                 apply_r1 = iter_count % r1_interval == 0
                 real_for_disc = real_imgs.detach().requires_grad_(apply_r1)
-                real_disc = self.models.D(real_for_disc, real_img_lens, real_lb_lens)
+                real_disc_input, real_disc_lens = prepare_global_discriminator_input(
+                    real_for_disc, real_img_lens
+                )
+                real_disc = self.models.D(
+                    real_disc_input, real_disc_lens, real_lb_lens
+                )
                 real_disc_loss = torch.mean(F.relu(1.0 - real_disc))
                 if apply_r1:
                     r1_loss = (
@@ -2007,12 +2062,18 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                     r1_loss = real_disc_loss.new_zeros(())
 
                 real_patch_groups = [
-                    prepare_stroke_patches(real_imgs, real_img_lens),
-                    prepare_stroke_patches(real_aug_imgs, real_aug_img_lens),
+                    prepare_stroke_patches(
+                        real_imgs, real_img_lens, real_lbs, real_lb_lens
+                    ),
+                    prepare_stroke_patches(
+                        real_disc_input.detach(), real_disc_lens,
+                        real_lbs, real_lb_lens,
+                    ),
                 ]
-                real_patch_sizes = [group.size(0) for group in real_patch_groups]
+                real_patch_sizes = [group[0].size(0) for group in real_patch_groups]
                 real_patch_logits = self.models.P(
-                    torch.cat(real_patch_groups, dim=0)
+                    torch.cat([group[0] for group in real_patch_groups], dim=0),
+                    torch.cat([group[1] for group in real_patch_groups], dim=0),
                 )
                 real_patch_logits, real_aug_patch_logits = torch.split(
                     real_patch_logits, real_patch_sizes, dim=0
@@ -2092,20 +2153,33 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                     recn_img_lens = real_lb_lens * self.opt.char_width
 
                     cat_fake_img_lens = cat_fake_lb_lens * self.opt.char_width
-                    # Batch forward all generated types through D to avoid multiple GPU kernel launches
-                    d_fake_all = self.models.D(cat_fake_imgs, cat_fake_img_lens, cat_fake_lb_lens)
+                    fake_disc_input, fake_disc_lens = prepare_global_discriminator_input(
+                        cat_fake_imgs, cat_fake_img_lens
+                    )
+                    d_fake_all = self.models.D(
+                        fake_disc_input, fake_disc_lens, cat_fake_lb_lens
+                    )
                     d_fake, d_style, d_recn = torch.chunk(d_fake_all, 3, dim=0)
                     adv_loss = -(torch.mean(d_fake) + torch.mean(d_style) + torch.mean(d_recn)) / 3
 
                     fake_patch_groups = [
-                        prepare_stroke_patches(fake_imgs, fake_img_lens),
-                        prepare_stroke_patches(style_imgs, style_img_lens),
-                        prepare_stroke_patches(recn_imgs, recn_img_lens),
+                        prepare_stroke_patches(
+                            fake_imgs, fake_img_lens, fake_lbs, fake_lb_lens
+                        ),
+                        prepare_stroke_patches(
+                            style_imgs, style_img_lens, fake_lbs, fake_lb_lens
+                        ),
+                        prepare_stroke_patches(
+                            recn_imgs, recn_img_lens, real_lbs, real_lb_lens
+                        ),
                     ]
                     fake_patch_sizes = [
-                        group.size(0) for group in fake_patch_groups
+                        group[0].size(0) for group in fake_patch_groups
                     ]
-                    p_all = self.models.P(torch.cat(fake_patch_groups, dim=0))
+                    p_all = self.models.P(
+                        torch.cat([group[0] for group in fake_patch_groups], dim=0),
+                        torch.cat([group[1] for group in fake_patch_groups], dim=0),
+                    )
                     p_fake, p_style, p_recn = torch.split(
                         p_all, fake_patch_sizes, dim=0
                     )
