@@ -2,6 +2,7 @@ import os
 import argparse
 import random
 import numpy as np
+import torch
 from munch import Munch
 from lib.utils import yaml2config
 from networks import get_model
