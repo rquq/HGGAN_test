@@ -1212,6 +1212,11 @@ class AdversarialModel(BaseModel):
                     res['wer'] = wer
 
             if getattr(self.opt.valid, 'validate_hwd', False):
+                hwd_batch_size = int(getattr(
+                    self.opt.valid, 'hwd_batch_size', 32
+                ))
+                if hwd_batch_size < 1:
+                    raise ValueError('valid.hwd_batch_size must be positive')
                 # OPTIMIZATION: Cache real HWD features to avoid reprocessing real images every epoch.
                 if not hasattr(self, 'valid_real_hwd_features') or self.valid_real_hwd_features is None:
                     if not hasattr(self, 'valid_real_hwd_dataset') or self.valid_real_hwd_dataset is None:
@@ -1230,13 +1235,17 @@ class AdversarialModel(BaseModel):
                         self.valid_real_hwd_dataset = ImageListDataset(real_imgs_list, real_authors_list)
 
                     from metric.val_metrics import HWDScore
-                    hwd_scorer = HWDScore(batchsize=64).to(self.device)
+                    hwd_scorer = HWDScore(batchsize=hwd_batch_size).to(self.device)
                     self.valid_real_hwd_features = hwd_scorer.digest(self.valid_real_hwd_dataset)
                     self.valid_real_hwd_dataset = None
                     import gc
                     gc.collect()
 
-                hwd_val = calculate_hwd_score(eval_dloader, get_cached_generator(), n_rand_repeat, self.device, real_features=self.valid_real_hwd_features)
+                hwd_val = calculate_hwd_score(
+                    eval_dloader, get_cached_generator(), n_rand_repeat,
+                    self.device, real_features=self.valid_real_hwd_features,
+                    batchsize=hwd_batch_size,
+                )
                 res['hwd'] = hwd_val
 
             if getattr(self.opt.valid, 'validate_cmmd', False):
@@ -1283,7 +1292,7 @@ class AdversarialModel(BaseModel):
 
             import gc
             gc.collect()
-            torch.cuda.empty_cache()
+            # Retain reusable allocator blocks between validation and training.
         finally:
             if use_ema:
                 self.models.G = active_G
@@ -1588,84 +1597,8 @@ class GlobalLocalAdversarialModel(AdversarialModel):
     def train(self):
         self.info()
 
-        # ── WandB init (master process only) ──────────────────────────────
-        _is_master = self.local_rank < 1
-        if _is_master and not getattr(self.opt, 'no_wandb', False):
-            try:
-                import wandb as _wandb
-                # Get branchname and dates dynamically
-                import subprocess
-                from datetime import datetime
-                branchname = None
-                try:
-                    branchname = subprocess.check_output(['git', 'rev-parse', '--abbrev-ref', 'HEAD'], stderr=subprocess.DEVNULL, timeout=2).decode().strip()
-                except Exception:
-                    pass
-                if not branchname or branchname == 'HEAD':
-                    try:
-                        curr_dir = os.path.abspath(os.getcwd())
-                        for _ in range(5):
-                            head_path = os.path.join(curr_dir, '.git', 'HEAD')
-                            if os.path.exists(head_path):
-                                with open(head_path, 'r') as f:
-                                    content = f.read().strip()
-                                if content.startswith('ref:'):
-                                    branchname = content.split('/')[-1]
-                                else:
-                                    branchname = content[:7]
-                                break
-                            curr_dir = os.path.dirname(curr_dir)
-                    except Exception:
-                        pass
-                folder_branch = None
-                try:
-                    parts = os.path.abspath(__file__).split(os.sep)
-                    if len(parts) >= 3:
-                        folder_branch = parts[-3]
-                except Exception:
-                    pass
-                if branchname in [None, 'main', 'master', 'HEAD']:
-                    if folder_branch in ['main', 'dev', 'random_crop_recog', 'classic_optimized', 'HiGANplus', 'higanplus']:
-                        branchname = folder_branch
-                if not branchname:
-                    branchname = 'random_crop_recog'
-
-                run_name = f"{branchname}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-
-                wandb_key = os.environ.get('WANDB_API_KEY')
-                if not wandb_key:
-                    for path_candidate in [
-                        '/home/quq/machineLearning/HTG/wandb_key.txt',
-                        '/kaggle/working/wandb_key.txt',
-                        '../../wandb_key.txt',
-                        '../wandb_key.txt',
-                        './wandb_key.txt'
-                    ]:
-                        if os.path.exists(path_candidate):
-                            try:
-                                with open(path_candidate, 'r') as f:
-                                    wandb_key = f.read().strip()
-                                if wandb_key:
-                                    break
-                            except Exception:
-                                pass
-                if wandb_key:
-                    _wandb.login(key=wandb_key)
-                else:
-                    _wandb.login()
-                _wandb.init(
-                    project='HiGANplus',
-                    name=run_name,
-                    config=vars(self.opt) if hasattr(self.opt, '__dict__') else dict(self.opt),
-                    resume='allow',
-                )
-                # Validation is emitted alongside iteration-based training logs.
-                # Give it an independent epoch axis instead of reusing W&B's
-                # monotonically increasing global iteration step.
-                _wandb.define_metric('valid/epoch')
-                _wandb.define_metric('valid/*', step_metric='valid/epoch')
-            except Exception as e:
-                self.print(f"WandB initialization skipped or failed: {e}")
+        # W&B is initialized in train.py before this object is constructed so
+        # this summary and all subsequent checkpoint messages reach Logs.
 
         opt = self.opt
         num_style_tokens = getattr(opt.EncModel, 'num_style_tokens', 8)

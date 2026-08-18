@@ -465,7 +465,10 @@ def calculate_fid_kid_is(cfg, data_loader, generator, n_rand_repeat, device, cro
     return res
 
 # Handwriting Distance (HWD) Wrapper
-def calculate_hwd_score(data_loader, generator, n_rand_repeat, device, n_batches=None, real_dataset=None, real_features=None):
+def calculate_hwd_score(
+    data_loader, generator, n_rand_repeat, device, n_batches=None,
+    real_dataset=None, real_features=None, batchsize=32,
+):
     if n_batches is None:
         n_batches = len(data_loader)
 
@@ -504,8 +507,7 @@ def calculate_hwd_score(data_loader, generator, n_rand_repeat, device, n_batches
     fake_dataset = ImageListDataset(fake_imgs_list, fake_authors_list)
 
     print("Computing HWD Score...")
-    # Use batch size 64 to speed up VGG16 extraction
-    hwd_scorer = HWDScore(batchsize=64).to(device)
+    hwd_scorer = HWDScore(batchsize=int(batchsize)).to(device)
 
     fake_pd = hwd_scorer.digest(fake_dataset)
     if real_features is None:
