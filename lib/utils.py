@@ -1,6 +1,7 @@
 import os
 import logging
 import datetime
+import sys
 import yaml
 import numpy as np
 import torch
@@ -9,6 +10,87 @@ import matplotlib.pyplot as plt
 from munch import Munch
 from torchvision.utils import make_grid
 from PIL import Image
+
+
+def init_wandb_run(opt, project='HiGANplus'):
+    """Initialize W&B before model construction so all startup logs are kept."""
+    local_rank = int(getattr(opt, 'local_rank', -1))
+    if local_rank > 0 or bool(getattr(opt, 'no_wandb', False)):
+        return None
+
+    try:
+        import subprocess
+        import wandb
+
+        # Redirect stdout/stderr rather than sampling only scalar history. This
+        # must happen before get_logger() binds its console StreamHandler.
+        os.environ.setdefault('WANDB_CONSOLE', 'redirect')
+
+        branch_name = None
+        try:
+            branch_name = subprocess.check_output(
+                ['git', 'rev-parse', '--abbrev-ref', 'HEAD'],
+                stderr=subprocess.DEVNULL,
+                timeout=2,
+            ).decode().strip()
+        except Exception:
+            pass
+
+        folder_branch = os.path.basename(os.path.abspath(os.getcwd()))
+        if not branch_name or branch_name in ('HEAD', 'main', 'master'):
+            if folder_branch in (
+                'main', 'dev', 'random_crop_recog', 'classic_optimized',
+                'HiGANplus', 'higanplus',
+            ):
+                branch_name = folder_branch
+        if not branch_name:
+            branch_name = 'unknown'
+
+        wandb_key = os.environ.get('WANDB_API_KEY')
+        if not wandb_key:
+            for path_candidate in (
+                '/home/quq/machineLearning/HTG/wandb_key.txt',
+                '/kaggle/working/wandb_key.txt',
+                '../../wandb_key.txt',
+                '../wandb_key.txt',
+                './wandb_key.txt',
+            ):
+                if not os.path.exists(path_candidate):
+                    continue
+                try:
+                    with open(path_candidate, 'r', encoding='utf-8') as handle:
+                        wandb_key = handle.read().strip()
+                    if wandb_key:
+                        break
+                except OSError:
+                    continue
+
+        if wandb_key:
+            wandb.login(key=wandb_key)
+        else:
+            wandb.login()
+
+        config = dict(opt) if isinstance(opt, dict) else vars(opt)
+        run = wandb.init(
+            project=project,
+            name=f"{branch_name}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}",
+            config=config,
+            resume='allow',
+        )
+        # nohup/Kaggle pipes make stdout block-buffered. Flush each line while
+        # W&B's redirect is active so the final startup/training lines are not
+        # stranded until after wandb.finish() removes console capture.
+        for stream in (sys.stdout, sys.stderr):
+            reconfigure = getattr(stream, 'reconfigure', None)
+            if reconfigure is not None:
+                reconfigure(line_buffering=True, write_through=True)
+        wandb.define_metric('valid/epoch')
+        wandb.define_metric('valid/*', step_metric='valid/epoch')
+        print('[WandB] Console capture active before model construction.', flush=True)
+        return run
+    except Exception as exc:
+        print(f"WandB initialization skipped or failed: {exc}")
+        return None
 
 
 def get_logger(logdir):

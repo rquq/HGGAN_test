@@ -42,7 +42,7 @@ training:
   adam_b1: 0.5
   adam_b2: 0.999
   # sampling and saving
-  sample_iter_val: 200
+  sample_iter_val: 500
   print_iter_val: 20
   start_save_epoch_val: 0
   eval_epoch_val: 1
@@ -117,7 +117,8 @@ valid:
   validate_wier: false
   use_rand_corpus: false
   n_rand_repeat: 10
-  batch_size: 32
+  batch_size: 16
+  hwd_batch_size: 32
   dims: 2048
   mmd_degree: 3
   mmd_gamma: ~
