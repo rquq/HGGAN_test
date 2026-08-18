@@ -3,6 +3,7 @@ import logging
 import datetime
 import yaml
 import numpy as np
+import torch
 import cv2
 import matplotlib.pyplot as plt
 from munch import Munch

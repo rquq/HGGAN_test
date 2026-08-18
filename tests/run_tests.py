@@ -1,8 +1,13 @@
 import sys
 import inspect
 import time
+from pathlib import Path
 
-import tests.test_training_invariants as tti
+repo_root = str(Path(__file__).resolve().parents[1])
+if repo_root not in sys.path:
+    sys.path.insert(0, repo_root)
+
+import test_training_invariants as tti
 
 def main():
     test_funcs = [obj for name, obj in inspect.getmembers(tti) if name.startswith('test_') and inspect.isfunction(obj)]
