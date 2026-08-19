@@ -1,7 +1,9 @@
 import os
-# Variable-width handwriting batches create many nearby allocation sizes.
-# Expandable CUDA segments reduce fragmentation without changing model math.
-os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
+# MAIN's texture refiner alternates between a very large G-backward graph and
+# a smaller D graph.  Keep the native caching allocator so it retains its
+# high-water blocks instead of repeatedly returning/remapping them; this makes
+# the physical GPU-memory trace stable without changing model computation.
+os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'backend:native')
 
 from datetime import datetime
 import argparse
