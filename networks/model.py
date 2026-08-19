@@ -1595,6 +1595,7 @@ class GlobalLocalAdversarialModel(AdversarialModel):
         self.contextual_loss = CXLoss()
 
     def train(self):
+        _is_master = self.local_rank < 1
         self.info()
 
         # W&B is initialized in train.py before this object is constructed so
