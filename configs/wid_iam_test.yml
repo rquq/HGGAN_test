@@ -26,12 +26,12 @@ training:
   n_class: 80
   sort_input: true
   resume: ~
-  pretrained_backbone: './pretrained/wid_iam_spis_train64.pth'
+  pretrained_backbone: './pretrained/wid_iam_train64.pth'
   random_clip: true
   process_style: true
   frozen_backbone: true
   # Atomic export used only when validate_wier is enabled.
-  export_writer_teacher: "./pretrained/wid_iam_spis_test64.pth"
+  export_writer_teacher: "./pretrained/wid_iam_test64.pth"
 
 
 valid:

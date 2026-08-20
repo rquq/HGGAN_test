@@ -27,6 +27,8 @@ training:
   n_class: 80
   sort_input: true
   pretrained_backbone: ''
+  # Atomic export consumed by writer and GAN training.
+  export_recognizer: './pretrained/ocr_iam_train64.pth'
 
 
 valid:

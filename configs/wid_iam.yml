@@ -26,12 +26,20 @@ training:
   n_class: 80
   sort_input: true
   resume: ~
-  pretrained_backbone: './pretrained/ocr_iam_new.pth'
+  pretrained_backbone: './pretrained/ocr_iam_train64.pth'
   random_clip: true
   process_style: true
+  # Train W+B on both raw reference widths (used by E) and canonical/cropped
+  # widths (used by generated words), with no additional objective.
+  writer_input_policy: 'mixed'
+  writer_raw_probability: 0.5
+  # Temper inverse-frequency sampling so tail writers are seen more often
+  # without repeatedly overfitting their very small number of samples.
+  writer_balance_power: 0.5
+  writer_balance_max_weight: 3.0
   frozen_backbone: false
   # Atomic export consumed by gan_iam.yml after pretraining.
-  export_writer_teacher: "./pretrained/wid_iam_spis_train64.pth"
+  export_writer_teacher: "./pretrained/wid_iam_train64.pth"
 
 valid:
   dset_split: 'trnval'

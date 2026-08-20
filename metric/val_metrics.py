@@ -142,7 +142,7 @@ def get_activations(data_source, n_batches, model, dims, device, crop=False, eva
             imgs, org_img_lens = imgs.to(device, non_blocking=True), org_img_lens.to(device, non_blocking=True)
 
         # ----------------------------------------------------
-        # 1. SpiS-GAN Preprocessing for FID/KID Activations
+        # 1. FID/KID preprocessing
         # ----------------------------------------------------
         if eval_is:
             imgs_is = imgs.clone()
@@ -175,7 +175,7 @@ def get_activations(data_source, n_batches, model, dims, device, crop=False, eva
             elif width > target_width:
                 imgs_fid = imgs_fid[:, :, :, :target_width]
 
-        # Resize to (299, 299) and normalize to [-1, 1] (matching SpiS-GAN)
+        # Resize to (299, 299) and normalize to [-1, 1]
         imgs_fid = torch.nn.functional.interpolate(
             imgs_fid, size=(299, 299), mode='bilinear', align_corners=False
         )
