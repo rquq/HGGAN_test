@@ -101,6 +101,8 @@ def init_wandb_run(opt, project='HiGANplus'):
         )
         wandb.define_metric('valid/epoch')
         wandb.define_metric('valid/*', step_metric='valid/epoch')
+        wandb.define_metric('pretrain/epoch')
+        wandb.define_metric('pretrain/*', step_metric='pretrain/epoch')
         write_wandb_log(
             '[WandB] Direct Logs bridge active before model construction. '
             'Model summaries, checkpoint loading, and training output will be '

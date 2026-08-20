@@ -708,6 +708,11 @@ class BaseModel(object):
             'best_fid': best_fid,
             'last_eval_fid': getattr(self, 'last_eval_fid', None),
             'ema_step': ckpt_data.get('ema_step', None),
+            # Pretraining teacher-selection state.  These keys are harmless for
+            # GAN checkpoints and let R/W resume without forgetting the best
+            # exported EMA teacher.
+            'best_cer': ckpt_data.get('best_cer', np.inf),
+            'best_wier': ckpt_data.get('best_wier', np.inf),
         }
         self.restore_eval_history(ckpt_data)
 
@@ -2248,15 +2253,55 @@ class GlobalLocalAdversarialModel(AdversarialModel):
 
                     kl_loss = KLloss(mu, logvar) if self.vae_mode else torch.tensor(0.0, device=self.device)
 
-                    lambda_ctc = linear_epoch_weight(
-                        getattr(self.opt.training, 'lambda_ctc', 1.0),
+                    # Random generations must remain readable.  Style-transfer
+                    # generations use the same text target, but their valid
+                    # allographs/ligatures are closer to the OCR decision
+                    # boundary.  Decay that branch faster so a strong frozen
+                    # recognizer cannot erase authentic writer variation late
+                    # in training.
+                    lambda_ctc_rand = linear_epoch_weight(
                         getattr(
-                            self.opt.training, 'lambda_ctc_final',
+                            self.opt.training, 'lambda_ctc_rand',
                             getattr(self.opt.training, 'lambda_ctc', 1.0),
                         ),
+                        getattr(
+                            self.opt.training, 'lambda_ctc_rand_final',
+                            getattr(
+                                self.opt.training, 'lambda_ctc_final',
+                                getattr(self.opt.training, 'lambda_ctc', 1.0),
+                            ),
+                        ),
                         epoch,
-                        getattr(self.opt.training, 'ctc_decay_start_epoch', epoch),
-                        getattr(self.opt.training, 'ctc_decay_end_epoch', epoch),
+                        getattr(
+                            self.opt.training, 'ctc_rand_decay_start_epoch',
+                            getattr(self.opt.training, 'ctc_decay_start_epoch', epoch),
+                        ),
+                        getattr(
+                            self.opt.training, 'ctc_rand_decay_end_epoch',
+                            getattr(self.opt.training, 'ctc_decay_end_epoch', epoch),
+                        ),
+                    )
+                    lambda_ctc_style = linear_epoch_weight(
+                        getattr(
+                            self.opt.training, 'lambda_ctc_style',
+                            getattr(self.opt.training, 'lambda_ctc', 1.0),
+                        ),
+                        getattr(
+                            self.opt.training, 'lambda_ctc_style_final',
+                            getattr(
+                                self.opt.training, 'lambda_ctc_final',
+                                getattr(self.opt.training, 'lambda_ctc', 1.0),
+                            ),
+                        ),
+                        epoch,
+                        getattr(
+                            self.opt.training, 'ctc_style_decay_start_epoch',
+                            getattr(self.opt.training, 'ctc_decay_start_epoch', epoch),
+                        ),
+                        getattr(
+                            self.opt.training, 'ctc_style_decay_end_epoch',
+                            getattr(self.opt.training, 'ctc_decay_end_epoch', epoch),
+                        ),
                     )
                     lambda_info = float(getattr(self.opt.training, 'lambda_info', 1.0))
                     lambda_wid = float(getattr(self.opt.training, 'lambda_wid', 1.0))
@@ -2278,7 +2323,10 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                     # alone are misleading when their scales differ this much.
                     weighted_adv_loss_patch = patch_adv_weight * adv_loss_patch
                     g_adv = adv_loss + weighted_adv_loss_patch
-                    g_ctc = lambda_ctc * fake_ctc_loss
+                    g_ctc = (
+                        lambda_ctc_rand * fake_ctc_loss_rand
+                        + lambda_ctc_style * fake_ctc_loss_style
+                    )
                     g_writer = lambda_wid * fake_wid_loss
                     g_recn = lambda_recn * recn_loss
                     g_style = (
@@ -2514,6 +2562,13 @@ class RecognizeModel(BaseModel):
             self.print(f'load pretrained backbone from {opt.training.pretrained_backbone}')
 
         self.models = Munch(R=recognizer)
+        self.use_teacher_ema = bool(getattr(opt.training, 'teacher_ema', True))
+        if self.use_teacher_ema:
+            import copy
+            self.teacher_ema_beta = float(getattr(opt.training, 'teacher_ema_beta', 0.999))
+            self.models_ema.R = copy.deepcopy(recognizer).requires_grad_(False)
+            self.models_ema.R.eval()
+            self.ema_tracker = EMA(self.teacher_ema_beta)
 
         self.tst_loader = DataLoader(
             get_dataset(self.opt.valid.dset_name, self.opt.valid.dset_split, process_style=True),
@@ -2598,7 +2653,13 @@ class RecognizeModel(BaseModel):
         ctc_loss_meter = AverageMeter()
         recognizer_unwrapped = self.unwrap_model(self.models.R)
         ctc_len_scale = recognizer_unwrapped.len_scale
-        best_cer = np.inf
+        try:
+            best_cer = float(restored_meta.get('best_cer', np.inf))
+        except (TypeError, ValueError):
+            best_cer = np.inf
+        if not np.isfinite(best_cer):
+            best_cer = np.inf
+        eval_every = max(1, int(getattr(self.opt.training, 'eval_epoch_val', 10)))
 
         for epoch in range(start_epoch, self.opt.training.epochs + 1):
             if getattr(self, 'train_sampler', None) is not None:
@@ -2624,6 +2685,9 @@ class RecognizeModel(BaseModel):
                 ctc_loss_meter.update(real_ctc_loss.item())
                 real_ctc_loss.backward()
                 self.optimizers.R.step()
+                if self.use_teacher_ema:
+                    self.ema_tracker.step_ema(self.models_ema.R, self.models.R)
+                    self.ema_tracker.step += 1
 
                 if iter_count % self.opt.training.print_iter_val == 0:
                     if epoch > 1 and not self.logger:
@@ -2640,6 +2704,12 @@ class RecognizeModel(BaseModel):
                            % (epoch, self.opt.training.epochs, iter_count % len(self.train_loader),
                               len(self.train_loader), ctc_loss_avg, lr)
                     self.print(info)
+                    if self.local_rank < 1 and wandb.run is not None:
+                        wandb.log({
+                            'pretrain/ocr_ctc': ctc_loss_avg,
+                            'pretrain/ocr_lr': lr,
+                            'pretrain/epoch': epoch,
+                        }, step=iter_count)
 
                 iter_count += 1
 
@@ -2648,20 +2718,51 @@ class RecognizeModel(BaseModel):
                 if not os.path.exists(ckpt_root):
                     os.makedirs(ckpt_root) if self.local_rank < 1 else None
 
-                self.save('last', epoch, iter_count=iter_count)
-                export_path = getattr(self.opt.training, 'export_recognizer', '')
-                if self.local_rank < 1 and export_path:
-                    export_path = os.fspath(export_path)
-                    os.makedirs(os.path.dirname(export_path) or '.', exist_ok=True)
-                    staged_export = export_path + '.tmp'
-                    torch.save({
-                        'Recognizer': self.unwrap_model(self.models.R).state_dict(),
-                        'Epoch': epoch,
-                        'dataset': self.opt.dataset,
-                        'split': self.opt.training.dset_split,
-                    }, staged_export)
-                    os.replace(staged_export, export_path)
-                    self.print(f'Exported recognizer: {export_path}')
+                eval_due = (epoch % eval_every == 0 or epoch == self.opt.training.epochs)
+                eval_scores = None
+                if self.local_rank < 1 and eval_due:
+                    eval_scores = self.validate(use_ema=self.use_teacher_ema)
+                    source = 'EMA' if self.use_teacher_ema else 'online'
+                    self.print(
+                        'OCR {} eval @ epoch {}: CER={:.5f} WER={:.5f}'.format(
+                            source, epoch, eval_scores['CER'], eval_scores['WER']
+                        )
+                    )
+                    if wandb.run is not None:
+                        wandb.log({
+                            'pretrain/ocr_cer': eval_scores['CER'],
+                            'pretrain/ocr_wer': eval_scores['WER'],
+                            'pretrain/epoch': epoch,
+                        }, step=iter_count)
+                    if eval_scores['CER'] < best_cer:
+                        best_cer = eval_scores['CER']
+                        export_path = getattr(self.opt.training, 'export_recognizer', '')
+                        if export_path:
+                            export_path = os.fspath(export_path)
+                            os.makedirs(os.path.dirname(export_path) or '.', exist_ok=True)
+                            staged_export = export_path + '.tmp'
+                            teacher = self.models_ema.R if self.use_teacher_ema else self.models.R
+                            torch.save({
+                                'Recognizer': self.unwrap_model(teacher).state_dict(),
+                                'Epoch': epoch,
+                                'CER': eval_scores['CER'],
+                                'WER': eval_scores['WER'],
+                                'teacher_source': source.lower(),
+                                'dataset': self.opt.dataset,
+                                'split': self.opt.training.dset_split,
+                            }, staged_export)
+                            os.replace(staged_export, export_path)
+                            self.print(
+                                f'Exported best {source} recognizer (CER={best_cer:.5f}): {export_path}'
+                            )
+
+                if self.local_rank < 1:
+                    self.save(
+                        'last', epoch, iter_count=iter_count,
+                        best_cer=best_cer,
+                        cer=(eval_scores or {}).get('CER'),
+                        wer=(eval_scores or {}).get('WER'),
+                    )
                 if self.local_rank > -1:
                     dist.barrier()
 
@@ -2669,9 +2770,10 @@ class RecognizeModel(BaseModel):
             for scheduler in self.lr_schedulers.values():
                 scheduler.step()
 
-    def validate(self, *args, **kwargs):
+    def validate(self, use_ema=True, *args, **kwargs):
         self.set_mode('eval')
-        ctc_len_scale = self.unwrap_model(self.models.R).len_scale
+        recognizer = self.models_ema.R if use_ema and self.models_ema else self.models.R
+        ctc_len_scale = self.unwrap_model(recognizer).len_scale
         char_trans = 0
         total_chars = 0
         word_trans = 0
@@ -2680,7 +2782,7 @@ class RecognizeModel(BaseModel):
         with torch.no_grad():
             for i, batch in tqdm(enumerate(self.tst_loader), total=len(self.tst_loader)):
                 real_imgs, real_img_lens = batch['style_imgs'].to(self.device), batch['style_img_lens'].to(self.device)
-                logits = self.models.R(real_imgs, real_img_lens)
+                logits = recognizer(real_imgs, real_img_lens)
                 logits = torch.nn.functional.softmax(logits, dim=2).detach()
 
                 logits = logits.cpu().numpy()
@@ -2699,8 +2801,7 @@ class RecognizeModel(BaseModel):
                     if char_tran > 0:
                         word_trans += 1
 
-        for model in self.models.values():
-            model.train()
+        self.set_mode('train')
 
         cer = char_trans * 1.0 / max(total_chars, 1)
         wer = word_trans * 1.0 / max(total_words, 1)
@@ -2729,9 +2830,24 @@ class WriterIdentifyModel(BaseModel):
                 style_backbone.load_state_dict(ckpt)
 
             self.print(f'Load style_backbone from {opt.training.pretrained_backbone}')
+        elif getattr(opt.training, 'pretrained_backbone', ''):
+            self.print(
+                'WARNING: OCR teacher was not found; W+B will start from a '
+                'random backbone. For the intended FID/KID improvement, finish '
+                'OCR pretraining before starting W+B.'
+            )
 
         identifier = WriterIdentifier(**opt.WidModel).to(device)
         self.models = Munch(W=identifier, B=style_backbone)
+        self.use_teacher_ema = bool(getattr(opt.training, 'teacher_ema', True))
+        if self.use_teacher_ema:
+            import copy
+            self.teacher_ema_beta = float(getattr(opt.training, 'teacher_ema_beta', 0.999))
+            self.models_ema.W = copy.deepcopy(identifier).requires_grad_(False)
+            self.models_ema.B = copy.deepcopy(style_backbone).requires_grad_(False)
+            self.models_ema.W.eval()
+            self.models_ema.B.eval()
+            self.ema_tracker = EMA(self.teacher_ema_beta)
 
         self.tst_loader = DataLoader(
             get_dataset(opt.dataset, opt.valid.dset_split),
@@ -2917,7 +3033,13 @@ class WriterIdentifyModel(BaseModel):
         device = self.device
         wid_loss_meter = AverageMeter()
         raw_input_meter = AverageMeter()
-        best_wrr = 0
+        try:
+            best_wier = float(restored_meta.get('best_wier', np.inf))
+        except (TypeError, ValueError):
+            best_wier = np.inf
+        if not np.isfinite(best_wier):
+            best_wier = np.inf
+        eval_every = max(1, int(getattr(self.opt.training, 'eval_epoch_val', 10)))
 
         for epoch in range(start_epoch, self.opt.training.epochs + 1):
             if hasattr(getattr(self, 'train_sampler', None), 'set_epoch'):
@@ -2951,6 +3073,10 @@ class WriterIdentifyModel(BaseModel):
                 wid_loss_meter.update(wid_loss.item())
                 wid_loss.backward()
                 self.optimizers.W.step()
+                if self.use_teacher_ema:
+                    self.ema_tracker.step_ema(self.models_ema.W, self.models.W)
+                    self.ema_tracker.step_ema(self.models_ema.B, self.models.B)
+                    self.ema_tracker.step += 1
 
                 if iter_count % self.opt.training.print_iter_val == 0:
                     if epoch > 1 and not self.logger:
@@ -2969,6 +3095,13 @@ class WriterIdentifyModel(BaseModel):
                            % (epoch, self.opt.training.epochs, iter_count % len(self.train_loader),
                               len(self.train_loader), wid_loss_avg, raw_input_avg, lr)
                     self.print(info)
+                    if self.local_rank < 1 and wandb.run is not None:
+                        wandb.log({
+                            'pretrain/wid_loss': wid_loss_avg,
+                            'pretrain/wid_raw_fraction': raw_input_avg,
+                            'pretrain/wid_lr': lr,
+                            'pretrain/epoch': epoch,
+                        }, step=iter_count)
 
                 iter_count += 1
 
@@ -2977,24 +3110,54 @@ class WriterIdentifyModel(BaseModel):
                 if not os.path.exists(ckpt_root):
                     os.makedirs(ckpt_root) if self.local_rank < 1 else None
 
+                eval_due = (epoch % eval_every == 0 or epoch == self.opt.training.epochs)
+                eval_scores = None
+                if self.local_rank < 1 and eval_due:
+                    eval_scores = self.validate(use_ema=self.use_teacher_ema)
+                    source = 'EMA' if self.use_teacher_ema else 'online'
+                    self.print(
+                        'Writer {} eval @ epoch {}: WRR={:.3f} WIER={:.5f}'.format(
+                            source, epoch, eval_scores['WRR'], eval_scores['WIER']
+                        )
+                    )
+                    if wandb.run is not None:
+                        wandb.log({
+                            'pretrain/wid_wrr': eval_scores['WRR'],
+                            'pretrain/wid_wier': eval_scores['WIER'],
+                            'pretrain/epoch': epoch,
+                        }, step=iter_count)
+                    if eval_scores['WIER'] < best_wier:
+                        best_wier = eval_scores['WIER']
+                        export_path = getattr(self.opt.training, 'export_writer_teacher', '')
+                        if export_path:
+                            export_path = os.fspath(export_path)
+                            os.makedirs(os.path.dirname(export_path) or '.', exist_ok=True)
+                            teacher_w = self.models_ema.W if self.use_teacher_ema else self.models.W
+                            teacher_b = self.models_ema.B if self.use_teacher_ema else self.models.B
+                            export_ckpt = {
+                                'WriterIdentifier': self.unwrap_model(teacher_w).state_dict(),
+                                'StyleBackbone': self.unwrap_model(teacher_b).state_dict(),
+                                'Epoch': epoch,
+                                'WRR': eval_scores['WRR'],
+                                'WIER': eval_scores['WIER'],
+                                'teacher_source': source.lower(),
+                                'writer_count': self.unwrap_model(teacher_w).linear_wid[-1].out_features,
+                                'dataset': self.opt.dataset,
+                                'split': self.opt.training.dset_split,
+                            }
+                            staged_export = export_path + '.tmp'
+                            torch.save(export_ckpt, staged_export)
+                            os.replace(staged_export, export_path)
+                            self.print(
+                                f'Exported best {source} writer teacher (WIER={best_wier:.5f}): {export_path}'
+                            )
+
                 if self.local_rank < 1:
-                    self.save('last', epoch, iter_count=iter_count)
-                    export_path = getattr(self.opt.training, "export_writer_teacher", "")
-                    if export_path:
-                        export_path = os.fspath(export_path)
-                        os.makedirs(os.path.dirname(export_path) or ".", exist_ok=True)
-                        export_ckpt = {
-                            "WriterIdentifier": self.unwrap_model(self.models.W).state_dict(),
-                            "StyleBackbone": self.unwrap_model(self.models.B).state_dict(),
-                            "Epoch": epoch,
-                            "writer_count": self.unwrap_model(self.models.W).linear_wid[-1].out_features,
-                            "dataset": self.opt.dataset,
-                            "split": self.opt.training.dset_split,
-                        }
-                        staged_export = export_path + ".tmp"
-                        torch.save(export_ckpt, staged_export)
-                        os.replace(staged_export, export_path)
-                        self.print(f"Exported writer teacher: {export_path}")
+                    self.save(
+                        'last', epoch, iter_count=iter_count,
+                        best_wier=best_wier,
+                        wier=(eval_scores or {}).get('WIER'),
+                    )
                 if self.local_rank > -1:
                     dist.barrier()
 
@@ -3002,26 +3165,24 @@ class WriterIdentifyModel(BaseModel):
             for scheduler in self.lr_schedulers.values():
                 scheduler.step()
 
-    def validate(self, *args, **kwargs):
+    def validate(self, use_ema=True, *args, **kwargs):
         self.set_mode('eval')
+        writer = self.models_ema.W if use_ema and self.models_ema else self.models.W
+        backbone = self.models_ema.B if use_ema and self.models_ema else self.models.B
 
         with torch.no_grad():
             acc_counts = 0.
             total_counts = 0.
             for i, batch in tqdm(enumerate(self.tst_loader), total=len(self.tst_loader)):
-                wid_logits = self.models.W(batch['style_imgs'].to(self.device),
-                                           batch['style_img_lens'].to(self.device),
-                                           self.models.B)
+                wid_logits = writer(batch['style_imgs'].to(self.device),
+                                    batch['style_img_lens'].to(self.device), backbone)
                 _, preds = torch.max(wid_logits.data, dim=1)
 
                 acc_counts += preds.eq(batch['wids'].to(self.device)).sum().item()
                 total_counts += wid_logits.size(0)
 
-            wrr = acc_counts * 100. / total_counts
-            wier = 1 - acc_counts * 1. / total_counts
-            self.print(f'wier: {wier}')
+            wrr = acc_counts * 100. / max(total_counts, 1.0)
+            wier = 1 - acc_counts * 1. / max(total_counts, 1.0)
 
-        for model in self.models.values():
-            model.train()
-
-        return wrr
+        self.set_mode('train')
+        return {'WRR': wrr, 'WIER': wier}

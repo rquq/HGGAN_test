@@ -11,7 +11,7 @@ from torch.utils.data import Dataset, Sampler
 from torchvision.transforms import Compose, Normalize, ToTensor
 from lib.alphabet import strLabelConverter
 from lib.path_config import data_roots, data_paths, ImgHeight, CharWidth
-from lib.transforms import RandomScale, RandomClip
+from lib.transforms import RandomScale, RandomClip, MildHandwritingAugment
 
 
 
@@ -325,7 +325,9 @@ def get_dataset(dset_name, split, wid_aug=False, recogn_aug=False, process_style
 
     transforms = [ToTensor(), Normalize([0.5], [0.5])]
     if recogn_aug:
-        transforms = [RandomScale()] + transforms
+        # Safe OCR-only perturbations: preserve glyph identity and writer style
+        # while covering scan/ink variation seen by the GAN recognizer loss.
+        transforms = [RandomScale(), MildHandwritingAugment()] + transforms
     if wid_aug:
         transforms = [RandomClip()] + transforms
     if not recogn_aug and not wid_aug:
