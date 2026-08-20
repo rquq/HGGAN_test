@@ -64,7 +64,7 @@ Thumbs.db
 .directory
 *~
 
-# Codex-generated local verification artifacts
-/tests/test_training_invariants.py
-/tests/test_main_discriminator_transplant.py
+# AI-agent local verification artifacts (never commit generated test runners,
+# smoke/invariant tests, or their caches). The project's root test.py remains tracked.
+/tests/
 /.pytest_cache/
