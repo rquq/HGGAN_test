@@ -12,17 +12,20 @@ training:
   resume: ''
   dset_split: 'trnval'
   augment: True
-  epochs: 74
+  # Long, late-decay teacher run; selected EMA teachers are evaluated every 10 epochs.
+  epochs: 100
   lr_policy: 'linear'
-  start_decay_epoch: 40
-  n_epochs_decay: 30
+  start_decay_epoch: 60
+  n_epochs_decay: 40
   batch_size: 128
   # optimization:
   lr: 1.0e-3
   # sampling and saving
   print_iter_val: 20
-  start_save_epoch_val: 20
-  save_epoch_val: 4
+  # Validation is deliberately sparse; each result selects an EMA teacher.
+  eval_epoch_val: 10
+  teacher_ema: true
+  teacher_ema_beta: 0.999
   ckpt_dir: 'ckpts'
   n_class: 80
   sort_input: true

@@ -432,10 +432,48 @@ class StyleEncoder(nn.Module):
         return style_tokens
 
 
+class MaskedAttentiveStatsPool(nn.Module):
+    """Pool writer features while ignoring right-padding.
+
+    The mean carries broad writer style while the standard deviation preserves
+    stroke and spacing variation that uniform temporal averaging discards.
+    Attention focuses the pool on informative glyph positions.
+    """
+    def __init__(self, in_dim, attention_dim=128):
+        super().__init__()
+        attention_dim = max(1, int(attention_dim))
+        self.attention = nn.Sequential(
+            nn.Conv1d(in_dim, attention_dim, kernel_size=1),
+            nn.Tanh(),
+            nn.Conv1d(attention_dim, 1, kernel_size=1),
+        )
+        self.projection = nn.Sequential(
+            nn.Linear(in_dim * 2, in_dim),
+            nn.LayerNorm(in_dim),
+            nn.LeakyReLU(0.2, inplace=True),
+        )
+
+    def forward(self, feat, valid_mask):
+        if valid_mask.dtype is not torch.bool:
+            valid_mask = valid_mask.bool()
+        scores = self.attention(feat).squeeze(1)
+        scores = scores.masked_fill(~valid_mask, torch.finfo(scores.dtype).min)
+        weights = torch.softmax(scores.float(), dim=-1).to(dtype=feat.dtype)
+        mean = torch.sum(feat * weights.unsqueeze(1), dim=-1)
+        centered = feat - mean.unsqueeze(-1)
+        var = torch.sum(centered.square() * weights.unsqueeze(1), dim=-1)
+        std = torch.sqrt(var.clamp_min(1e-5))
+        return self.projection(torch.cat((mean, std), dim=1))
+
+
 class WriterIdentifier(nn.Module):
-    def __init__(self, n_writer=372, in_dim=256, init='N02'):
+    def __init__(self, n_writer=372, in_dim=256, init='N02',
+                 pool='mean', attention_dim=128):
         super(WriterIdentifier, self).__init__()
         self.reduce_len_scale = 32
+        self.pool = str(pool).lower()
+        if self.pool not in ('mean', 'attentive_stats'):
+            raise ValueError("Writer pool must be 'mean' or 'attentive_stats'")
 
         ######################################
         # Construct WriterIdentifier
@@ -446,28 +484,37 @@ class WriterIdentifier(nn.Module):
             nn.LeakyReLU(),
             nn.Linear(in_dim, n_writer),
         )
+        self.attentive_pool = (
+            MaskedAttentiveStatsPool(in_dim, attention_dim)
+            if self.pool == 'attentive_stats' else None
+        )
 
         if init != 'none':
             init_weights(self, init)
 
+    def _pool_features(self, feat, img_len, cnn_backbone):
+        feat_len = torch.div(
+            img_len, cnn_backbone.reduce_len_scale, rounding_mode='trunc'
+        ).clamp(min=1, max=feat.size(-1))
+        valid_mask = _len2mask(feat_len, feat.size(-1), dtype=None)
+        if self.attentive_pool is not None:
+            return self.attentive_pool(feat, valid_mask)
+        mask = valid_mask.unsqueeze(1).to(dtype=feat.dtype)
+        return (feat * mask).sum(dim=-1) / feat_len.unsqueeze(1).to(feat.dtype)
+
     def forward(self, img, img_len, cnn_backbone, ret_feats=False):
         feat, all_feats = cnn_backbone(img, ret_feats)
-        img_len = torch.div(img_len, cnn_backbone.reduce_len_scale, rounding_mode='trunc')
-        img_len_mask = _len2mask(img_len, feat.size(-1)).unsqueeze(1).float().detach()
-        wid_feat = (feat * img_len_mask).sum(dim=-1) / (img_len.unsqueeze(1).float() + 1e-8)
+        wid_feat = self._pool_features(feat, img_len, cnn_backbone)
         wid_logits = self.linear_wid(wid_feat)
         if ret_feats:
             return wid_logits, all_feats
-        else:
-            return wid_logits
+        return wid_logits
 
     def return_feat(self, img, img_len, cnn_backbone):
         """Return intermediate writer features (before classification head)."""
         feat, _ = cnn_backbone(img, ret_feats=False)
-        img_len = torch.div(img_len, cnn_backbone.reduce_len_scale, rounding_mode='trunc')
-        img_len_mask = _len2mask(img_len, feat.size(-1)).unsqueeze(1).float().detach()
-        wid_feat = (feat * img_len_mask).sum(dim=-1) / (img_len.unsqueeze(1).float() + 1e-8)
-        # Pass through all linear layers except the last classification one
+        wid_feat = self._pool_features(feat, img_len, cnn_backbone)
+        # Pass through all linear layers except the last classification one.
         for layer in self.linear_wid[:-1]:
             wid_feat = layer(wid_feat)
         return wid_feat

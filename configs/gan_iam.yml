@@ -74,11 +74,17 @@ training:
   d_aug_translate: 4
   d_aug_width_scale: 0.05
   vae_mode: true
-  lambda_ctc: 1.0
-  # Preserve content while gradually releasing capacity for writer style.
-  lambda_ctc_final: 0.4
-  ctc_decay_start_epoch: 10
-  ctc_decay_end_epoch: 20
+  # Keep random samples text-correct.  Style-transfer receives a lighter,
+  # earlier-decaying OCR constraint so valid allographs and ligatures are not
+  # forced into the recognizer's most canonical glyph shapes.
+  lambda_ctc_rand: 1.0
+  lambda_ctc_rand_final: 0.4
+  ctc_rand_decay_start_epoch: 10
+  ctc_rand_decay_end_epoch: 20
+  lambda_ctc_style: 0.5
+  lambda_ctc_style_final: 0.08
+  ctc_style_decay_start_epoch: 8
+  ctc_style_decay_end_epoch: 28
   lambda_info: 1.0
   lambda_wid: 0.5
   lambda_recn: 10.0
@@ -251,4 +257,7 @@ EncModel:
 WidModel:
   n_writer: 339
   in_dim: 256
+  # Must match the W+B teacher exported by configs/wid_iam.yml.
+  pool: 'attentive_stats'
+  attention_dim: 128
   init: 'none'

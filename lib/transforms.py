@@ -1,5 +1,5 @@
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageEnhance, ImageFilter
 from lib.path_config import ImgHeight, CharWidth
 
 # Pillow >=9.1 moved resampling constants to Image.Resampling;
@@ -66,3 +66,70 @@ class RandomScale:
 
     def __repr__(self):
         return f"{self.__class__.__name__}(var={self.var})"
+
+
+class MildHandwritingAugment:
+    """Small, label-preserving perturbations for recognizer pretraining.
+
+    This deliberately avoids crops, rotations, elastic warps, and strong noise:
+    those can alter character identity or writer traits.  Width scaling remains
+    separate and aligned to CharWidth in ``RandomScale``.
+    """
+    def __init__(self, affine_probability=0.55, tone_probability=0.65,
+                 blur_probability=0.12, noise_probability=0.12,
+                 max_translate_x=3, max_translate_y=1, max_shear=0.06,
+                 contrast_range=(0.88, 1.12), brightness_range=(0.94, 1.06),
+                 max_blur_radius=0.45, noise_std=2.0):
+        self.affine_probability = float(affine_probability)
+        self.tone_probability = float(tone_probability)
+        self.blur_probability = float(blur_probability)
+        self.noise_probability = float(noise_probability)
+        self.max_translate_x = int(max_translate_x)
+        self.max_translate_y = int(max_translate_y)
+        self.max_shear = float(max_shear)
+        self.contrast_range = tuple(float(value) for value in contrast_range)
+        self.brightness_range = tuple(float(value) for value in brightness_range)
+        self.max_blur_radius = float(max_blur_radius)
+        self.noise_std = float(noise_std)
+
+    def __call__(self, pic):
+        if not isinstance(pic, Image.Image):
+            return pic
+        if np.random.random() < self.affine_probability:
+            shift_x = float(np.random.uniform(-self.max_translate_x, self.max_translate_x))
+            shift_y = float(np.random.uniform(-self.max_translate_y, self.max_translate_y))
+            shear = float(np.random.uniform(-self.max_shear, self.max_shear))
+            # PIL maps output coordinates back to source coordinates, hence -shift.
+            affine = (1.0, shear, -shift_x, 0.0, 1.0, -shift_y)
+            try:
+                pic = pic.transform(
+                    pic.size, Image.Transform.AFFINE, affine,
+                    resample=_Resampling.BILINEAR, fillcolor=255,
+                )
+            except AttributeError:  # Pillow < 9.1 compatibility
+                pic = pic.transform(
+                    pic.size, Image.AFFINE, affine,
+                    resample=_Resampling.BILINEAR, fillcolor=255,
+                )
+        if np.random.random() < self.tone_probability:
+            pic = ImageEnhance.Contrast(pic).enhance(
+                float(np.random.uniform(*self.contrast_range))
+            )
+            pic = ImageEnhance.Brightness(pic).enhance(
+                float(np.random.uniform(*self.brightness_range))
+            )
+        if np.random.random() < self.blur_probability:
+            pic = pic.filter(ImageFilter.GaussianBlur(
+                radius=float(np.random.uniform(0.05, self.max_blur_radius))
+            ))
+        if np.random.random() < self.noise_probability:
+            array = np.asarray(pic, dtype=np.float32)
+            array += np.random.normal(0.0, self.noise_std, size=array.shape)
+            pic = Image.fromarray(np.clip(array, 0, 255).astype(np.uint8), mode='L')
+        return pic
+
+    def __repr__(self):
+        return (f"{self.__class__.__name__}(affine_probability={self.affine_probability}, "
+                f"tone_probability={self.tone_probability}, "
+                f"blur_probability={self.blur_probability}, "
+                f"noise_probability={self.noise_probability})")
