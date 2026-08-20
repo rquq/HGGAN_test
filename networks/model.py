@@ -2180,6 +2180,9 @@ class GlobalLocalAdversarialModel(AdversarialModel):
 
                     # Reconstruction already has an exact pixel target; reserve
                     # OCR supervision for random generation and style transfer.
+                    # R was pretrained on this exact normalized polarity: pass
+                    # generated tensors directly.  Do not apply ``1 - image``
+                    # or sign inversion here; those are display-only elsewhere.
                     ctc_imgs = torch.cat([fake_imgs, style_imgs], dim=0)
                     ctc_img_lens = torch.cat([fake_img_lens, style_img_lens], dim=0)
                     ctc_log_probs = self.models.R(
@@ -2783,6 +2786,9 @@ class RecognizeModel(BaseModel):
             for i, batch in tqdm(enumerate(self.tst_loader), total=len(self.tst_loader)):
                 real_imgs, real_img_lens = batch['style_imgs'].to(self.device), batch['style_img_lens'].to(self.device)
                 logits = recognizer(real_imgs, real_img_lens)
+                # In eval mode the recognizer returns raw logits as
+                # [batch, time, classes]; only training/explicit CTC mode uses
+                # the [time, batch, classes] log-probability layout.
                 logits = torch.nn.functional.softmax(logits, dim=2).detach()
 
                 logits = logits.cpu().numpy()
