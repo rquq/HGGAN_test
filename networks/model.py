@@ -961,8 +961,12 @@ class AdversarialModel(BaseModel):
             style_imgs = F.pad(style_imgs, [0, max_img_len - style_imgs.size(-1), 0, 0], value=-1.)
 
             real_words = self.label_converter.decode(real_lbs, real_lb_lens)
-            real_labels = words_to_images(real_words, *img_shape)
-            rand_labels = words_to_images(sampled_words, *img_shape)
+            # IAM64 tensors use white paper (+1) and dark ink (-1). The
+            # synthetic text renderer uses the opposite convention, so negate
+            # labels only for this display grid. This has no model/gradient
+            # path and must not be confused with recognizer preprocessing.
+            real_labels = -words_to_images(real_words, *img_shape)
+            rand_labels = -words_to_images(sampled_words, *img_shape)
 
             try:
                 sample_img_list = [real_labels.cpu(), real_imgs.cpu(), fake_real_imgs.cpu(),
@@ -970,7 +974,10 @@ class AdversarialModel(BaseModel):
                 if recn_imgs is not None:
                     sample_img_list.insert(2, recn_imgs.cpu())
                 sample_imgs = torch.cat(sample_img_list, dim=2).repeat(1, 3, 1, 1)
-                res_img = draw_image(1 - sample_imgs.data, nrow=self.opt.training.sample_nrow, normalize=True)
+                # Log the raw normalized image convention: white paper, dark
+                # handwriting. Do not apply the legacy ``1 - image`` preview
+                # transform, which made W&B samples look polarity-inverted.
+                res_img = draw_image(sample_imgs.data, nrow=self.opt.training.sample_nrow, normalize=True)
                 save_path = os.path.join(self.log_root, self.opt.training.sample_dir,
                                          'iter_{}.png'.format(iteration_done))
                 im = Image.fromarray(res_img)
