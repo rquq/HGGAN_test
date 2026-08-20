@@ -12,7 +12,7 @@ import numpy as np
 import torch
 import torch.distributed as dist
 
-from lib.utils import yaml2config, init_wandb_run
+from lib.utils import yaml2config, init_wandb_run, write_wandb_log
 from networks import get_model
 
 
@@ -87,12 +87,14 @@ if __name__ == "__main__":
     # summaries, checkpoint-loading messages, and startup failures visible in
     # the run's Logs tab instead of only in the local nohup log.
     wandb_run = init_wandb_run(cfg)
+    write_wandb_log(f'[Startup] branch=dev config={args.config} logdir={logdir}')
     model = None
     try:
         model = get_model(cfg.model)(cfg, logdir)
         model.train()
     except KeyboardInterrupt:
         print("\n[Notice] Training interrupted by user.")
+        write_wandb_log('[Notice] Training interrupted by user.')
         if model is not None and hasattr(model, 'save') and getattr(model, 'local_rank', 0) <= 0:
             print("[Notice] Saving emergency checkpoint (tag='interrupted')...")
             try:
@@ -104,12 +106,14 @@ if __name__ == "__main__":
         # Print while W&B console capture is still active, then preserve the
         # original exception and exit status for Kaggle/local launchers.
         traceback.print_exc()
+        write_wandb_log(traceback.format_exc())
         raise
     finally:
         if wandb_run is not None:
             try:
                 import wandb
                 if wandb.run is not None:
+                    write_wandb_log('[Shutdown] Finishing W&B run.')
                     wandb.finish()
             except Exception as e:
                 print(f"[Warning] WandB shutdown failed: {e}")

@@ -30,6 +30,8 @@ training:
   random_clip: true
   process_style: true
   frozen_backbone: false
+  # Atomic export consumed by gan_iam.yml after pretraining.
+  export_writer_teacher: "./pretrained/wid_iam_spis_train64.pth"
 
 valid:
   dset_split: 'trnval'
@@ -46,6 +48,6 @@ StyBackbone:
 
 
 WidModel:
-  n_writer: 372
+  n_writer: 339
   in_dim: 256
   init: 'none'
