@@ -1,7 +1,6 @@
 import os
 import logging
 import datetime
-import sys
 import yaml
 import numpy as np
 import torch
@@ -12,8 +11,25 @@ from torchvision.utils import make_grid
 from PIL import Image
 
 
+def write_wandb_log(message):
+    """Write application text directly to W&B's Logs tab when a run is live.
+
+    This deliberately does not rely on stdout/stderr interception: notebook and
+    Kaggle launchers can import W&B before the interception mode is configured.
+    """
+    try:
+        import wandb
+        run = wandb.run
+        write_logs = getattr(run, 'write_logs', None) if run is not None else None
+        if callable(write_logs):
+            write_logs(str(message))
+    except Exception:
+        # Observability must never affect model construction or training.
+        pass
+
+
 def init_wandb_run(opt, project='HiGANplus'):
-    """Initialize W&B before model construction so all startup logs are kept."""
+    """Initialize W&B before model construction and enable direct text logs."""
     local_rank = int(getattr(opt, 'local_rank', -1))
     if local_rank > 0 or bool(getattr(opt, 'no_wandb', False)):
         return None
@@ -22,7 +38,10 @@ def init_wandb_run(opt, project='HiGANplus'):
         import subprocess
         import wandb
 
-        os.environ.setdefault('WANDB_CONSOLE', 'redirect')
+        # Console redirection is unreliable when a launcher imported wandb
+        # before this function.  BaseModel.print() uses write_wandb_log() for
+        # authoritative run logs instead.
+        os.environ['WANDB_CONSOLE'] = 'off'
         branch_name = None
         try:
             branch_name = subprocess.check_output(
@@ -73,16 +92,20 @@ def init_wandb_run(opt, project='HiGANplus'):
             name=f"{branch_name}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}",
             config=config,
             resume='allow',
+            settings=wandb.Settings(
+                console='off',
+                show_errors=True,
+                show_info=True,
+                show_warnings=True,
+            ),
         )
-        # Make nohup/Kaggle stdout line-buffered while W&B owns the redirect so
-        # the last console lines are persisted before wandb.finish().
-        for stream in (sys.stdout, sys.stderr):
-            reconfigure = getattr(stream, 'reconfigure', None)
-            if reconfigure is not None:
-                reconfigure(line_buffering=True, write_through=True)
         wandb.define_metric('valid/epoch')
         wandb.define_metric('valid/*', step_metric='valid/epoch')
-        print('[WandB] Console capture active before model construction.', flush=True)
+        write_wandb_log(
+            '[WandB] Direct Logs bridge active before model construction. '
+            'Model summaries, checkpoint loading, and training output will be '
+            'written explicitly to this run.'
+        )
         return run
     except Exception as exc:
         print(f"WandB initialization skipped or failed: {exc}")

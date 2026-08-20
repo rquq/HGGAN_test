@@ -2,7 +2,7 @@ device: 'cuda:0'
 multi_gpu: false
 gpus: [0]
 model: 'identifier_model'
-dataset: 'iam_word_org'
+dataset: 'iam_word'
 seed: 123456
 img_height: 64
 finetune: false
@@ -26,10 +26,12 @@ training:
   n_class: 80
   sort_input: true
   resume: ~
-  pretrained_backbone: './pretrained/wid_iam_new.pth'
+  pretrained_backbone: './pretrained/wid_iam_spis_train64.pth'
   random_clip: true
   process_style: true
   frozen_backbone: true
+  # Atomic export used only when validate_wier is enabled.
+  export_writer_teacher: "./pretrained/wid_iam_spis_test64.pth"
 
 
 valid:
@@ -47,6 +49,6 @@ StyBackbone:
 
 
 WidModel:
-  n_writer: 128
+  n_writer: 161
   in_dim: 256
   init: 'none'

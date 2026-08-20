@@ -21,7 +21,7 @@ from networks.BigGAN_networks import Generator, Discriminator, PatchDiscriminato
 from networks.module import Recognizer, WriterIdentifier, StyleEncoder, StyleBackbone
 from lib.datasets import get_dataset, get_collect_fn, Hdf5Dataset
 from lib.alphabet import strLabelConverter, get_lexicon, get_true_alphabet, Alphabets
-from lib.utils import draw_image, get_logger, AverageMeterManager, option_to_string, AverageMeter, plot_heatmap
+from lib.utils import draw_image, get_logger, AverageMeterManager, option_to_string, AverageMeter, plot_heatmap, write_wandb_log
 from networks.rand_dist import prepare_z_dist, prepare_y_dist
 from networks.loss import recn_l1_loss, CXLoss, KLloss, r1_reg
 from networks.masking import apply_vertical_stripe_mask, apply_horizontal_stripe_mask, apply_combined_stripe_mask, apply_light_mixed_patch_mask
@@ -170,10 +170,14 @@ class BaseModel(object):
     def print(self, info):
         if self.local_rank > 0:
             return
+        message = str(info)
         if self.logger is None:
-            print(info)
+            print(message)
         else:
-            self.logger.info(info)
+            self.logger.info(message)
+        # Explicit upload is robust to Kaggle/Jupyter stdout proxying and
+        # captures parameter counts, checkpoint messages, and train progress.
+        write_wandb_log(message)
 
     def create_logger(self):
         if self.logger:
@@ -1057,6 +1061,57 @@ class AdversarialModel(BaseModel):
                 )
             eval_dloader = self.eval_dloader
 
+            # FID/KID must remain a genuine SpiS-GAN IAM-64 comparison rather
+            # than silently drifting after a future configuration edit. The
+            # metric implementation itself is intentionally left unchanged.
+            protocol = str(getattr(self.opt.valid, 'fid_kid_protocol', '') or '').lower()
+            if protocol == 'spis_gan_iam64' and not getattr(self, '_spis_fid_kid_checked', False):
+                expected_metric_settings = {
+                    'dset_name': 'iam_word',
+                    'dset_split': 'test',
+                    'batch_size': 8,
+                    'dims': 2048,
+                    'mmd_degree': 3,
+                    'mmd_gamma': None,
+                    'mmd_coef0': 1.0,
+                    'mmd_subsets': 50,
+                    'mmd_subset_size': 1000,
+                }
+                mismatches = []
+                for name, expected in expected_metric_settings.items():
+                    actual = getattr(self.opt.valid, name, None)
+                    if actual != expected:
+                        mismatches.append(f'{name}={actual!r} (expected {expected!r})')
+                if not bool(getattr(self.opt.valid, 'validate_fid', False)):
+                    mismatches.append('validate_fid=False (expected True)')
+                if not bool(getattr(self.opt.valid, 'validate_kid', False)):
+                    mismatches.append('validate_kid=False (expected True)')
+                if bool(getattr(self.opt.valid, 'use_rand_corpus', False)):
+                    mismatches.append('use_rand_corpus=True (expected False)')
+
+                testset = eval_dloader.dataset
+                test_writer_count = int(np.unique(np.asarray(testset.wids)).size)
+                expected_test_writers = int(getattr(self.opt, 'expected_test_writers', test_writer_count))
+                width_multiple = int(getattr(self.opt, 'expected_width_multiple', 1))
+                if test_writer_count != expected_test_writers:
+                    mismatches.append(
+                        f'test HDF5 has {test_writer_count} writers '
+                        f'(expected {expected_test_writers})'
+                    )
+                if width_multiple > 1 and np.any(np.asarray(testset.img_lens) % width_multiple):
+                    mismatches.append(
+                        f'test HDF5 widths are not multiples of {width_multiple}'
+                    )
+                if mismatches:
+                    raise RuntimeError(
+                        'SpiS-GAN IAM-64 FID/KID contract failed: ' + '; '.join(mismatches)
+                    )
+                self._spis_fid_kid_checked = True
+                self.print(
+                    'FID/KID protocol: SpiS-GAN IAM-64 '
+                    '(test, batch=8, FID-2048, KID polynomial-3/50x1000)'
+                )
+
             if 'E' not in self.models:
                 style_guided = False
                 n_rand_repeat = 1
@@ -1345,9 +1400,9 @@ class AdversarialModel(BaseModel):
             assert os.path.exists(self.opt.valid.pretrained_test_w)
             w_dict = torch.load(self.opt.valid.pretrained_test_w, map_location=self.device, weights_only=False)
             test_writer = WriterIdentifier(**self.opt.valid.test_wid_model).to(self.device)
-            test_writer.load_state_dict(w_dict['WriterIdentifier'], strict=False)
+            test_writer.load_state_dict(w_dict.get('WriterIdentifier', w_dict.get('W')), strict=False)
             test_writer_backbone = StyleBackbone(**self.opt.StyBackbone).to(self.device)
-            test_writer_backbone.load_state_dict(w_dict['StyleBackbone'], strict=False)
+            test_writer_backbone.load_state_dict(w_dict.get('StyleBackbone', w_dict.get('B')), strict=False)
             self.print(f'load pretrained test_writer_identifier: {self.opt.valid.pretrained_test_w}')
             writer_identifier = test_writer
             writer_backbone = test_writer_backbone
@@ -1665,10 +1720,49 @@ class GlobalLocalAdversarialModel(AdversarialModel):
             epoch_done = self.load(resume_path, self.device)
             torch.cuda.empty_cache()
         else:
+            writer_loss_weight = float(getattr(self.opt.training, "lambda_wid", 0.0))
+            writer_path = os.fspath(getattr(self.opt.training, "pretrained_w", "") or "")
+            train_wids = np.asarray(self.train_loader.dataset.wids)
+            train_writer_count = int(np.unique(train_wids).size)
+            model_writer_count = self.unwrap_model(self.models.W).linear_wid[-1].out_features
+            expected_train_writers = int(getattr(self.opt, "expected_train_writers", train_writer_count))
+            expected_width_multiple = int(getattr(self.opt, "expected_width_multiple", 1))
+            train_widths = np.asarray(self.train_loader.dataset.img_lens)
+            if train_writer_count != expected_train_writers:
+                raise RuntimeError(
+                    f"Active train HDF5 has {train_writer_count} writers; expected "
+                    f"{expected_train_writers} for {getattr(self.opt, 'data_profile', 'this configuration')}."
+                )
+            if expected_width_multiple > 1 and np.any(train_widths % expected_width_multiple):
+                raise RuntimeError(
+                    f"Active train HDF5 widths are not bucketed to {expected_width_multiple} pixels; "
+                    "the SpiS-IAM configuration selected the wrong dataset file."
+                )
+            if writer_loss_weight > 0.0:
+                if train_writer_count != model_writer_count:
+                    raise RuntimeError(
+                        f"Writer teacher/model has {model_writer_count} classes, but the active "
+                        f"train HDF5 has {train_writer_count} writers. Use a matching data profile."
+                    )
+                if not writer_path or not os.path.isfile(writer_path):
+                    raise FileNotFoundError(
+                        "lambda_wid is enabled but no SpiS-IAM writer teacher was found at "
+                        f"{writer_path!r}. Train configs/wid_iam.yml first."
+                    )
+                writer_ckpt = torch.load(writer_path, map_location="cpu", weights_only=False)
+                writer_state = writer_ckpt.get("WriterIdentifier", writer_ckpt.get("W"))
+                if writer_state is None or "linear_wid.2.weight" not in writer_state:
+                    raise KeyError(f"{writer_path} does not contain a compatible WriterIdentifier state")
+                checkpoint_writer_count = writer_state["linear_wid.2.weight"].shape[0]
+                if checkpoint_writer_count != model_writer_count:
+                    raise RuntimeError(
+                        f"Writer teacher has {checkpoint_writer_count} classes, expected "
+                        f"{model_writer_count}; do not reuse the old IAM teacher across splits."
+                    )
             if os.path.exists(self.opt.training.pretrained_w):
                 w_dict = torch.load(self.opt.training.pretrained_w, map_location='cpu', weights_only=False)
-                self.models.W.load_state_dict(w_dict['WriterIdentifier'], strict=False)
-                self.models.B.load_state_dict(w_dict['StyleBackbone'], strict=False)
+                self.models.W.load_state_dict(w_dict.get('WriterIdentifier', w_dict.get('W')), strict=True)
+                self.models.B.load_state_dict(w_dict.get('StyleBackbone', w_dict.get('B')), strict=True)
                 self.print(f'load pretrained writer_identifier: {self.opt.training.pretrained_w}')
                 # self.validate_wid()
             if os.path.exists(self.opt.training.pretrained_r):
@@ -2694,6 +2788,14 @@ class WriterIdentifyModel(BaseModel):
                          False, self.opt.training.process_style)
         self.print('Trainset: {} [{}]'.format(*trainset_info))
         trainset = get_dataset(*trainset_info)
+        writer_count = int(np.unique(np.asarray(trainset.wids)).size)
+        model_writer_count = self.unwrap_model(self.models.W).linear_wid[-1].out_features
+        if writer_count != model_writer_count:
+            raise RuntimeError(
+                f"Writer pretraining model has {model_writer_count} classes, but "
+                f"{trainset.file_path} contains {writer_count} writers."
+            )
+        self.print(f"Writer pretraining uses {writer_count} writers from {trainset.file_path}")
         if self.local_rank > -1:
             from torch.utils.data.distributed import DistributedSampler
             self.train_sampler = DistributedSampler(trainset, num_replicas=None, rank=self.local_rank, shuffle=True)
@@ -2821,7 +2923,24 @@ class WriterIdentifyModel(BaseModel):
                 if not os.path.exists(ckpt_root):
                     os.makedirs(ckpt_root) if self.local_rank < 1 else None
 
-                self.save('last', epoch, iter_count=iter_count)
+                if self.local_rank < 1:
+                    self.save('last', epoch, iter_count=iter_count)
+                    export_path = getattr(self.opt.training, "export_writer_teacher", "")
+                    if export_path:
+                        export_path = os.fspath(export_path)
+                        os.makedirs(os.path.dirname(export_path) or ".", exist_ok=True)
+                        export_ckpt = {
+                            "WriterIdentifier": self.unwrap_model(self.models.W).state_dict(),
+                            "StyleBackbone": self.unwrap_model(self.models.B).state_dict(),
+                            "Epoch": epoch,
+                            "writer_count": self.unwrap_model(self.models.W).linear_wid[-1].out_features,
+                            "dataset": self.opt.dataset,
+                            "split": self.opt.training.dset_split,
+                        }
+                        staged_export = export_path + ".tmp"
+                        torch.save(export_ckpt, staged_export)
+                        os.replace(staged_export, export_path)
+                        self.print(f"Exported writer teacher: {export_path}")
                 if self.local_rank > -1:
                     dist.barrier()
 
