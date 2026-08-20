@@ -6,10 +6,8 @@ dataset: 'iam_word'
 seed: 123456
 img_height: 64
 char_width: 32
-# SpiS-IAM uses 339 train writers and 161 held-out test writers.
-data_profile: 'spis_iam_64'
+# IAM-64 training data contains 339 writer identities.
 expected_train_writers: 339
-expected_test_writers: 161
 expected_width_multiple: 32
 
 
@@ -96,8 +94,8 @@ training:
   lambda_r1: 0.02
   update_ema: true
   ema_beta: 0.9998
-  pretrained_w: './pretrained/wid_iam_spis_train64.pth'
-  pretrained_r: './pretrained/ocr_iam_new.pth'
+  pretrained_w: './pretrained/wid_iam_train64.pth'
+  pretrained_r: './pretrained/ocr_iam_train64.pth'
   pretrained_ckpt: ''
   masking_mode: 'combined'
 
@@ -105,12 +103,8 @@ training:
 valid:
   dset_name: 'iam_word'
   dset_split: 'test'
-  # Fixed validation seed makes KID subsets and generated validation data
-  # directly comparable without perturbing the subsequent training RNG.
+  # Keep validation randomness reproducible without perturbing training.
   eval_seed: 123456
-  # Keep FID/KID directly comparable with SpiS-GAN IAM-64. This is a
-  # validation contract only; it never changes image preprocessing or scores.
-  fid_kid_protocol: 'spis_gan_iam64'
   validate_fid: true
   validate_kid: true
   validate_hwd: true
@@ -134,7 +128,7 @@ valid:
   mmd_subsets: 50
   mmd_subset_size: 1000
   mmd_var: true
-  pretrained_test_w: './pretrained/wid_iam_spis_test64.pth'
+  pretrained_test_w: './pretrained/wid_iam_test64.pth'
   test_wid_model:
     n_writer: 161
     in_dim: 256

@@ -10,6 +10,7 @@ import numpy as np
 from distance import levenshtein
 from tqdm import tqdm
 from torch.utils.data.dataloader import DataLoader
+from torch.utils.data import WeightedRandomSampler
 from torch.nn import CTCLoss, CrossEntropyLoss
 import torch.distributed as dist
 import torch.nn.functional as F
@@ -1061,57 +1062,6 @@ class AdversarialModel(BaseModel):
                 )
             eval_dloader = self.eval_dloader
 
-            # FID/KID must remain a genuine SpiS-GAN IAM-64 comparison rather
-            # than silently drifting after a future configuration edit. The
-            # metric implementation itself is intentionally left unchanged.
-            protocol = str(getattr(self.opt.valid, 'fid_kid_protocol', '') or '').lower()
-            if protocol == 'spis_gan_iam64' and not getattr(self, '_spis_fid_kid_checked', False):
-                expected_metric_settings = {
-                    'dset_name': 'iam_word',
-                    'dset_split': 'test',
-                    'batch_size': 8,
-                    'dims': 2048,
-                    'mmd_degree': 3,
-                    'mmd_gamma': None,
-                    'mmd_coef0': 1.0,
-                    'mmd_subsets': 50,
-                    'mmd_subset_size': 1000,
-                }
-                mismatches = []
-                for name, expected in expected_metric_settings.items():
-                    actual = getattr(self.opt.valid, name, None)
-                    if actual != expected:
-                        mismatches.append(f'{name}={actual!r} (expected {expected!r})')
-                if not bool(getattr(self.opt.valid, 'validate_fid', False)):
-                    mismatches.append('validate_fid=False (expected True)')
-                if not bool(getattr(self.opt.valid, 'validate_kid', False)):
-                    mismatches.append('validate_kid=False (expected True)')
-                if bool(getattr(self.opt.valid, 'use_rand_corpus', False)):
-                    mismatches.append('use_rand_corpus=True (expected False)')
-
-                testset = eval_dloader.dataset
-                test_writer_count = int(np.unique(np.asarray(testset.wids)).size)
-                expected_test_writers = int(getattr(self.opt, 'expected_test_writers', test_writer_count))
-                width_multiple = int(getattr(self.opt, 'expected_width_multiple', 1))
-                if test_writer_count != expected_test_writers:
-                    mismatches.append(
-                        f'test HDF5 has {test_writer_count} writers '
-                        f'(expected {expected_test_writers})'
-                    )
-                if width_multiple > 1 and np.any(np.asarray(testset.img_lens) % width_multiple):
-                    mismatches.append(
-                        f'test HDF5 widths are not multiples of {width_multiple}'
-                    )
-                if mismatches:
-                    raise RuntimeError(
-                        'SpiS-GAN IAM-64 FID/KID contract failed: ' + '; '.join(mismatches)
-                    )
-                self._spis_fid_kid_checked = True
-                self.print(
-                    'FID/KID protocol: SpiS-GAN IAM-64 '
-                    '(test, batch=8, FID-2048, KID polynomial-3/50x1000)'
-                )
-
             if 'E' not in self.models:
                 style_guided = False
                 n_rand_repeat = 1
@@ -1736,7 +1686,7 @@ class GlobalLocalAdversarialModel(AdversarialModel):
             if expected_width_multiple > 1 and np.any(train_widths % expected_width_multiple):
                 raise RuntimeError(
                     f"Active train HDF5 widths are not bucketed to {expected_width_multiple} pixels; "
-                    "the SpiS-IAM configuration selected the wrong dataset file."
+                    "the configured IAM-64 dataset file is not selected."
                 )
             if writer_loss_weight > 0.0:
                 if train_writer_count != model_writer_count:
@@ -1746,7 +1696,7 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                     )
                 if not writer_path or not os.path.isfile(writer_path):
                     raise FileNotFoundError(
-                        "lambda_wid is enabled but no SpiS-IAM writer teacher was found at "
+                        "lambda_wid is enabled but no writer teacher was found at "
                         f"{writer_path!r}. Train configs/wid_iam.yml first."
                     )
                 writer_ckpt = torch.load(writer_path, map_location="cpu", weights_only=False)
@@ -2699,6 +2649,19 @@ class RecognizeModel(BaseModel):
                     os.makedirs(ckpt_root) if self.local_rank < 1 else None
 
                 self.save('last', epoch, iter_count=iter_count)
+                export_path = getattr(self.opt.training, 'export_recognizer', '')
+                if self.local_rank < 1 and export_path:
+                    export_path = os.fspath(export_path)
+                    os.makedirs(os.path.dirname(export_path) or '.', exist_ok=True)
+                    staged_export = export_path + '.tmp'
+                    torch.save({
+                        'Recognizer': self.unwrap_model(self.models.R).state_dict(),
+                        'Epoch': epoch,
+                        'dataset': self.opt.dataset,
+                        'split': self.opt.training.dset_split,
+                    }, staged_export)
+                    os.replace(staged_export, export_path)
+                    self.print(f'Exported recognizer: {export_path}')
                 if self.local_rank > -1:
                     dist.barrier()
 
@@ -2779,6 +2742,48 @@ class WriterIdentifyModel(BaseModel):
 
         self.wid_loss = CrossEntropyLoss()
 
+    @staticmethod
+    def _select_writer_inputs(batch, policy='augmented', raw_probability=0.5):
+        """Select W+B inputs while keeping each sample's valid width intact.
+
+        Writer supervision is ultimately used on both raw style references and
+        canonical-width generated words. ``mixed`` exposes the shared
+        StyleBackbone to both domains in one normal batch, rather than adding a
+        second forward pass or another loss.
+        """
+        policy = str(policy).strip().lower()
+        raw_probability = float(raw_probability)
+        if not 0.0 <= raw_probability <= 1.0:
+            raise ValueError('writer_raw_probability must be in [0, 1]')
+
+        if policy in ('augmented', 'canonical'):
+            if 'aug_imgs' not in batch:
+                raise RuntimeError('Writer augmented inputs require random_clip: true')
+            return batch['aug_imgs'], batch['aug_img_lens'], 0.0
+        if policy == 'raw':
+            return batch['org_imgs'], batch['org_img_lens'], 1.0
+        if policy != 'mixed':
+            raise ValueError(
+                'writer_input_policy must be one of: augmented, raw, mixed'
+            )
+        if 'aug_imgs' not in batch:
+            raise RuntimeError('Writer mixed inputs require random_clip: true')
+
+        raw_imgs, raw_lens = batch['org_imgs'], batch['org_img_lens']
+        aug_imgs, aug_lens = batch['aug_imgs'], batch['aug_img_lens']
+        if raw_imgs.size(0) != aug_imgs.size(0):
+            raise RuntimeError('Raw and augmented writer batches must have equal size')
+
+        # Both collated tensors carry -1 padding. Pad them to a common width,
+        # then select whole samples so no right-padding becomes image content.
+        common_width = max(raw_imgs.size(-1), aug_imgs.size(-1))
+        raw_imgs = F.pad(raw_imgs, (0, common_width - raw_imgs.size(-1)), value=-1.0)
+        aug_imgs = F.pad(aug_imgs, (0, common_width - aug_imgs.size(-1)), value=-1.0)
+        use_raw = torch.rand(raw_imgs.size(0)) < raw_probability
+        images = torch.where(use_raw[:, None, None, None], raw_imgs, aug_imgs)
+        lengths = torch.where(use_raw, raw_lens, aug_lens)
+        return images, lengths, float(use_raw.float().mean().item())
+
     def train(self):
         self.info()
 
@@ -2796,13 +2801,55 @@ class WriterIdentifyModel(BaseModel):
                 f"{trainset.file_path} contains {writer_count} writers."
             )
         self.print(f"Writer pretraining uses {writer_count} writers from {trainset.file_path}")
+        input_policy = str(getattr(self.opt.training, 'writer_input_policy', 'augmented')).lower()
+        raw_probability = float(getattr(self.opt.training, 'writer_raw_probability', 0.0))
+        if input_policy not in ('augmented', 'canonical', 'raw', 'mixed'):
+            raise ValueError(
+                'training.writer_input_policy must be augmented, canonical, raw, or mixed'
+            )
+        if not 0.0 <= raw_probability <= 1.0:
+            raise ValueError('training.writer_raw_probability must be in [0, 1]')
+
+        balance_power = float(getattr(self.opt.training, 'writer_balance_power', 0.0))
+        balance_max_weight = float(getattr(self.opt.training, 'writer_balance_max_weight', 0.0))
+        if balance_power < 0.0:
+            raise ValueError('training.writer_balance_power must be non-negative')
+        if balance_max_weight < 0.0:
+            raise ValueError('training.writer_balance_max_weight must be non-negative')
         if self.local_rank > -1:
             from torch.utils.data.distributed import DistributedSampler
             self.train_sampler = DistributedSampler(trainset, num_replicas=None, rank=self.local_rank, shuffle=True)
             shuffle = False
+            if balance_power > 0.0:
+                self.print('Writer-balanced sampling is disabled under DDP; using DistributedSampler.')
         else:
             self.train_sampler = None
             shuffle = True
+            if balance_power > 0.0:
+                all_wids = np.asarray(trainset.wids, dtype=np.int64)
+                writer_sizes = np.bincount(all_wids, minlength=writer_count).astype(np.float64)
+                sample_weights = np.power(writer_sizes[all_wids], -balance_power)
+                sample_weights /= max(float(sample_weights.mean()), np.finfo(np.float64).eps)
+                if balance_max_weight > 0.0:
+                    sample_weights = np.minimum(sample_weights, balance_max_weight)
+                self.train_sampler = WeightedRandomSampler(
+                    torch.as_tensor(sample_weights, dtype=torch.double),
+                    num_samples=len(trainset), replacement=True,
+                )
+                shuffle = False
+                self.print(
+                    'Writer-balanced sampling: power={:.3f}, max_weight={:.3f}, '
+                    'writer samples min/median/max={}/{:.0f}/{}'.format(
+                        balance_power, balance_max_weight,
+                        int(writer_sizes.min()), float(np.median(writer_sizes)),
+                        int(writer_sizes.max()),
+                    )
+                )
+        self.print(
+            'Writer input policy: {} (raw probability {:.2f})'.format(
+                input_policy, raw_probability,
+            )
+        )
 
         self.train_loader = DataLoader(
             trainset,
@@ -2869,10 +2916,11 @@ class WriterIdentifyModel(BaseModel):
 
         device = self.device
         wid_loss_meter = AverageMeter()
+        raw_input_meter = AverageMeter()
         best_wrr = 0
 
         for epoch in range(start_epoch, self.opt.training.epochs + 1):
-            if getattr(self, 'train_sampler', None) is not None:
+            if hasattr(getattr(self, 'train_sampler', None), 'set_epoch'):
                 self.train_sampler.set_epoch(epoch)
             for i, batch in enumerate(self.train_loader):
                 if epoch == start_epoch and i < skip_batches:
@@ -2881,9 +2929,13 @@ class WriterIdentifyModel(BaseModel):
                 # Prepare inputs
                 #############################
                 self.set_mode('train')
-                real_imgs, real_img_lens, real_wids = batch['aug_imgs'].to(device), \
-                                                      batch['aug_img_lens'].to(device), \
+                real_imgs, real_img_lens, raw_fraction = self._select_writer_inputs(
+                    batch, input_policy, raw_probability
+                )
+                real_imgs, real_img_lens, real_wids = real_imgs.to(device), \
+                                                      real_img_lens.to(device), \
                                                       batch['wids'].to(device)
+                raw_input_meter.update(raw_fraction)
 
                 if self.opt.training.frozen_backbone:
                     b_module = self.unwrap_model(self.models.B)
@@ -2911,9 +2963,11 @@ class WriterIdentifyModel(BaseModel):
 
                     wid_loss_avg = wid_loss_meter.eval()
                     wid_loss_meter.reset()
-                    info = "[%3d|%3d]-[%4d|%4d] WID: %.5f  Lr: %.6f" \
+                    raw_input_avg = raw_input_meter.eval()
+                    raw_input_meter.reset()
+                    info = "[%3d|%3d]-[%4d|%4d] WID: %.5f Raw: %.2f Lr: %.6f" \
                            % (epoch, self.opt.training.epochs, iter_count % len(self.train_loader),
-                              len(self.train_loader), wid_loss_avg, lr)
+                              len(self.train_loader), wid_loss_avg, raw_input_avg, lr)
                     self.print(info)
 
                 iter_count += 1
