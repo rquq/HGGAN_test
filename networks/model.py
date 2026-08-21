@@ -953,12 +953,14 @@ class AdversarialModel(BaseModel):
             max_img_len = max([t.size(-1) for t in tensors_to_pad])
             img_shape = [real_imgs.size(2), max_img_len, real_imgs.size(1)]
 
-            real_imgs = F.pad(real_imgs, [0, max_img_len - real_imgs.size(-1), 0, 0], value=-1.)
-            fake_real_imgs = F.pad(fake_real_imgs, [0, max_img_len - fake_real_imgs.size(-1), 0, 0], value=-1.)
-            fake_imgs = F.pad(fake_imgs, [0, max_img_len - fake_imgs.size(-1), 0, 0], value=-1.)
-            recn_imgs = F.pad(recn_imgs, [0, max_img_len - recn_imgs.size(-1), 0, 0], value=-1.) \
+            # This is display-only padding. IAM64 represents blank paper as
+            # +1, so use white padding rather than the legacy black (-1).
+            real_imgs = F.pad(real_imgs, [0, max_img_len - real_imgs.size(-1), 0, 0], value=1.)
+            fake_real_imgs = F.pad(fake_real_imgs, [0, max_img_len - fake_real_imgs.size(-1), 0, 0], value=1.)
+            fake_imgs = F.pad(fake_imgs, [0, max_img_len - fake_imgs.size(-1), 0, 0], value=1.)
+            recn_imgs = F.pad(recn_imgs, [0, max_img_len - recn_imgs.size(-1), 0, 0], value=1.) \
                         if recn_imgs is not None else None
-            style_imgs = F.pad(style_imgs, [0, max_img_len - style_imgs.size(-1), 0, 0], value=-1.)
+            style_imgs = F.pad(style_imgs, [0, max_img_len - style_imgs.size(-1), 0, 0], value=1.)
 
             real_words = self.label_converter.decode(real_lbs, real_lb_lens)
             # IAM64 tensors use white paper (+1) and dark ink (-1). The
