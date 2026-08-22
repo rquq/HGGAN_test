@@ -16,10 +16,25 @@ from lib.transforms import RandomScale, RandomClip, MildHandwritingAugment
 
 
 class Hdf5Dataset(Dataset):
-    def __init__(self, root, split, transforms=None, alphabet_key='all', process_style=False, normalize_wid=True):
+    """HDF5 handwriting dataset using the legacy HiGAN+ image convention.
+
+    Source IAM64 files are white paper with black ink.  The model family was
+    designed and tuned for the opposite normalized convention: ``-1`` black
+    background and ``+1`` white handwriting.  Invert once here, before every
+    resize, augmentation, encoder, discriminator, and metric path, so no
+    downstream stage needs a polarity special case.
+    """
+    def __init__(self, root, split, transforms=None, alphabet_key='all', process_style=False,
+                 normalize_wid=True, invert_polarity=True):
         super(Hdf5Dataset, self).__init__()
         self.root = root
+        # ImageDataset needs this while its custom loader is running.
+        self.invert_polarity = bool(invert_polarity)
         self._load_h5py(os.path.join(self.root, split), normalize_wid)
+        # HDF5 sources are canonicalized automatically: new white-paper data
+        # is inverted, while old black-paper data is passed through unchanged.
+        if hasattr(self, 'source_is_white_paper'):
+            self.invert_polarity = bool(invert_polarity and self.source_is_white_paper)
         self.transforms = transforms
         self.org_transforms = Compose([ToTensor(), Normalize([0.5], [0.5])])
         self.label_converter = strLabelConverter(alphabet_key)
@@ -40,12 +55,34 @@ class Hdf5Dataset(Dataset):
                 self.wids = np.zeros((len(self.img_lens),), dtype=np.int32)
             if normalize_wid and len(self.wids) > 0:
                 self.wids -= self.wids.min()
+            self.source_is_white_paper = self._source_is_white_paper()
+
+    def _source_is_white_paper(self, sample_count=128):
+        """Classify source polarity from word borders without full-copy work."""
+        count = min(len(self.img_lens), int(sample_count))
+        if count == 0:
+            raise ValueError(f'HDF5 dataset contains no images: {self.file_path}')
+        indices = np.linspace(0, len(self.img_lens) - 1, count, dtype=np.int64)
+        edges = []
+        for index in indices:
+            start, width = int(self.img_seek_idxs[index]), int(self.img_lens[index])
+            word = self.imgs[:, start:start + width]
+            if word.size:
+                edges.append(np.concatenate((word[0].ravel(), word[-1].ravel(),
+                                             word[:, 0].ravel(), word[:, -1].ravel())))
+        if not edges:
+            raise ValueError(f'HDF5 dataset has no valid image borders: {self.file_path}')
+        return float(np.median(np.concatenate(edges))) >= 128.0
 
     def __getitem__(self, idx):
         data = {}
         img_seek_idx, img_len = self.img_seek_idxs[idx], self.img_lens[idx]
         lb_seek_idx, lb_len = self.lb_seek_idxs[idx], self.lb_lens[idx]
         img = self.imgs[:, img_seek_idx : img_seek_idx + img_len]
+        if self.invert_polarity:
+            # uint8 inversion: white source paper -> black model background;
+            # black source ink -> white model handwriting.
+            img = 255 - img
         text = ''.join(chr(ch) for ch in self.lbs[lb_seek_idx : lb_seek_idx + lb_len])
         data['text'] = text
         lb = self.label_converter.encode(text)
@@ -285,7 +322,7 @@ class ImageDataset(Hdf5Dataset):
                 resize_img = cv2.resize(img, dim, interpolation=cv2.INTER_AREA)
             else:
                 resize_img = cv2.resize(img, dim, interpolation=cv2.INTER_LINEAR)
-            res_img = 255 - resize_img
+            res_img = 255 - resize_img if self.invert_polarity else resize_img
 
             all_imgs.append(res_img)
             all_texts.append(label_text)
