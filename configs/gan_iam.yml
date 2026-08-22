@@ -23,11 +23,13 @@ training:
   # Cumulative scratch schedule: preserve useful adversarial updates through
   # the refinement phase, then keep a non-trivial floor for stable GAN polishing.
   # Keep these values unchanged across Kaggle resumes.
-  epochs: 60
+  # Two critic batches share one generator update; this longer schedule
+  # preserves a comparable cumulative G learning budget.
+  epochs: 84
   lr_policy: 'linear'
-  # Epochs 1-24 use full LR; epoch 25 is the first reduced-LR epoch.
-  start_decay_epoch: 24
-  n_epochs_decay: 36
+  # Keep G at full rate for 36 epochs (18 G updates/loader-length) before decay.
+  start_decay_epoch: 36
+  n_epochs_decay: 48
   min_lr_ratio: 0.25
   batch_size: 8
   eval_batch_size: 12
@@ -38,10 +40,11 @@ training:
   prefetch_factor: 2
   sample_nrow: 4
   # optimization:
-  lr: 1.5e-4
+  # G runs every second batch; raise its per-update LR while keeping global D
+  # conservative and softening the compact local critic.
+  lr: 2.0e-4
   d_lr: 1.0e-4
-  # StrokePatchD is compact and was underfitting at the global critic LR.
-  patch_d_lr: 1.5e-4
+  patch_d_lr: 1.2e-4
   adam_b1: 0.5
   adam_b2: 0.999
   # sampling and saving
@@ -59,10 +62,10 @@ training:
   capitalize_ratio: 0.5
   blank_ratio: 0.
   sort_input: true
-  # One D/P step per G step prevents the global critic from outrunning G.
-  num_critic_train: 1
-  # Limit local adversarial pressure on G to avoid stray stroke artifacts.
-  lambda_patch_adv: 0.5
+  # Two D/P updates per G update: stronger critic coverage without a high D LR.
+  num_critic_train: 2
+  # The local critic receives twice as many updates, so lower its G pressure.
+  lambda_patch_adv: 0.4
   patch_size: 32
   min_patch_crops: 4
   max_patch_crops: 8
@@ -96,8 +99,10 @@ training:
   lambda_kl: 0.1
   lambda_ctx: 0.1
   grad_clip: 5.0
-  r1_interval: 16
-  lambda_r1: 0.02
+  # Halve R1 per critic step and apply it half as often: same average R1
+  # regularization per generator update, with less repeated second-order work.
+  r1_interval: 32
+  lambda_r1: 0.01
   update_ema: true
   ema_beta: 0.9998
   pretrained_w: './pretrained/wid_iam_train64.pth'
