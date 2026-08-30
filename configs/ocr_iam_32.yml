@@ -1,0 +1,54 @@
+device: 'cuda:0'
+multi_gpu: false
+gpus: [0]
+model: 'recognize_model'
+dataset: 'iam_word'
+seed: 123456
+img_height: 32
+
+training:
+  dset_name: 'iam_word'
+  resume: ''
+  dset_split: 'trnval'
+  augment: True
+  epochs: 100
+  lr_policy: 'linear'
+  start_decay_epoch: 60
+  n_epochs_decay: 40
+  batch_size: 128
+  lr: 1.0e-3
+  print_iter_val: 20
+  eval_epoch_val: 10
+  teacher_ema: true
+  teacher_ema_beta: 0.999
+  ckpt_dir: 'ckpts'
+  n_class: 80
+  sort_input: true
+  pretrained_backbone: ''
+  export_recognizer: './pretrained/ocr_iam_train32.pth'
+
+valid:
+  dset_name: 'iam_word'
+  dset_split: 'test'
+  batch_size: 256
+  n_class: 80
+  ctcdecode:
+    model_path: ~
+    blank_id: 0
+    alpha: 1
+    beta: 3
+    beam_width: 32
+    cutoff_prob: 0.9999
+    cutoff_top_n: 32
+    num_processes: 8
+
+OcrModel:
+  resolution: 16
+  max_dim: 256
+  in_channel: 1
+  norm: 'bn'
+  init: 'none'
+  dropout: 0.2
+  n_class: 80
+  rnn_depth: 2
+  bidirectional: True
