@@ -15,7 +15,7 @@ training:
   lr_policy: 'linear'
   start_decay_epoch: 60
   n_epochs_decay: 40
-  batch_size: 128
+  batch_size: 256
   lr: 1.0e-3
   print_iter_val: 20
   eval_epoch_val: 10
