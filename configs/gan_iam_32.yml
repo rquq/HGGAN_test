@@ -83,8 +83,8 @@ training:
   lambda_r1: 0.01
   update_ema: true
   ema_beta: 0.9998
-  pretrained_w: './pretrained/wid_iam.pth'
-  pretrained_r: './pretrained/ocr_iam.pth'
+  pretrained_w: './pretrained/wid_iam_train32.pth'
+  pretrained_r: './pretrained/ocr_iam_train32.pth'
   pretrained_ckpt: ''
   masking_mode: 'combined'
 
