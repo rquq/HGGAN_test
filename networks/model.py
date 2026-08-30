@@ -1356,7 +1356,7 @@ class AdversarialModel(BaseModel):
             w_dict = torch.load(self.opt.valid.pretrained_test_w, map_location=self.device, weights_only=False)
             test_writer = WriterIdentifier(**self.opt.valid.test_wid_model).to(self.device)
             test_writer.load_state_dict(w_dict.get('WriterIdentifier', w_dict.get('W')), strict=False)
-            test_writer_backbone = StyleBackbone(**self.opt.StyBackbone).to(self.device)
+            test_writer_backbone = StyleBackbone(**self.opt.StyBackbone, img_height=getattr(self.opt, 'img_height', 64)).to(self.device)
             test_writer_backbone.load_state_dict(w_dict.get('StyleBackbone', w_dict.get('B')), strict=False)
             self.print(f'load pretrained test_writer_identifier: {self.opt.valid.pretrained_test_w}')
             writer_identifier = test_writer
@@ -1583,12 +1583,12 @@ class GlobalLocalAdversarialModel(AdversarialModel):
         device = self.device
 
         generator = Generator(**opt.GenModel).to(device)
-        style_backbone = StyleBackbone(**opt.StyBackbone).to(device)
+        style_backbone = StyleBackbone(**opt.StyBackbone, img_height=getattr(opt, 'img_height', 64)).to(device)
         style_encoder = StyleEncoder(**opt.EncModel).to(device)
         writer_identifier = WriterIdentifier(**opt.WidModel).to(device)
         discriminator = Discriminator(**opt.DiscModel).to(device)
         patch_discriminator = PatchDiscriminator(**opt.PatchDiscModel).to(device)
-        recognizer = Recognizer(**opt.OcrModel).to(device)
+        recognizer = Recognizer(**opt.OcrModel, img_height=getattr(opt, 'img_height', 64)).to(device)
 
         self.models = Munch(
             G=generator,
@@ -2554,7 +2554,7 @@ class RecognizeModel(BaseModel):
 
         device = self.device
         self.collect_fn = get_collect_fn(sort_input=opt.training.sort_input, sort_style=False)
-        recognizer = Recognizer(**opt.OcrModel).to(device)
+        recognizer = Recognizer(**opt.OcrModel, img_height=getattr(opt, 'img_height', 64)).to(device)
         if os.path.exists(opt.training.pretrained_backbone):
             ckpt = torch.load(opt.training.pretrained_backbone, device, weights_only=False)['Recognizer']
             new_ckpt = {}
@@ -2820,7 +2820,7 @@ class WriterIdentifyModel(BaseModel):
 
         device = self.device
 
-        style_backbone = StyleBackbone(**opt.StyBackbone).to(device)
+        style_backbone = StyleBackbone(**opt.StyBackbone, img_height=getattr(opt, 'img_height', 64)).to(device)
         if os.path.exists(opt.training.pretrained_backbone):
             ckpt = torch.load(opt.training.pretrained_backbone, device, weights_only=False)
 

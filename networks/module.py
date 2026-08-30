@@ -77,12 +77,13 @@ class HeavyCNNAttention(nn.Module):
 
 
 class StyleBackbone(nn.Module):
-    def __init__(self, resolution=16, max_dim=256, in_channel=1, init='N02', dropout=0.0, norm='bn'):
+    def __init__(self, resolution=16, max_dim=256, in_channel=1, init='N02', dropout=0.0, norm='bn', img_height=64, **kwargs):
         super(StyleBackbone, self).__init__()
         self.reduce_len_scale = 16
         nf = resolution
+        init_stride = 1 if int(img_height) <= 32 else 2
         cnn_f = [nn.ConstantPad2d(2, -1),
-                 Conv2dBlock(in_channel, nf, 5, 2, 0,
+                 Conv2dBlock(in_channel, nf, 5, init_stride, 0,
                              norm='none',
                              activation='none')]
         for i in range(2):
@@ -542,7 +543,7 @@ class WriterIdentifier(nn.Module):
 class Recognizer(nn.Module):
     # resolution: 32  max_dim: 512  in_channel: 1  norm: 'none'  init: 'N02'  dropout: 0.  n_class: 72  rnn_depth: 0
     def __init__(self, n_class, resolution=16, max_dim=256, in_channel=1, norm='none',
-                 init='none', rnn_depth=1, dropout=0.0, bidirectional=True):
+                 init='none', rnn_depth=1, dropout=0.0, bidirectional=True, img_height=64, **kwargs):
         super(Recognizer, self).__init__()
         self.len_scale = 16
         self.use_rnn = rnn_depth > 0
@@ -552,8 +553,9 @@ class Recognizer(nn.Module):
         # Construct Backbone
         ######################################
         nf = resolution
+        init_stride = 1 if int(img_height) <= 32 else 2
         cnn_f = [nn.ConstantPad2d(2, -1),
-                 Conv2dBlock(in_channel, nf, 5, 2, 0,
+                 Conv2dBlock(in_channel, nf, 5, init_stride, 0,
                              norm='none',
                              activation='none')]
         for i in range(2):
