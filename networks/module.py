@@ -397,9 +397,23 @@ class StyleEncoder(nn.Module):
         else:
             local_style = style_queries
 
+        # Dynamic horizontal breadth factor: for narrow punctuation / point marks (feat_len < 4),
+        # smoothly contract local slot variations towards global_mu to prevent 1D vertical stroke elongation.
+        if feat_len is not None:
+            breadth_factor = (feat_len.float() / 4.0).clamp(min=0.25, max=1.0).view(batch_size, 1, 1)
+        else:
+            breadth_factor = 1.0
+
         global_style = self.linear_style(global_context).unsqueeze(1)
         style = torch.cat([global_style, local_style], dim=1)
         global_mu = self.mu(global_style)
+
+        # Stabilize and cap style vector norm on narrow crops to prevent out-of-distribution CBN scaling in GBlocks
+        safe_norm_cap = 9.5
+        g_norm = global_mu.norm(dim=-1, keepdim=True)
+        g_scale = torch.clamp(safe_norm_cap / (g_norm + 1e-6), max=1.0)
+        global_mu = global_mu * g_scale
+
         if local_style.size(1):
             local_data_mu = self.mu(local_style)
             # Match the fixed code to each token's learned RMS. This makes the
@@ -411,10 +425,15 @@ class StyleEncoder(nn.Module):
             local_identity = self.local_slot_anchors.expand(
                 batch_size, -1, -1
             ).to(dtype=local_data_mu.dtype)
-            local_mu = (
+            local_mu_raw = (
                 local_data_mu
                 + self.local_query_residual * local_data_rms * local_identity
             )
+            # Smoothly blend local slots towards global_mu on narrow/low-entropy crops
+            local_mu = global_mu + breadth_factor * (local_mu_raw - global_mu)
+            l_norm = local_mu.norm(dim=-1, keepdim=True)
+            l_scale = torch.clamp(safe_norm_cap / (l_norm + 1e-6), max=1.0)
+            local_mu = local_mu * l_scale
         else:
             local_mu = self.mu(local_style)
         style_tokens_mu = torch.cat([global_mu, local_mu], dim=1)

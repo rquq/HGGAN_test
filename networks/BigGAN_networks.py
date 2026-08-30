@@ -8,6 +8,7 @@ import torch.nn.functional as F
 
 from . import BigGAN_layers as layers
 from .fusion import StyleContentAttentionFusion
+from .texture_generator import StyleFrequencyRefinement
 from networks.utils import init_weights, _len2mask
 
 # Architectures for G
@@ -196,6 +197,12 @@ class Generator(nn.Module):
                                                     mybn=self.mybn),
                                           self.activation,
                                           self.which_conv(self.arch['out_channels'][-1], input_nc))
+        self.texture_refinement = StyleFrequencyRefinement(
+            channels=self.arch['out_channels'][-1],
+            style_dim=self.style_dim,
+            output_channels=input_nc,
+            which_conv=self.which_conv,
+        )
 
         # Initialize weights. Optionally skip init for testing.
         if self.init != 'none':
@@ -203,6 +210,7 @@ class Generator(nn.Module):
         # General initialization touches fusion Linear weights; restore its
         # identity-like nonzero residual handoffs afterwards.
         self.style_content_mix.reset_stability_parameters()
+        self.texture_refinement.reset_stability_parameters()
 
     def forward(self, z, y, y_lens):
         # Distribution is a reusable sampler container, not an activation
@@ -244,8 +252,11 @@ class Generator(nn.Module):
                     h = block(h, y=ys[index])
             len_scale *= self.arch['upsample'][index][1]
 
-        # Apply batchnorm-relu-conv-tanh at output
-        output = torch.tanh(self.output_layer(h))
+        # Preserve DEV's reliable base image and add only a bounded,
+        # style-distribution-conditioned high-frequency residual.
+        base_logits = self.output_layer(h)
+        texture_detail = self.texture_refinement(h, z)
+        output = torch.tanh(base_logits + texture_detail)
 
         # Mask blanks
         if not self.training:

@@ -42,7 +42,6 @@ def init_wandb_run(opt, project='HiGANplus'):
         # before this function.  BaseModel.print() uses write_wandb_log() for
         # authoritative run logs instead.
         os.environ['WANDB_CONSOLE'] = 'off'
-
         branch_name = None
         try:
             branch_name = subprocess.check_output(

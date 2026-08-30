@@ -4,15 +4,14 @@ gpus: [0]
 model: 'gl_adversarial_model'
 dataset: 'iam_word'
 seed: 123456
-img_height: 64
-char_width: 32
-# IAM-64 training data contains 339 writer identities.
+img_height: 32
+char_width: 16
 expected_train_writers: 339
-expected_width_multiple: 32
+expected_width_multiple: 16
 
 
 inference:
-  ckpt: './pretrained/HiGAN+.pth'
+  ckpt: './pretrained/bestIAM.pth'
   mode: 'text'
   guided: true
   deploy_dst: './pretrained/deploy_HiGAN+.pth'
@@ -20,40 +19,29 @@ inference:
 
 training:
   dset_split: 'trnval'
-  # Cumulative scratch schedule: preserve useful adversarial updates through
-  # the refinement phase, then keep a non-trivial floor for stable GAN polishing.
-  # Keep these values unchanged across Kaggle resumes.
-  # Two critic batches share one generator update; this longer schedule
-  # preserves a comparable cumulative G learning budget.
   epochs: 84
   lr_policy: 'linear'
-  # Keep G at full rate for 36 epochs (18 G updates/loader-length) before decay.
   start_decay_epoch: 36
   n_epochs_decay: 48
   min_lr_ratio: 0.15
-  batch_size: 2
-  eval_batch_size: 12
+  batch_size: 16
+  eval_batch_size: 16
   num_workers: 4
   eval_num_workers: 4
   sample_num_workers: 0
   persistent_workers: true
   prefetch_factor: 3
   sample_nrow: 4
-  # optimization:
-  # G runs every batch; raise its per-update LR while keeping global D
-  # conservative and softening the compact local critic.
   lr: 2.0e-4
   d_lr: 1.0e-4
   patch_d_lr: 1.2e-4
   adam_b1: 0.5
   adam_b2: 0.999
-  # sampling and saving
   sample_iter_val: 500
   print_iter_val: 20
   start_save_epoch_val: 0
   eval_epoch_val: 1
   save_epoch_val: 1
-  # val_iter: 6500
   sample_dir: 'imgs'
   ckpt_dir: 'ckpts'
   lexicon: './data/english_words.txt'
@@ -62,24 +50,16 @@ training:
   capitalize_ratio: 0.5
   blank_ratio: 0.
   sort_input: true
-  # Mature critic resumed phase: D:G = 1:1 doubles training throughput
   num_critic_train: 1
-  # Slightly elevated patch adversarial pressure to sharpen cursive ligatures and reduce KID
   lambda_patch_adv: 0.45
-  patch_size: 32
+  patch_size: 16
   min_patch_crops: 4
   max_patch_crops: 8
-  # Keep character-centered crops close enough to the intended allograph while
-  # retaining small translation tolerance for real handwriting alignment.
-  patch_char_jitter: 4
-  # Mild word-safe DiffAug is applied to both real and fake global-D inputs.
+  patch_char_jitter: 2
   d_diffaug: true
-  d_aug_translate: 4
+  d_aug_translate: 2
   d_aug_width_scale: 0.05
   vae_mode: true
-  # Keep random samples text-correct.  Style-transfer receives a lighter,
-  # earlier-decaying OCR constraint so valid allographs and ligatures are not
-  # forced into the recognizer's most canonical glyph shapes.
   lambda_ctc_rand: 1.0
   lambda_ctc_rand_final: 0.4
   ctc_rand_decay_start_epoch: 10
@@ -99,14 +79,12 @@ training:
   lambda_kl: 0.1
   lambda_ctx: 0.1
   grad_clip: 5.0
-  # Halve R1 per critic step and apply it half as often: same average R1
-  # regularization per generator update, with less repeated second-order work.
   r1_interval: 32
   lambda_r1: 0.01
   update_ema: true
   ema_beta: 0.9998
-  pretrained_w: './pretrained/wid_iam_train64.pth'
-  pretrained_r: './pretrained/ocr_iam_train64.pth'
+  pretrained_w: './pretrained/wid_iam.pth'
+  pretrained_r: './pretrained/ocr_iam.pth'
   pretrained_ckpt: ''
   masking_mode: 'combined'
 
@@ -114,7 +92,6 @@ training:
 valid:
   dset_name: 'iam_word'
   dset_split: 'test'
-  # Keep validation randomness reproducible without perturbing training.
   eval_seed: 123456
   validate_fid: true
   validate_kid: true
@@ -130,7 +107,7 @@ valid:
   validate_wier: false
   use_rand_corpus: false
   n_rand_repeat: 10
-  batch_size: 8
+  batch_size: 32
   hwd_batch_size: 32
   dims: 2048
   mmd_degree: 3
@@ -139,13 +116,13 @@ valid:
   mmd_subsets: 50
   mmd_subset_size: 1000
   mmd_var: true
-  pretrained_test_w: './pretrained/wid_iam_test64.pth'
+  pretrained_test_w: './pretrained/wid_iam_test.pth'
   test_wid_model:
     n_writer: 161
     in_dim: 256
     init: 'none'
   ctcdecode:
-    model_path: ~ #'./data/english_word_3gram.binary'
+    model_path: ~
     blank_id: 0
     alpha: 1
     beta: 3
@@ -175,7 +152,7 @@ GenModel:
   allograph_modulation_rms_cap: 1.0
   bottom_width: 4
   bottom_height: 4
-  resolution: 64
+  resolution: 32
   G_kernel_size: 3
   G_attn: '0'
   n_class: 80
@@ -198,31 +175,38 @@ GenModel:
 DiscModel:
   D_ch: 64
   D_wide: true
-  resolution: 64
+  resolution: 32
+  D_kernel_size: 3
   D_attn: '0'
-  width_context: true
-  width_heads: 4
+  n_class: 80
   num_D_SVs: 1
   num_D_SV_itrs: 1
   SN_eps: 1.e-08
   output_dim: 1
   init: 'N02'
   D_param: 'SN'
+  bn_linear: 'SN'
   input_nc: 1
+  one_hot: true
 
 
 PatchDiscModel:
-  D_ch: 32
-  D_max_ch: 192
-  D_layers: 3
+  D_ch: 64
+  D_wide: true
+  resolution: 16
+  D_kernel_size: 3
+  D_attn: '0'
+  n_class: 80
   num_D_SVs: 1
   num_D_SV_itrs: 1
   SN_eps: 1.e-08
   output_dim: 1
   init: 'N02'
   D_param: 'SN'
+  bn_linear: 'SN'
   input_nc: 1
-  n_class: 80
+  one_hot: true
+
 
 OcrModel:
   resolution: 16
@@ -231,7 +215,6 @@ OcrModel:
   norm: 'bn'
   init: 'none'
   dropout: 0.
-  # ctc config
   n_class: 80
   rnn_depth: 2
   bidirectional: true
@@ -242,27 +225,25 @@ StyBackbone:
   max_dim: 256
   in_channel: 1
   init: 'N02'
-  dropout: 0.0
+  dropout: 0.
   norm: 'bn'
 
 
 EncModel:
   style_dim: 32
   in_dim: 256
-  num_style_tokens: 8
-  backbone_channels: [64, 128, 256]
-  n_class: 80
-  content_grl: 1.0
-  local_query_residual: 0.5
-  local_attention_residual_init: 0.25
-  local_query_anchor_strength: 0.5
   init: 'none'
+  num_local_queries: 7
+  query_dim: 256
+  heads: 4
+  cross_attn_dropout: 0.0
+  local_attention_gate_init: 0.5
+  local_query_residual: 0.1
+  local_query_anchor_strength: 0.1
+  feature_scales: [1, 2]
 
 
 WidModel:
   n_writer: 339
   in_dim: 256
-  # Must match the W+B teacher exported by configs/wid_iam.yml.
-  pool: 'attentive_stats'
-  attention_dim: 128
   init: 'none'

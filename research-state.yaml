@@ -1,0 +1,48 @@
+# Autoresearch State: HGGAN Optimization (DEV Branch)
+project_name: "HGGAN_dev_optimization"
+target_metric: "kid"
+secondary_metrics:
+  - "rare_char_cer"
+  - "hwd"
+  - "fid"
+  - "kaggle_throughput_epochs_per_12h"
+optimization_goal: "minimize"
+current_best_kid: 0.0633
+current_best_fid: 3.0260
+baseline_checkpoint: "/home/quq/machineLearning/HTG/chkpoints/30_8_2026/best_fid_3.0260_main.pth"
+
+hypotheses:
+  - id: "H1"
+    name: "breadth_aware_slot_contraction"
+    status: "implemented"
+    description: "Dynamic spatial breadth scaling in StyleEncoder to smoothly contract local slot variations towards global context on narrow crops (L < 4), eliminating vertical elongation on dots and dashes."
+    expected_impact: "Completely resolve vertical stroke elongation on special characters while maintaining full word style fidelity."
+  - id: "H2"
+    name: "rare_character_lexicon_enrichment"
+    status: "implemented"
+    description: "Scheduled synthesis (25% ratio) of numbers, capitalized entities, acronyms, and compound punctuation during fake batch generation to provide dense gradient exposure for rare IAM characters."
+    expected_impact: "Lower rare character CER from ~18% to <5% and improve overall KID distribution tail."
+  - id: "H3"
+    name: "kaggle_throughput_acceleration"
+    status: "implemented"
+    description: "Scale training batch_size from 8 to 16, set num_critic_train to 1 for mature discriminator phase, and increase valid.batch_size to 32 to cut evaluation from 18m to 4m."
+    expected_impact: "Increase Kaggle GPU throughput from 8 epochs / 12h to ~27 epochs / 12h (over 3x speedup)."
+  - id: "H4"
+    name: "lr_decay_and_patch_adv_optimization"
+    status: "implemented"
+    description: "Adjust min_lr_ratio to 0.15 for deeper terminal settling, and raise lambda_patch_adv to 0.45 to sharpen ligature boundaries."
+    expected_impact: "Reduce FID from 3.0260 to <2.80 and KID to <0.050."
+  - id: "H5"
+    name: "texture_refinement_expansion"
+    status: "untested"
+    description: "Enhance StyleFrequencyRefinement with diagonal stroke support and calibrated detail gain."
+    expected_impact: "Sharpen slanted joins and lower HWD (<0.090) and KID (<0.055)."
+
+history:
+  - epoch: 56
+    checkpoint: "best_fid_3.0260_main.pth"
+    fid: 3.0260
+    kid: 0.0633
+    hwd: 0.1001
+    is_gen: 1.5400
+    notes: "Main branch baseline checkpoint at epoch 56 mirrored into dev."

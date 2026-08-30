@@ -73,6 +73,9 @@ def parse_bool(val):
         return True
     elif s in ('false', '0', 'no', 'f', 'n'):
         return False
+    raise argparse.ArgumentTypeError(f"Boolean value expected, got '{val}'.")
+
+
 def seed_everything(seed):
     random.seed(seed)
     os.environ['PYTHONHASHSEED'] = str(seed)
@@ -89,7 +92,7 @@ if __name__ == '__main__':
         "--config",
         nargs="?",
         type=str,
-        default="configs/gan_iam.yml",
+        default="configs/gan_iam_64.yml",
         help="Configuration file to use",
     )
 
@@ -138,7 +141,7 @@ if __name__ == '__main__':
     )
 
     args = parser.parse_args()
-    config_path = args.config if getattr(args, 'config', None) is not None else "configs/gan_iam.yml"
+    config_path = args.config if getattr(args, 'config', None) is not None else "configs/gan_iam_64.yml"
     cfg = yaml2config(config_path)
     infer_cfg = getattr(cfg, 'inference', cfg)
 

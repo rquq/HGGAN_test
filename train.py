@@ -1,7 +1,9 @@
 import os
-# Variable-width handwriting batches create many nearby allocation sizes.
-# Expandable CUDA segments reduce fragmentation without changing model math.
-os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
+# MAIN's texture refiner alternates between a very large G-backward graph and
+# a smaller D graph.  Keep the native caching allocator so it retains its
+# high-water blocks instead of repeatedly returning/remapping them; this makes
+# the physical GPU-memory trace stable without changing model computation.
+os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'backend:native')
 
 from datetime import datetime
 import argparse
@@ -24,9 +26,8 @@ def seed_everything(seed):
     torch.cuda.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
     torch.backends.cudnn.deterministic = False
-    # Word widths vary from batch to batch. Benchmarking every new convolution
-    # shape creates extra cuDNN workspaces and an unstable allocator high-water
-    # mark; the fixed heuristic is both safer and more predictable here.
+    # Variable word widths make cuDNN autotuning allocate many shape-specific
+    # workspaces, so use the predictable heuristic instead.
     torch.backends.cudnn.benchmark = False
 
 
@@ -36,7 +37,7 @@ if __name__ == "__main__":
         "--config",
         nargs="?",
         type=str,
-        default="configs/gan_iam.yml",
+        default="configs/gan_iam_64.yml",
         help="Configuration file to use",
     )
 
@@ -83,11 +84,10 @@ if __name__ == "__main__":
         if hasattr(cfg, "seed") and cfg.seed is not None:
             seed_everything(cfg.seed)
 
-    # Start W&B before constructing the model/logger. This makes parameter
-    # summaries, checkpoint-loading messages, and startup failures visible in
-    # the run's Logs tab instead of only in the local nohup log.
+    # Initialize W&B before model/logger construction so startup summaries and
+    # checkpoint loading appear in the run's Logs tab.
     wandb_run = init_wandb_run(cfg)
-    write_wandb_log(f'[Startup] branch=dev config={args.config} logdir={logdir}')
+    write_wandb_log(f'[Startup] branch=main config={args.config} logdir={logdir}')
     model = None
     try:
         model = get_model(cfg.model)(cfg, logdir)
@@ -103,8 +103,6 @@ if __name__ == "__main__":
             except Exception as e:
                 print(f"[Warning] Failed to save interrupted checkpoint: {e}")
     except Exception:
-        # Print while W&B console capture is still active, then preserve the
-        # original exception and exit status for Kaggle/local launchers.
         traceback.print_exc()
         write_wandb_log(traceback.format_exc())
         raise

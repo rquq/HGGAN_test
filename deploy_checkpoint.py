@@ -9,7 +9,7 @@ if __name__ == '__main__':
     parser.add_argument(
         "--config",
         type=str,
-        default="configs/gan_iam.yml",
+        default="configs/gan_iam_64.yml",
         help="Path to YAML config file",
     )
     parser.add_argument(

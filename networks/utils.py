@@ -241,12 +241,26 @@ def set_requires_grad(nets, requires_grad=False):
                 param.requires_grad = requires_grad
 
 
-def idx_to_words(idx, lexicon, max_word_len=0, capitalize_ratio=0.5, blank_ratio=0., sort=True):
+SPECIAL_CHARS = '0123456789\'-"/,.+_!#&():;?ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+
+
+def idx_to_words(idx, lexicon, max_word_len=0, capitalize_ratio=0.5, blank_ratio=0., sort=True, rare_ratio=0.25):
     words = []
     for i in idx:
         word = lexicon[i]
+
+        # 1. Capitalization (title case or full uppercase)
         if np.random.random() < capitalize_ratio:
-            word = word_capitalize(word)
+            word = word.capitalize() if np.random.random() < 0.8 else word.upper()
+
+        # 2. Stochastic rare-character injection (50% affix/wrap on word, 50% random symbol/digit sequence)
+        if np.random.random() < rare_ratio:
+            if np.random.random() < 0.5:
+                char = np.random.choice(list(SPECIAL_CHARS))
+                word = f"{word}{char}" if np.random.random() < 0.7 else f"{char}{word}"
+            else:
+                length = np.random.randint(1, 6)
+                word = ''.join(np.random.choice(list(SPECIAL_CHARS), size=length))
 
         if len(word) > max_word_len >= 1:
             pos = np.random.randint(0, len(word) - max_word_len)
