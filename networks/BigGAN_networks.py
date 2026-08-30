@@ -259,7 +259,7 @@ class Generator(nn.Module):
                     h = block(h, y=ys[index])
             len_scale *= self.arch['upsample'][index][1]
 
-        # Preserve DEV's reliable base image and add only a bounded,
+        # Preserve the reliable base image and add only a bounded,
         # style-distribution-conditioned high-frequency residual.
         base_logits = self.output_layer(h)
         texture_detail = self.texture_refinement(h, z)

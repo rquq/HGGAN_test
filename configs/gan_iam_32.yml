@@ -14,7 +14,7 @@ inference:
   ckpt: './pretrained/bestIAM.pth'
   mode: 'text'
   guided: true
-  deploy_dst: './pretrained/deploy_HiGAN+.pth'
+  deploy_dst: './pretrained/deploy.pth'
 
 
 training:

@@ -120,7 +120,7 @@ class StyleFrequencyRefinement(nn.Module):
         scale, shift = self.style_affine(descriptor).chunk(2, dim=-1)
         scale = 1.0 + self.style_limit * torch.tanh(scale)
         # Feature-demodulation keeps style strength from changing feature energy
-        # and producing the stray lines seen in the old MAIN checkpoints.
+        # and producing unwanted stray stroke artifacts.
         scale = scale / torch.sqrt(scale.square().mean(dim=1, keepdim=True) + 1e-6)
         shift = self.style_limit * torch.tanh(shift)
         branch_weights = torch.softmax(

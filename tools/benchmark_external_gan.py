@@ -527,7 +527,7 @@ def generate_x64_batches(
         )
 
         # The released x32 checkpoints use white background / dark ink, while
-        # DEV IAM x64 tensors use black background / light ink. Bridge that
+        # Dataset x64 tensors use black background / light ink. Bridge that
         # representation at the baseline boundary and preserve -1 padding.
         columns = torch.arange(style_x32.size(-1), device=device)
         valid_style = columns.view(1, 1, 1, -1) < style_lens_x32.view(-1, 1, 1, 1)
@@ -542,7 +542,7 @@ def generate_x64_batches(
         if fake_x32.size(-2) != 32:
             raise RuntimeError(f"Expected native x32 output, got {tuple(fake_x32.shape)}")
 
-        # Convert output back to DEV black-background / light-ink convention.
+        # Convert output back to black-background / light-ink convention.
         fake_x32 = -fake_x32
 
         fake_x64 = F.interpolate(

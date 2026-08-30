@@ -19,7 +19,7 @@ from metric.cmmd import calculate_cmmd_score, compute_real_embeddings, ClipEmbed
 from metric.mssim_psnr import calculate_mssim_psnr
 from networks.utils import pad_image_lengths
 
-# We need to wrap or subclass InceptionV3 to support masking and returning logits for HGGAN.
+# We need to wrap or subclass InceptionV3 to support masking and returning logits.
 class HGGANInceptionV3(ReferenceInceptionV3):
     def __init__(self, output_blocks=[3], resize_input=True, normalize_input=True, requires_grad=False, use_fid_inception=True):
         self.hggan_resize_input = resize_input
@@ -79,7 +79,7 @@ class HGGANInceptionV3(ReferenceInceptionV3):
         logits = self.last_fc(pooled_feat.view(pooled_feat.size(0), -1)).softmax(dim=-1)
         return pooled_feat, logits
 
-# Export HGGANInceptionV3 as InceptionV3
+# Export CustomInceptionV3 as InceptionV3
 InceptionV3 = HGGANInceptionV3
 
 class ImageListDataset(Dataset):
@@ -199,7 +199,7 @@ def get_activations(data_source, n_batches, model, dims, device, crop=False, eva
         pred_arr.append(pred.cpu().data.numpy().reshape(pred.size(0), -1))
 
         # ----------------------------------------------------
-        # 2. Original HiGAN+ Preprocessing for IS Logits
+        # 2. Original Baseline Preprocessing for IS Logits
         # ----------------------------------------------------
         if eval_is:
             img_lens_is = pad_image_lengths(org_img_lens_is, scale=height)

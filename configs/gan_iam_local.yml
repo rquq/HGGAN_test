@@ -12,10 +12,10 @@ expected_width_multiple: 32
 
 
 inference:
-  ckpt: './pretrained/HiGAN+.pth'
+  ckpt: './pretrained/best_fid.pth'
   mode: 'text'
   guided: true
-  deploy_dst: './pretrained/deploy_HiGAN+.pth'
+  deploy_dst: './pretrained/deploy.pth'
 
 
 training:

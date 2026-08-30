@@ -438,7 +438,7 @@ def draw_stroke_patch_d(path: Path) -> None:
     d.arrow([(645, 232), (695, 232)])
     d.arrow([(933, 232), (980, 232)])
 
-    # Main PatchD pipeline.
+    # Primary PatchD pipeline.
     d.panel(
         1200, 114, 798, 266, "StrokePatchD forward path",
         "Spectral normalization is used on every convolution.",
