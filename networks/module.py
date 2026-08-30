@@ -128,7 +128,9 @@ class StyleBackbone(nn.Module):
             if ret_feats and name in self.layer_name_mapping:
                 feats.append(x)
 
-        out = self.cnn_ctc(x).squeeze(-2)
+        out = self.cnn_ctc(x)
+        if out.dim() == 4:
+            out = out.squeeze(2) if out.size(2) == 1 else out.mean(dim=2)
 
         return out, feats
 
