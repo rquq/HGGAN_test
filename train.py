@@ -37,7 +37,7 @@ if __name__ == "__main__":
         "--config",
         nargs="?",
         type=str,
-        default="configs/gan_iam.yml",
+        default="configs/gan_iam_64.yml",
         help="Configuration file to use",
     )
 
