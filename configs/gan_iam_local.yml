@@ -143,6 +143,8 @@ valid:
   test_wid_model:
     n_writer: 161
     in_dim: 256
+    pool: 'attentive_stats'
+    attention_dim: 128
     init: 'none'
   ctcdecode:
     model_path: ~ #'./data/english_word_3gram.binary'

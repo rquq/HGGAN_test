@@ -4,24 +4,19 @@ gpus: [0]
 model: 'identifier_model'
 dataset: 'iam_word'
 seed: 123456
-img_height: 64
+img_height: 32
 finetune: false
-
 
 training:
   dset_name: 'iam_word'
   dset_split: 'trnval'
-  # Long, late-decay teacher run; selected EMA teachers are evaluated every 10 epochs.
   epochs: 100
   lr_policy: 'linear'
   start_decay_epoch: 60
   n_epochs_decay: 40
   batch_size: 32
-  # optimization:
   lr: 1.0e-3
-  # sampling and saving
   print_iter_val: 20
-  # Validation is deliberately sparse; each result selects an EMA teacher.
   eval_epoch_val: 10
   teacher_ema: true
   teacher_ema_beta: 0.999
@@ -29,25 +24,19 @@ training:
   n_class: 80
   sort_input: true
   resume: ~
-  pretrained_backbone: './pretrained/ocr_iam_train64.pth'
+  pretrained_backbone: './pretrained/ocr_iam_train32.pth'
   random_clip: true
   process_style: true
-  # Train W+B on both raw reference widths (used by E) and canonical/cropped
-  # widths (used by generated words), with no additional objective.
   writer_input_policy: 'mixed'
   writer_raw_probability: 0.5
-  # Temper inverse-frequency sampling so tail writers are seen more often
-  # without repeatedly overfitting their very small number of samples.
   writer_balance_power: 0.5
   writer_balance_max_weight: 3.0
   frozen_backbone: false
-  # Atomic export consumed by gan_iam.yml after pretraining.
-  export_writer_teacher: "./pretrained/wid_iam_train64.pth"
+  export_writer_teacher: './pretrained/wid_iam_train32.pth'
 
 valid:
   dset_split: 'trnval'
   batch_size: 256
-
 
 StyBackbone:
   resolution: 16
@@ -57,12 +46,9 @@ StyBackbone:
   dropout: 0.2
   norm: 'bn'
 
-
 WidModel:
   n_writer: 339
   in_dim: 256
-  # Attention plus masked mean/std pooling keeps discriminative glyphs and
-  # local stroke variation instead of averaging every horizontal position.
   pool: 'attentive_stats'
   attention_dim: 128
   init: 'none'

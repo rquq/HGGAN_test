@@ -17,9 +17,16 @@ from networks.utils import init_weights, _len2mask
 def G_arch(ch=64, attention='64', ksize='333333', dilation='111111'):
     arch = {}
 
+    arch[32] = {'in_channels': [ch * item for item in [4, 2, 1]],
+                'out_channels': [ch * item for item in [2, 1, 1]],
+                'upsample': [(2, 1), (2, 2), (2, 2)],
+                'resolution': [8, 16, 32],
+                'attention': {2 ** i: (2 ** i in [int(item) for item in attention.split('_')])
+                              for i in range(2, 6)}}
+
     arch[64] = {'in_channels': [ch * item for item in [8, 4, 2, 1]],
                 'out_channels': [ch * item for item in [4, 2, 1, 1]],
-                'upsample': [(2,1), (2,2), (2,2), (2,2)],
+                'upsample': [(2, 1), (2, 2), (2, 2), (2, 2)],
                 'resolution': [8, 16, 32, 64],
                 'attention': {2 ** i: (2 ** i in [int(item) for item in attention.split('_')])
                               for i in range(2, 7)}}
@@ -362,7 +369,7 @@ class Discriminator(nn.Module):
                  D_attn='64', num_D_SVs=1, num_D_SV_itrs=1,
                  D_activation=nn.ReLU(inplace=False), SN_eps=1e-12,
                  output_dim=1, D_fp16=False, init='ortho', D_param='SN',
-                 input_nc=3, width_context=False, width_heads=4):
+                 input_nc=3, width_context=False, width_heads=4, **kwargs):
         super(Discriminator, self).__init__()
         self.name = 'D'
         # Width multiplier
@@ -521,6 +528,7 @@ class PatchDiscriminator(nn.Module):
         D_param='SN',
         input_nc=1,
         n_class=80,
+        **kwargs
     ):
         super().__init__()
         self.name = 'P'

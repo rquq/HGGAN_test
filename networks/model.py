@@ -1716,7 +1716,7 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                     )
             if os.path.exists(self.opt.training.pretrained_w):
                 w_dict = torch.load(self.opt.training.pretrained_w, map_location='cpu', weights_only=False)
-                self.models.W.load_state_dict(w_dict.get('WriterIdentifier', w_dict.get('W')), strict=True)
+                self.models.W.load_state_dict(w_dict.get('WriterIdentifier', w_dict.get('W')), strict=False)
                 self.models.B.load_state_dict(w_dict.get('StyleBackbone', w_dict.get('B')), strict=True)
                 self.print(f'load pretrained writer_identifier: {self.opt.training.pretrained_w}')
                 # self.validate_wid()
