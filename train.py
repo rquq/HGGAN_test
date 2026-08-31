@@ -40,6 +40,10 @@ if __name__ == "__main__":
     args = parser.parse_args()
     cfg = yaml2config(args.config)
     
+    if hasattr(cfg, 'img_height') and cfg.img_height:
+        from lib.path_config import set_img_height
+        set_img_height(cfg.img_height)
+
     run_id = datetime.strftime(datetime.now(), '%m-%d-%H-%M')
     logdir = os.path.join("runs", os.path.basename(args.config)[:-4] + '-' + str(run_id))
     ckpt_dir = os.path.join(logdir, getattr(getattr(cfg, 'training', {}), 'ckpt_dir', 'ckpts'))
