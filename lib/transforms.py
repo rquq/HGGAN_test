@@ -9,11 +9,15 @@ _Resampling = getattr(Image, 'Resampling', Image)
 
 class RandomClip:
     """Randomly crops an image along its width if width exceeds min_clip_width."""
-    def __init__(self, min_clip_width=ImgHeight * 2, align_scale=CharWidth):
-        self.min_clip_width = max(1, int(min_clip_width))
-        self.align_scale = max(1, int(align_scale)) if align_scale is not None else None
+    def __init__(self, min_clip_width=None, align_scale=None):
+        import lib.path_config as path_cfg
+        self.min_clip_width = max(1, int(min_clip_width if min_clip_width is not None else path_cfg.ImgHeight * 2))
+        self.align_scale = max(1, int(align_scale if align_scale is not None else path_cfg.CharWidth))
 
-    def _recalc_len(self, leng, scale=CharWidth):
+    def _recalc_len(self, leng, scale=None):
+        if scale is None:
+            import lib.path_config as path_cfg
+            scale = path_cfg.CharWidth
         scale = max(1, int(scale))
         tmp = leng % scale
         return leng - tmp if tmp != 0 else leng
@@ -43,10 +47,16 @@ class RandomClip:
 
 class RandomScale:
     """Randomly rescales image width within a specified variance."""
-    def __init__(self, var=0.4):
+    def __init__(self, var=0.4, scale=None):
         self.var = float(var)
+        self.scale = scale
 
-    def _recalc_len(self, leng, scale=CharWidth):
+    def _recalc_len(self, leng, scale=None):
+        if scale is None:
+            scale = self.scale
+        if scale is None:
+            import lib.path_config as path_cfg
+            scale = path_cfg.CharWidth
         scale = max(1, int(scale))
         tmp = leng % scale
         return leng + scale - tmp if tmp != 0 else leng
@@ -57,7 +67,7 @@ class RandomScale:
         width, height = pic.size[0], pic.size[1]
         ratio = (np.random.random() - 0.5) * 2 * self.var
         new_width = max(1, int(width * (1 + ratio)))
-        new_width = max(1, self._recalc_len(new_width, scale=CharWidth))
+        new_width = max(1, self._recalc_len(new_width))
         if ratio > 0:
             pic = pic.resize((new_width, height), _Resampling.BILINEAR)
         else:

@@ -616,7 +616,10 @@ def rescale_images2(imgs, img_lens, lb_lens, ref_img_lens, ref_lb_lens):
     return resized_imgs, target_img_lens
 
 
-def pad_image_lengths(img_lens, scale=ImgHeight):
+def pad_image_lengths(img_lens, scale=None):
+    if scale is None:
+        import lib.path_config as path_cfg
+        scale = path_cfg.ImgHeight
     tmp = img_lens % scale
     return torch.where(tmp != 0, img_lens + scale - tmp, img_lens).detach()
 

@@ -94,8 +94,9 @@ class Hdf5Dataset(Dataset):
         # style image
         if self.process_style:
             h, w = img.shape[:2]
-            new_w = CharWidth * len(text)
-            dim = (new_w, ImgHeight)
+            char_w = h // 2
+            new_w = char_w * len(text)
+            dim = (new_w, h)
             if new_w < w:
                 style_img = cv2.resize(img, dim, interpolation=cv2.INTER_AREA)
             else:
@@ -116,7 +117,10 @@ class Hdf5Dataset(Dataset):
         return len(self.img_lens)
 
     @staticmethod
-    def _recalc_len(leng, scale=CharWidth):
+    def _recalc_len(leng, scale=None):
+        if scale is None:
+            import lib.path_config as path_cfg
+            scale = path_cfg.CharWidth
         tmp = leng % scale
         return leng + scale - tmp if tmp != 0 else leng
 
