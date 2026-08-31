@@ -62,8 +62,7 @@ training:
   capitalize_ratio: 0.5
   blank_ratio: 0.
   sort_input: true
-  # Mature critic resumed phase: D:G = 1:1 doubles training throughput
-  num_critic_train: 1
+  num_critic_train: 2
   # Slightly elevated patch adversarial pressure to sharpen cursive ligatures and reduce KID
   lambda_patch_adv: 0.45
   patch_size: 32
