@@ -50,7 +50,7 @@ training:
   capitalize_ratio: 0.5
   blank_ratio: 0.
   sort_input: true
-  num_critic_train: 1
+  num_critic_train: 2
   lambda_patch_adv: 0.45
   patch_size: 16
   min_patch_crops: 4
@@ -100,8 +100,8 @@ valid:
   validate_cmmd_every_n_epochs: 4
   validate_cer: false
   validate_wer: false
-  validate_is_gen: true
-  validate_is_org: true
+  validate_is_gen: false
+  validate_is_org: false
   validate_psnr: false
   validate_mssim: false
   validate_wier: false
