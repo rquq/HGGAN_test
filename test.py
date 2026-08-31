@@ -143,6 +143,11 @@ if __name__ == '__main__':
     args = parser.parse_args()
     config_path = args.config if getattr(args, 'config', None) is not None else "configs/gan_iam_64.yml"
     cfg = yaml2config(config_path)
+
+    if hasattr(cfg, 'img_height') and cfg.img_height:
+        from lib.path_config import set_img_height
+        set_img_height(cfg.img_height)
+
     infer_cfg = getattr(cfg, 'inference', cfg)
 
     # Resolution order: CLI flag > config YAML (inference block or root) > fallback default
