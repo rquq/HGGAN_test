@@ -79,7 +79,10 @@ class HeavyCNNAttention(nn.Module):
 class StyleBackbone(nn.Module):
     def __init__(self, resolution=16, max_dim=256, in_channel=1, init='N02', dropout=0.0, norm='bn', img_height=64, **kwargs):
         super(StyleBackbone, self).__init__()
-        self.reduce_len_scale = 16
+        # The 32px path uses stride 1 in the first convolution, so its total
+        # horizontal reduction is 8 rather than 16. Keep length metadata in
+        # lock-step with the CNN or half of each reference is masked.
+        self.reduce_len_scale = 8 if int(img_height) <= 32 else 16
         nf = resolution
         init_stride = 1 if int(img_height) <= 32 else 2
         cnn_f = [nn.ConstantPad2d(2, -1),
@@ -400,22 +403,50 @@ class StyleEncoder(nn.Module):
         else:
             local_style = style_queries
 
-        # Dynamic horizontal breadth factor: for narrow punctuation / point marks (feat_len < 4),
-        # smoothly contract local slot variations towards global_mu to prevent 1D vertical stroke elongation.
+        global_style = self.linear_style(global_context).unsqueeze(1)
+
+        # A one-character reference (especially '.', ',', '/', or '-') has
+        # almost no horizontal evidence. Its local attention slots otherwise
+        # become overconfident and can elongate vertical strokes when they are
+        # broadcast over a long target word. Derive a smooth support factor
+        # from both physical and encoded width. Two or more character widths
+        # retain the full local path; a single-character reference receives a
+        # bounded blend towards the global writer style.
         if feat_len is not None:
-            breadth_factor = (feat_len.float() / 4.0).clamp(min=0.25, max=1.0).view(batch_size, 1, 1)
+            reference_char_width = max(1, int(img.size(-2)) // 2)
+            approx_char_count = img_len.to(dtype=torch.float32).clamp_min(1)
+            approx_char_count = approx_char_count / float(reference_char_width)
+            char_support = (approx_char_count / 2.0).clamp(
+                min=0.25, max=1.0
+            )
+            feature_support = (feat_len.to(dtype=torch.float32) / 4.0).clamp(
+                min=0.25, max=1.0
+            )
+            breadth_factor = torch.minimum(
+                char_support, feature_support
+            ).view(batch_size, 1, 1)
         else:
             breadth_factor = 1.0
 
-        global_style = self.linear_style(global_context).unsqueeze(1)
-        style = torch.cat([global_style, local_style], dim=1)
+        if local_style.size(1):
+            local_style_for_stats = global_style + breadth_factor * (
+                local_style - global_style
+            )
+        else:
+            local_style_for_stats = local_style
+        # Use the same stabilized tokens for VAE statistics; otherwise
+        # sampling would re-introduce the unstable short-reference variation.
+        style = torch.cat([global_style, local_style_for_stats], dim=1)
         global_mu = self.mu(global_style)
 
-        # Stabilize and cap style vector norm on narrow crops to prevent out-of-distribution CBN scaling in GBlocks
+        # Keep writer/style conditioning in the range learned by GBlocks. The
+        # bound is inactive for normal references and compresses only anomalous
+        # short-crop vectors.
         safe_norm_cap = 9.5
         g_norm = global_mu.norm(dim=-1, keepdim=True)
-        g_scale = torch.clamp(safe_norm_cap / (g_norm + 1e-6), max=1.0)
-        global_mu = global_mu * g_scale
+        global_mu = global_mu * torch.clamp(
+            safe_norm_cap / (g_norm + 1e-6), max=1.0
+        )
 
         if local_style.size(1):
             local_data_mu = self.mu(local_style)
@@ -432,11 +463,11 @@ class StyleEncoder(nn.Module):
                 local_data_mu
                 + self.local_query_residual * local_data_rms * local_identity
             )
-            # Smoothly blend local slots towards global_mu on narrow/low-entropy crops
             local_mu = global_mu + breadth_factor * (local_mu_raw - global_mu)
             l_norm = local_mu.norm(dim=-1, keepdim=True)
-            l_scale = torch.clamp(safe_norm_cap / (l_norm + 1e-6), max=1.0)
-            local_mu = local_mu * l_scale
+            local_mu = local_mu * torch.clamp(
+                safe_norm_cap / (l_norm + 1e-6), max=1.0
+            )
         else:
             local_mu = self.mu(local_style)
         style_tokens_mu = torch.cat([global_mu, local_mu], dim=1)
@@ -547,7 +578,9 @@ class Recognizer(nn.Module):
     def __init__(self, n_class, resolution=16, max_dim=256, in_channel=1, norm='none',
                  init='none', rnn_depth=1, dropout=0.0, bidirectional=True, img_height=64, **kwargs):
         super(Recognizer, self).__init__()
-        self.len_scale = 16
+        # Match the CNN's horizontal downsampling. At 32px the first
+        # convolution is stride 1, making the CTC scale 8 instead of 16.
+        self.len_scale = 8 if int(img_height) <= 32 else 16
         self.use_rnn = rnn_depth > 0
         self.bidirectional = bidirectional
 
