@@ -1,4 +1,6 @@
 import os
+import json
+import glob
 import logging
 import datetime
 import yaml
@@ -9,6 +11,165 @@ import matplotlib.pyplot as plt
 from munch import Munch
 from torchvision.utils import make_grid
 from PIL import Image
+
+
+def _result_scalar(value):
+    """Convert a metric/config value to a JSON/text-safe scalar."""
+    if value is None:
+        return ''
+    if isinstance(value, torch.Tensor):
+        if value.numel() != 1:
+            return str(value.detach().cpu().tolist())
+        value = value.detach().cpu().item()
+    elif isinstance(value, np.ndarray):
+        if value.size != 1:
+            return str(value.tolist())
+        value = value.reshape(-1)[0].item()
+    elif isinstance(value, np.generic):
+        value = value.item()
+    if isinstance(value, (bool, int, float, str)):
+        return value
+    return str(value)
+
+
+def update_job_status(status_path, status, **fields):
+    """Atomically publish a small status record for notebook monitors."""
+    if not status_path:
+        return
+    status_path = os.fspath(status_path)
+    os.makedirs(os.path.dirname(os.path.abspath(status_path)) or '.', exist_ok=True)
+    payload = {'status': str(status), **fields}
+    tmp_path = status_path + f'.tmp-{os.getpid()}'
+    try:
+        with open(tmp_path, 'w', encoding='utf-8') as handle:
+            json.dump(payload, handle, ensure_ascii=True, indent=2, default=_result_scalar)
+            handle.write('\n')
+        os.replace(tmp_path, status_path)
+    finally:
+        if os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+
+
+def _numeric(value):
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return None
+    return value if np.isfinite(value) else None
+
+
+def _results_metrics(model):
+    """Extract final/best validation values without assuming a model class."""
+    metrics = {}
+    history = list(getattr(model, 'eval_history', []) or []) if model is not None else []
+    history = sorted(history, key=lambda row: _numeric(row.get('epoch')) or -1)
+    last_row = history[-1] if history else {}
+    last_scores = getattr(model, 'last_eval_scores', {}) if model is not None else {}
+    if not isinstance(last_scores, dict):
+        last_scores = {}
+
+    def add(prefix, key, value):
+        value = _result_scalar(value)
+        if value != '':
+            metrics[f'{prefix}_{key}'] = value
+
+    for key, value in last_scores.items():
+        add('last', str(key).lower(), value)
+    for key, value in last_row.items():
+        if str(key).lower() != 'epoch':
+            metrics.setdefault(f'last_{str(key).lower()}', _result_scalar(value))
+
+    metric_names = ('fid', 'kid', 'hwd', 'cmmd', 'cer', 'wer', 'is_gen',
+                    'is_org', 'psnr', 'mssim', 'wier', 'wrr')
+    for key in metric_names:
+        values = []
+        for row in history:
+            candidate = row.get(key, row.get(key.upper(), ''))
+            number = _numeric(candidate)
+            if number is not None:
+                values.append(number)
+        if not values:
+            continue
+        best = max(values) if key in ('wrr', 'is_gen', 'is_org') else min(values)
+        metrics[f'best_{key}'] = best
+
+    for attr, key in (('best_cer', 'best_cer'), ('best_wier', 'best_wier')):
+        if model is not None and hasattr(model, attr):
+            add('best', key[5:] if key.startswith('best_') else key, getattr(model, attr))
+    return metrics
+
+
+def write_results_table(logdir, opt, model=None, status='completed',
+                        started_at=None, error=None, metadata=None):
+    """Write and print a compact, human-readable end-of-run RESULTS table."""
+    logdir = os.fspath(logdir)
+    os.makedirs(logdir, exist_ok=True)
+    now = datetime.datetime.now(datetime.timezone.utc)
+    elapsed = ''
+    if started_at is not None:
+        try:
+            elapsed = round(max(0.0, datetime.datetime.now().timestamp() - float(started_at)), 2)
+        except (TypeError, ValueError):
+            elapsed = ''
+
+    cfg_training = getattr(opt, 'training', {})
+    metadata = metadata if isinstance(metadata, dict) else {}
+    rows = [
+        ('status', status),
+        ('job', metadata.get('job', '')),
+        ('branch', metadata.get('branch', '')),
+        ('config', metadata.get('config', '')),
+        ('model', getattr(opt, 'model', 'unknown')),
+        ('dataset', getattr(opt, 'dataset', getattr(cfg_training, 'dset_name', 'unknown'))),
+        ('image_height', getattr(opt, 'img_height', '')),
+        ('requested_epochs', getattr(cfg_training, 'epochs', '')),
+        ('completed_epoch', getattr(model, 'completed_epoch', '')),
+        ('batch_size', getattr(cfg_training, 'batch_size', '')),
+        ('elapsed_seconds', elapsed),
+        ('run_directory', os.path.abspath(logdir)),
+        ('eval_csv', os.path.join(os.path.abspath(logdir), 'eval_metrics.csv')),
+    ]
+    if model is not None:
+        parameter_total = sum(parameter.numel() for network in model.models.values()
+                               for parameter in network.parameters())
+        rows.append(('parameters_total', parameter_total))
+
+    checkpoint_dir = os.path.join(logdir, getattr(cfg_training, 'ckpt_dir', 'ckpts'))
+    checkpoint_candidates = [
+        path for path in glob.glob(os.path.join(checkpoint_dir, '*.pth'))
+        if not os.path.basename(path).startswith('.tmp_')
+    ]
+    if checkpoint_candidates:
+        latest_checkpoint = max(checkpoint_candidates, key=os.path.getmtime)
+        rows.append(('latest_checkpoint', os.path.abspath(latest_checkpoint)))
+
+    if error:
+        rows.append(('error', str(error).strip().splitlines()[-1]))
+    rows.extend(_results_metrics(model).items())
+
+    table_lines = [
+        '',
+        '==================== RESULTS ====================',
+        f'completed_at_utc | {now.isoformat(timespec="seconds")}',
+    ]
+    width = max([len(str(key)) for key, _ in rows] + [7])
+    table_lines.extend(f'{str(key):<{width}} | {_result_scalar(value)}' for key, value in rows)
+    table_lines.append('====================================================')
+    table_text = '\n'.join(table_lines)
+
+    results_path = os.path.join(logdir, 'RESULTS.txt')
+    tmp_path = results_path + f'.tmp-{os.getpid()}'
+    with open(tmp_path, 'w', encoding='utf-8') as handle:
+        handle.write(table_text.lstrip('\n') + '\n')
+    os.replace(tmp_path, results_path)
+    if model is not None and hasattr(model, 'print'):
+        model.print(table_text)
+    else:
+        print(table_text)
+    return results_path, dict(rows)
 
 
 def write_wandb_log(message):

@@ -97,6 +97,8 @@ class BaseModel(object):
         self.is_resumed_start = False
         self.eval_metric_columns = list(self.EVAL_METRIC_COLUMNS)
         self.eval_history = []
+        self.completed_epoch = 0
+        self.last_eval_scores = {}
         alphabet_key = 'rimes_word' if opt.dataset.startswith('rimes') else 'all'
         self.alphabet = Alphabets[alphabet_key]
         self.label_converter = strLabelConverter(alphabet_key)
@@ -196,14 +198,42 @@ class BaseModel(object):
             f.writelines(opt_str)
 
     def info(self, extra=None):
-        self.print("RUNDIR: {}".format(self.log_root))
-        opt_str = option_to_string(self.opt)
-        self.print(opt_str)
-        for model in self.models.values():
-            self.print(_info(model, ret=True))
+        """Print a compact startup summary; full config remains in config.txt/W&B."""
+        training = getattr(self.opt, 'training', {})
+        valid = getattr(self.opt, 'valid', {})
+        enabled_metrics = [
+            key for key in (
+                'fid', 'kid', 'hwd', 'cmmd', 'cer', 'wer', 'is_gen', 'is_org',
+                'psnr', 'mssim', 'wier',
+            )
+            if bool(getattr(valid, f'validate_{key}', False))
+        ]
+        if not enabled_metrics:
+            enabled_metrics = ['none']
+        lines = [
+            '',
+            '==================== HGGAN RUN ====================',
+            f"model       : {getattr(self.opt, 'model', 'unknown')}",
+            f"dataset     : {getattr(self.opt, 'dataset', 'unknown')}",
+            f"resolution  : {getattr(self.opt, 'img_height', '?')} px",
+            f"device      : {getattr(self.opt, 'device', '?')}",
+            f"train       : batch={getattr(training, 'batch_size', '?')} "
+            f"epochs={getattr(training, 'epochs', '?')} "
+            f"workers={getattr(training, 'num_workers', '?')}",
+            f"optim       : G/lr={getattr(training, 'lr', '?')} "
+            f"D/lr={getattr(training, 'd_lr', '-') } "
+            f"P/lr={getattr(training, 'patch_d_lr', '-')}",
+            f"adversarial : critic_steps={getattr(training, 'num_critic_train', '-')}",
+            f"validation  : {', '.join(enabled_metrics)}",
+            'networks    :',
+        ]
+        self.print('\n'.join(lines))
+        for name, network in self.models.items():
+            self.print(_info(network, ret=True).replace('*', f'{name}:', 1))
+        self.print(f"full config : {os.path.join(self.log_root, 'config.txt')}")
         if extra is not None:
             self.print(extra)
-        self.print('=' * 20)
+        self.print('=' * 54)
 
     @staticmethod
     def _eval_scalar(value):
@@ -1917,6 +1947,8 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                 self.print(f"Set EMA tracker step to {self.ema_tracker.step} based on iter_count={iter_count}")
         is_best = False
         best_scores = None
+        self.completed_epoch = max(0, start_epoch - 1)
+        self.last_eval_scores = {}
 
         _should_restore_rng = is_resuming and skip_batches > 0
         for epoch in range(start_epoch, self.opt.training.epochs + 1):
@@ -2485,6 +2517,7 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                 if is_eval:
                     self.print('Calculate FID_KID (epoch {:.2f})'.format(eval_epoch)) if self.local_rank < 1 else None
                     scores = self.validate(current_epoch=epoch)
+                    self.last_eval_scores = dict(scores)
                     if 'fid' in scores:
                         self.last_eval_fid = float(scores['fid'])
                     if _is_master:
@@ -2542,10 +2575,10 @@ class GlobalLocalAdversarialModel(AdversarialModel):
 
             for scheduler in self.lr_schedulers.values():
                 scheduler.step()
+            self.completed_epoch = epoch
 
-        if _is_master:
-            import wandb as _wandb
-            _wandb.finish()
+        self.best_fid = best_fid if np.isfinite(best_fid) else None
+        # train.py prints RESULTS and closes W&B after this method returns.
 
 
 class RecognizeModel(BaseModel):
@@ -2663,6 +2696,9 @@ class RecognizeModel(BaseModel):
         if not np.isfinite(best_cer):
             best_cer = np.inf
         eval_every = max(1, int(getattr(self.opt.training, 'eval_epoch_val', 10)))
+        self.completed_epoch = max(0, start_epoch - 1)
+        self.last_eval_scores = {}
+        self.best_cer = best_cer
 
         for epoch in range(start_epoch, self.opt.training.epochs + 1):
             if getattr(self, 'train_sampler', None) is not None:
@@ -2725,6 +2761,7 @@ class RecognizeModel(BaseModel):
                 eval_scores = None
                 if self.local_rank < 1 and eval_due:
                     eval_scores = self.validate(use_ema=self.use_teacher_ema)
+                    self.last_eval_scores = dict(eval_scores)
                     source = 'EMA' if self.use_teacher_ema else 'online'
                     self.print(
                         'OCR {} eval @ epoch {}: CER={:.5f} WER={:.5f}'.format(
@@ -2758,6 +2795,7 @@ class RecognizeModel(BaseModel):
                             self.print(
                                 f'Exported best {source} recognizer (CER={best_cer:.5f}): {export_path}'
                             )
+                    self.best_cer = best_cer
 
                 if self.local_rank < 1:
                     self.save(
@@ -2772,6 +2810,9 @@ class RecognizeModel(BaseModel):
 
             for scheduler in self.lr_schedulers.values():
                 scheduler.step()
+            self.completed_epoch = epoch
+
+        self.best_cer = best_cer
 
     def validate(self, use_ema=True, *args, **kwargs):
         self.set_mode('eval')
@@ -3046,6 +3087,9 @@ class WriterIdentifyModel(BaseModel):
         if not np.isfinite(best_wier):
             best_wier = np.inf
         eval_every = max(1, int(getattr(self.opt.training, 'eval_epoch_val', 10)))
+        self.completed_epoch = max(0, start_epoch - 1)
+        self.last_eval_scores = {}
+        self.best_wier = best_wier
 
         for epoch in range(start_epoch, self.opt.training.epochs + 1):
             if hasattr(getattr(self, 'train_sampler', None), 'set_epoch'):
@@ -3120,6 +3164,7 @@ class WriterIdentifyModel(BaseModel):
                 eval_scores = None
                 if self.local_rank < 1 and eval_due:
                     eval_scores = self.validate(use_ema=self.use_teacher_ema)
+                    self.last_eval_scores = dict(eval_scores)
                     source = 'EMA' if self.use_teacher_ema else 'online'
                     self.print(
                         'Writer {} eval @ epoch {}: WRR={:.3f} WIER={:.5f}'.format(
@@ -3157,6 +3202,7 @@ class WriterIdentifyModel(BaseModel):
                             self.print(
                                 f'Exported best {source} writer teacher (WIER={best_wier:.5f}): {export_path}'
                             )
+                    self.best_wier = best_wier
 
                 if self.local_rank < 1:
                     self.save(
@@ -3170,6 +3216,9 @@ class WriterIdentifyModel(BaseModel):
 
             for scheduler in self.lr_schedulers.values():
                 scheduler.step()
+            self.completed_epoch = epoch
+
+        self.best_wier = best_wier
 
     def validate(self, use_ema=True, *args, **kwargs):
         self.set_mode('eval')
