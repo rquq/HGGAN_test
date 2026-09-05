@@ -3,13 +3,17 @@ import os
 from datetime import datetime
 import argparse
 import traceback
+import time
 
 import random
 import numpy as np
 import torch
 import torch.distributed as dist
 
-from lib.utils import yaml2config, init_wandb_run, write_wandb_log
+from lib.utils import (
+    yaml2config, init_wandb_run, write_wandb_log,
+    update_job_status, write_results_table,
+)
 from networks import get_model
 
 
@@ -85,13 +89,35 @@ if __name__ == "__main__":
 
     # Initialize W&B before model/logger construction so startup summaries and
     # checkpoint loading appear in the run's Logs tab.
+    job_started_at = time.time()
+    status_path = os.environ.get('HGGAN_STATUS_PATH', '')
+    branch_name = os.path.basename(os.path.abspath(os.getcwd()))
+    job_name = os.environ.get('HGGAN_JOB_NAME', branch_name)
+    job_status = 'running'
+    error_text = ''
+    update_job_status(
+        status_path, job_status,
+        job=job_name,
+        branch=branch_name,
+        config=args.config,
+        model=getattr(cfg, 'model', 'unknown'),
+        logdir=os.path.abspath(logdir),
+        pid=os.getpid(),
+        started_at=job_started_at,
+    )
+
     wandb_run = init_wandb_run(cfg)
-    write_wandb_log(f'[Startup] branch=main config={args.config} logdir={logdir}')
+    write_wandb_log(
+        f'[Startup] job={job_name} branch={branch_name} '
+        f'model={getattr(cfg, "model", "unknown")} config={args.config} '
+        f'logdir={logdir}'
+    )
     model = None
     try:
         model = get_model(cfg.model)(cfg, logdir)
         model.train()
     except KeyboardInterrupt:
+        job_status = 'interrupted'
         print("\n[Notice] Training interrupted by user.")
         write_wandb_log('[Notice] Training interrupted by user.')
         if model is not None and hasattr(model, 'save') and getattr(model, 'local_rank', 0) <= 0:
@@ -102,10 +128,36 @@ if __name__ == "__main__":
             except Exception as e:
                 print(f"[Warning] Failed to save interrupted checkpoint: {e}")
     except Exception:
+        job_status = 'failed'
+        error_text = traceback.format_exc()
         traceback.print_exc()
-        write_wandb_log(traceback.format_exc())
+        write_wandb_log(error_text)
         raise
     finally:
+        results_path = ''
+        result_rows = {}
+        try:
+            results_path, result_rows = write_results_table(
+                logdir, cfg, model=model, status=job_status,
+                started_at=job_started_at, error=error_text,
+                metadata={'job': job_name, 'branch': branch_name, 'config': args.config},
+            )
+        except Exception as results_error:
+            result_rows = {'results_error': str(results_error)}
+            print(f'[Warning] Could not write RESULTS table: {results_error}')
+            write_wandb_log(f'[Warning] Could not write RESULTS table: {results_error}')
+        update_job_status(
+            status_path, job_status,
+            job=job_name,
+            branch=branch_name,
+            config=args.config,
+            model=getattr(cfg, 'model', 'unknown'),
+            logdir=os.path.abspath(logdir),
+            pid=os.getpid(),
+            results_path=os.path.abspath(results_path) if results_path else '',
+            metrics=result_rows,
+            error=error_text.strip().splitlines()[-1] if error_text else '',
+        )
         if wandb_run is not None:
             try:
                 import wandb
