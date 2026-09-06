@@ -244,26 +244,93 @@ def set_requires_grad(nets, requires_grad=False):
 SPECIAL_CHARS = '0123456789\'-"/,.+_!#&():;?ABCDEFGHIJKLMNOPQRSTUVWXYZ'
 
 
-def idx_to_words(idx, lexicon, max_word_len=0, capitalize_ratio=0.5, blank_ratio=0., sort=True, rare_ratio=0.25):
-    words = []
-    for i in idx:
-        word = lexicon[i]
+def _rare_lexicon_sampler(lexicon):
+    """Return corpus words weighted toward genuinely rare alphabet symbols.
 
-        # 1. Capitalization (title case or full uppercase)
+    Fabricated punctuation/digit strings can shift the training text
+    distribution away from IAM. This sampler only reuses words in the configured
+    corpus, while inverse-square-root character weights give Q/X/Z/J and other
+    low-frequency glyphs more chances to reach the generator.
+    """
+    cache = getattr(idx_to_words, '_rare_cache', None)
+    if cache is None:
+        cache = {}
+        idx_to_words._rare_cache = cache
+    cache_key = (id(lexicon), len(lexicon))
+    if cache_key in cache and cache[cache_key][0] is lexicon:
+        return cache[cache_key][1]
+
+    counts = {}
+    for raw_word in lexicon:
+        for char in str(raw_word).casefold():
+            counts[char] = counts.get(char, 0) + 1
+    if not counts:
+        result = (np.arange(len(lexicon), dtype=np.int64), None)
+        cache[cache_key] = (lexicon, result)
+        return result
+
+    inv_sqrt = {
+        char: 1.0 / np.sqrt(float(count)) for char, count in counts.items()
+    }
+    scores = np.asarray([
+        np.mean([inv_sqrt.get(char, 1.0) for char in str(word).casefold()])
+        if str(word) else 0.0
+        for word in lexicon
+    ], dtype=np.float64)
+    valid = np.isfinite(scores) & (scores > 0)
+    if not np.any(valid):
+        result = (np.arange(len(lexicon), dtype=np.int64), None)
+    else:
+        indices = np.flatnonzero(valid)
+        weights = scores[indices]
+        weights /= weights.sum()
+        cumulative = np.cumsum(weights)
+        cumulative /= cumulative[-1]
+        result = (indices, cumulative)
+    # Keep the source alive so Python cannot reuse its id for another lexicon.
+    cache[cache_key] = (lexicon, result)
+    return result
+
+
+def idx_to_words(idx, lexicon, max_word_len=0, capitalize_ratio=0.5,
+                 blank_ratio=0., sort=True, rare_ratio=0.15,
+                 rare_lexicon=None):
+    """Decode sampled lexicon IDs with a corpus-faithful rare-word policy.
+
+    ``rare_ratio`` now controls oversampling of real rare-character words; it
+    never fabricates arbitrary symbol sequences.  Set it to zero for fixed
+    validation/sample text.
+    """
+    rare_source = lexicon if rare_lexicon is None else rare_lexicon
+    rare_indices, rare_cumulative = (
+        _rare_lexicon_sampler(rare_source) if rare_ratio > 0 else (None, None)
+    )
+    if isinstance(idx, torch.Tensor):
+        # One device-to-host copy per batch is cheaper than synchronizing once
+        # for every CUDA scalar during Python-side lexicon lookup.
+        indices = idx.detach().cpu().tolist()
+    else:
+        indices = idx
+    words = []
+    for i in indices:
+        base_index = int(i)
+        word = str(lexicon[base_index])
+
+        if rare_cumulative is not None and np.random.random() < rare_ratio:
+            # Reuse the CDF instead of rebuilding it over the whole IAM corpus
+            # for each sampled word (as np.random.choice(p=...) does).
+            rare_index = rare_indices[np.searchsorted(
+                rare_cumulative, np.random.random(), side='right'
+            )]
+            word = str(rare_source[int(rare_index)])
+
+        # Capitalization is applied after rare-word selection so the sampled
+        # glyph still follows the same case policy as ordinary corpus words.
         if np.random.random() < capitalize_ratio:
             word = word.capitalize() if np.random.random() < 0.8 else word.upper()
 
-        # 2. Stochastic rare-character injection (50% affix/wrap on word, 50% random symbol/digit sequence)
-        if np.random.random() < rare_ratio:
-            if np.random.random() < 0.5:
-                char = np.random.choice(list(SPECIAL_CHARS))
-                word = f"{word}{char}" if np.random.random() < 0.7 else f"{char}{word}"
-            else:
-                length = np.random.randint(1, 6)
-                word = ''.join(np.random.choice(list(SPECIAL_CHARS), size=length))
-
         if len(word) > max_word_len >= 1:
-            pos = np.random.randint(0, len(word) - max_word_len)
+            pos = np.random.randint(0, len(word) - max_word_len + 1)
             word = word[pos: pos + max_word_len]
 
         words.append(word)
@@ -369,6 +436,7 @@ def sample_character_patches(
     max_crops=8,
     horizontal_jitter=4,
     fill_value=-1.0,
+    return_confidence=False,
 ):
     """Sample character-aligned stroke crops and return their character IDs.
 
@@ -397,64 +465,95 @@ def sample_character_patches(
         )
 
     image_height, image_width = images.shape[-2:]
-    widths = image_lens.detach().cpu().long().tolist()
-    lengths = label_lens.detach().cpu().long().tolist()
-    patches, crop_counts, character_ids = [], [], []
-    max_top = image_height - patch_size
+    device = images.device
+    batch_size = images.size(0)
+    if batch_size == 0 or labels.size(1) == 0:
+        raise ValueError('character crops require a nonempty batch and label dimension')
+    # Length tensors may already have this device/dtype: avoid mutating the
+    # caller's lengths, which are also consumed by OCR and reconstruction.
+    widths = image_lens.to(device=device, dtype=torch.long).clamp(1, image_width)
+    lengths = label_lens.to(device=device, dtype=torch.long).clamp(1, labels.size(1))
+    crop_counts = ((widths + patch_size - 1) // patch_size).clamp_(min_crops, max_crops)
+    crop_slots = torch.arange(max_crops, device=device)
+    row_indices, crop_indices = (
+        crop_slots[None, :] < crop_counts[:, None]
+    ).nonzero(as_tuple=True)
+    total_crops = row_indices.numel()
+    valid_widths = widths[row_indices]
+    valid_lengths = lengths[row_indices]
 
-    for row, (raw_width, raw_label_len) in enumerate(zip(widths, lengths)):
-        valid_width = max(1, min(int(raw_width), image_width))
-        valid_label_len = max(1, min(int(raw_label_len), labels.size(1)))
-        crop_count = adaptive_crop_count(
-            valid_width, patch_size, min_crops, max_crops
-        )
-        crop_counts.append(crop_count)
-        vertical_positions = max(max_top + 1, 1)
-
-        for crop_index in range(crop_count):
-            char_start = crop_index * valid_label_len // crop_count
-            char_end = max(
-                (crop_index + 1) * valid_label_len // crop_count,
-                char_start + 1,
-            )
-            char_end = min(char_end, valid_label_len)
-            if char_start >= valid_label_len:
-                char_index = valid_label_len - 1
-            else:
-                char_index = char_start + int(torch.randint(
-                    0, max(char_end - char_start, 1), (1,)
-                ).item())
-
-            span_start = char_index * valid_width / valid_label_len
-            span_end = (char_index + 1) * valid_width / valid_label_len
-            left = int(round((span_start + span_end - patch_size) / 2.0))
-            if horizontal_jitter:
-                left += int(torch.randint(
-                    -horizontal_jitter, horizontal_jitter + 1, (1,)
-                ).item())
-            left = max(0, min(left, max(valid_width - patch_size, 0)))
-
-            vertical_slot = crop_index % 2
-            top_start = vertical_slot * vertical_positions // 2
-            top_end = max(
-                (vertical_slot + 1) * vertical_positions // 2,
-                top_start + 1,
-            )
-            top = top_start + int(
-                torch.randint(0, top_end - top_start, (1,)).item()
-            )
-            top = min(top, max_top)
-
-            patches.append(images[
-                row, :, top:top + patch_size, left:left + patch_size
-            ])
-            character_ids.append(labels[row, char_index])
-
-    return (
-        torch.stack(patches, dim=0),
-        torch.tensor(crop_counts, dtype=torch.long, device=images.device),
-        torch.stack(character_ids).long().to(images.device),
+    char_start = torch.div(
+        crop_indices * valid_lengths, crop_counts[row_indices], rounding_mode='floor'
     )
+    char_start = torch.minimum(char_start, valid_lengths - 1)
+    char_end = torch.div(
+        (crop_indices + 1) * valid_lengths,
+        crop_counts[row_indices], rounding_mode='floor'
+    )
+    char_end = torch.maximum(char_end, char_start + 1)
+    char_end = torch.minimum(char_end, valid_lengths)
+    char_index = char_start + torch.floor(
+        torch.rand(total_crops, device=device) * (char_end - char_start).to(torch.float32)
+    ).to(torch.long)
+
+    span_start = char_index.to(torch.float32) * valid_widths.to(torch.float32) / valid_lengths
+    span_end = (char_index + 1).to(torch.float32) * valid_widths.to(torch.float32) / valid_lengths
+    left = torch.round((span_start + span_end - float(patch_size)) / 2.0).to(torch.long)
+    if horizontal_jitter:
+        left += torch.randint(
+            -horizontal_jitter, horizontal_jitter + 1, (total_crops,), device=device
+        )
+    left = left.clamp_(min=0)
+    left = torch.minimum(left, (valid_widths - patch_size).clamp_min(0))
+
+    max_top = max(image_height - patch_size, 0)
+    vertical_positions = max(max_top + 1, 1)
+    vertical_slot = crop_indices.remainder(2)
+    top_start = vertical_slot * (vertical_positions // 2)
+    top_end = torch.maximum(
+        (vertical_slot + 1) * vertical_positions // 2,
+        top_start + 1,
+    )
+    top = top_start + torch.floor(
+        torch.rand(total_crops, device=device) * (top_end - top_start).to(torch.float32)
+    ).to(torch.long)
+    top = top.clamp_(max=max_top)
+
+    # Gather only the selected pixels. Indexing an unfold view makes backward
+    # allocate gradients for *every* sliding window, even for just a few crops.
+    offset = torch.arange(patch_size, device=device)
+    patches = images[
+        row_indices[:, None, None, None],
+        torch.arange(images.size(1), device=device)[None, :, None, None],
+        (top[:, None] + offset)[:, None, :, None],
+        (left[:, None] + offset)[:, None, None, :],
+    ]
+
+    # The crop label is approximate because IAM stores word boxes, not per-glyph
+    # boxes.  Pass a soft confidence to StrokePatchD: partial/blank crops still
+    # train its unconditional stroke critic but cannot inject a wrong class code.
+    overlap = (
+        torch.minimum(span_end, left.to(torch.float32) + patch_size)
+        - torch.maximum(span_start, left.to(torch.float32))
+    ).clamp_min(0.0)
+    span_capacity = (span_end - span_start).clamp_min(1.0).clamp_max(float(patch_size))
+    geometry_confidence = (overlap / span_capacity).clamp(0.0, 1.0)
+    ink_fraction = (patches > -0.75).to(torch.float32).mean(dim=(1, 2, 3))
+    ink_confidence = ((ink_fraction - 0.005) / 0.04).clamp(0.0, 1.0)
+    patch_confidence = (geometry_confidence * ink_confidence).to(patches.dtype)
+
+    labels_device = labels.device
+    row_for_labels = row_indices.to(labels_device)
+    char_for_labels = char_index.to(labels_device)
+    character_ids = labels[row_for_labels, char_for_labels].long().to(device)
+    result = (
+        patches,
+        crop_counts.to(device=device),
+        character_ids,
+    )
+    if return_confidence:
+        result = result + (patch_confidence,)
+    return result
 
 
 def augment_word_batch(

@@ -61,6 +61,7 @@ training:
   n_class: 80
   capitalize_ratio: 0.5
   blank_ratio: 0.
+  rare_word_ratio: 0.15
   sort_input: true
   num_critic_train: 2
   # Slightly elevated patch adversarial pressure to sharpen cursive ligatures and reduce KID
@@ -71,6 +72,8 @@ training:
   # Keep character-centered crops close enough to the intended allograph while
   # retaining small translation tolerance for real handwriting alignment.
   patch_char_jitter: 4
+  patch_char_conditioning: true
+  patch_char_min_confidence: 0.25
   # Mild word-safe DiffAug is applied to both real and fake global-D inputs.
   d_diffaug: true
   d_aug_translate: 4
@@ -127,6 +130,7 @@ valid:
   validate_psnr: false
   validate_mssim: false
   validate_wier: false
+  metric_cache_dtype: 'float32'
   use_rand_corpus: false
   n_rand_repeat: 10
   batch_size: 8

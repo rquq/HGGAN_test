@@ -196,15 +196,74 @@ def _gradient_reverse(x, scale):
 
 
 class StyleEncoder(nn.Module):
-    def __init__(self, style_dim=32, in_dim=256, init='N02', num_style_tokens=8,
+    def __init__(self, style_dim=32, in_dim=256, init='N02', num_style_tokens=None,
                  backbone_channels=(64, 128, 256), n_class=80, content_grl=1.0,
                  local_query_residual=0.5,
                  local_attention_residual_init=0.25,
-                 local_query_anchor_strength=0.5, **kwargs):
+                 local_query_anchor_strength=0.5,
+                 # These names are kept as aliases because older DEV YAML files
+                 # used them.  Previously they landed in **kwargs and were
+                 # silently ignored, making the printed configuration untrue.
+                 num_local_queries=None, query_dim=None, heads=4,
+                 cross_attn_dropout=0.0, local_attention_gate_init=None,
+                 feature_scales=None, **kwargs):
         super(StyleEncoder, self).__init__()
+        if kwargs:
+            unknown = ', '.join(sorted(str(key) for key in kwargs))
+            raise TypeError(f'Unknown StyleEncoder option(s): {unknown}')
+        if (num_style_tokens is not None and num_local_queries is not None
+                and int(num_style_tokens) != int(num_local_queries) + 1):
+            raise ValueError(
+                'num_style_tokens must equal num_local_queries + 1'
+            )
+        if num_style_tokens is None:
+            num_style_tokens = (
+                int(num_local_queries) + 1
+                if num_local_queries is not None else 8
+            )
+        if query_dim is not None and int(query_dim) != int(in_dim):
+            raise ValueError(
+                f'query_dim ({query_dim}) must equal in_dim ({in_dim}); '
+                'separate query projections are not implemented.'
+            )
+        if local_attention_gate_init is not None:
+            local_attention_residual_init = local_attention_gate_init
+        if not 1 <= int(heads) <= int(in_dim):
+            raise ValueError('heads must be in [1, in_dim]')
+        if int(in_dim) % int(heads) != 0:
+            raise ValueError('in_dim must be divisible by heads')
+        if not 0.0 <= float(cross_attn_dropout) < 1.0:
+            raise ValueError('cross_attn_dropout must be in [0, 1)')
+        if feature_scales is not None:
+            feature_scales = tuple(feature_scales)
+            if not feature_scales:
+                raise ValueError('feature_scales cannot be empty')
+            if len(feature_scales) > len(backbone_channels):
+                raise ValueError(
+                    'feature_scales cannot request more maps than '
+                    'backbone_channels'
+                )
+            if any(float(scale) <= 0 for scale in feature_scales):
+                raise ValueError('feature_scales must contain positive values')
+            available_scales = tuple(2 ** i for i in range(len(backbone_channels)))
+            if (len(set(feature_scales)) != len(feature_scales)
+                    or any(scale not in available_scales for scale in feature_scales)):
+                raise ValueError(
+                    f'feature_scales must be distinct members of {available_scales}'
+                )
         self.style_dim = style_dim
         self._in_dim = in_dim
-        self.num_style_tokens = num_style_tokens
+        self.num_style_tokens = int(num_style_tokens)
+        self.num_local_queries = self.num_style_tokens - 1
+        self.attention_heads = int(heads)
+        self.cross_attn_dropout = float(cross_attn_dropout)
+        # The backbone exposes three feature maps.  Keep all of them by
+        # default. Scale IDs 1/2/4 select the corresponding shallow/deeper maps;
+        # [2, 4] must not silently select the first two maps.
+        self.feature_scales = feature_scales
+        self.feature_indices = tuple(
+            available_scales.index(scale) for scale in feature_scales
+        ) if feature_scales is not None else tuple(range(len(backbone_channels)))
         self.content_grl = content_grl
         self.local_query_residual = float(local_query_residual)
         self.local_attention_residual_init = float(local_attention_residual_init)
@@ -237,8 +296,8 @@ class StyleEncoder(nn.Module):
         # Build every trainable projection before the optimizer is created. The old
         # forward-time replacement silently left new parameters unoptimised.
         self.proj_layers = nn.ModuleList([
-            nn.Conv2d(channels, in_dim, kernel_size=1)
-            for channels in backbone_channels
+            nn.Conv2d(backbone_channels[index], in_dim, kernel_size=1)
+            for index in self.feature_indices
         ])
         for layer in self.proj_layers:
             nn.init.normal_(layer.weight, 0.0, 0.02)
@@ -247,7 +306,7 @@ class StyleEncoder(nn.Module):
 
         # Token zero is an explicit global style summary. The remaining compact
         # query set captures local stroke details without a 32x32 content-rich code.
-        query_count = num_style_tokens - 1
+        query_count = self.num_local_queries
         style_query_init = torch.empty(1, query_count, in_dim)
         if query_count:
             # Orthogonal rows start as distinct local stroke slots while matching
@@ -278,7 +337,8 @@ class StyleEncoder(nn.Module):
             torch.full((in_dim,), attention_gate_logit)
         )
         self.style_cross_attn = nn.MultiheadAttention(
-            embed_dim=in_dim, num_heads=4, batch_first=True
+            embed_dim=in_dim, num_heads=self.attention_heads,
+            dropout=self.cross_attn_dropout, batch_first=True
         )
         # Affine-free norms add no checkpoint state. They prevent the frozen
         # backbone's very different feature scales from dominating attention.
@@ -312,14 +372,25 @@ class StyleEncoder(nn.Module):
             style_for_probe = _gradient_reverse(style_for_probe, self.content_grl)
         return self.content_probe(style_for_probe)
 
-    def forward(self, img, img_len, cnn_backbone=None, ret_feats=False, vae_mode=False):
-        feat, all_feats = cnn_backbone(img, ret_feats=True)
-        if len(self.proj_layers) != len(all_feats):
+    def forward(self, img, img_len, cnn_backbone=None, ret_feats=False,
+                vae_mode=False, ret_backbone_feat=False, backbone_features=None):
+        feat, all_feats = (
+            cnn_backbone(img, ret_feats=True)
+            if backbone_features is None else backbone_features
+        )
+        if self.feature_indices and max(self.feature_indices) >= len(all_feats):
+            raise RuntimeError(
+                f'StyleEncoder requested feature map indices {self.feature_indices}, '
+                f'but the backbone returned {len(all_feats)} maps.'
+            )
+        selected_all_feats = [all_feats[index] for index in self.feature_indices]
+        if len(self.proj_layers) != len(selected_all_feats):
             raise RuntimeError(
                 f'StyleEncoder expected {len(self.proj_layers)} backbone feature maps, '
-                f'but received {len(all_feats)}. Set EncModel.backbone_channels explicitly.'
+                f'but received {len(selected_all_feats)}. Set EncModel.feature_scales '
+                'and EncModel.backbone_channels consistently.'
             )
-        for index, (proj_layer, feature) in enumerate(zip(self.proj_layers, all_feats)):
+        for index, (proj_layer, feature) in enumerate(zip(self.proj_layers, selected_all_feats)):
             if proj_layer.in_channels != feature.size(1):
                 raise RuntimeError(
                     f'Backbone feature {index} has {feature.size(1)} channels, but the '
@@ -345,7 +416,7 @@ class StyleEncoder(nn.Module):
         spatial_tokens = [feat_m_trans]
         padding_masks = [~feat_mask] if feat_mask is not None else []
         masked_all_feats = []
-        for proj_layer, feature in zip(self.proj_layers, all_feats):
+        for proj_layer, feature in zip(self.proj_layers, selected_all_feats):
             width_mask, _ = self._width_mask(img_len, img.size(-1), feature.size(-1))
             width_mask_f = (
                 width_mask[:, None, None, :].to(feature.dtype)
@@ -353,10 +424,11 @@ class StyleEncoder(nn.Module):
             )
             feature_masked = feature * width_mask_f
             masked_all_feats.append(feature_masked)
-            feature_projected = proj_layer(feature_masked)
-            feature_pooled = F.adaptive_avg_pool2d(
-                feature_projected, (4, feature.size(-1))
-            )
+            # A pointwise affine projection commutes with average pooling.
+            # Project four height rows instead of the entire feature map.
+            feature_pooled = proj_layer(F.adaptive_avg_pool2d(
+                feature_masked, (4, feature.size(-1))
+            ))
             height, width = feature_pooled.shape[-2:]
             pe_2d = get_2d_sinusoidal_embeddings(
                 height, width, self._in_dim, feature_pooled.device
@@ -480,6 +552,10 @@ class StyleEncoder(nn.Module):
         else:
             style_tokens = style_tokens_mu
 
+        if ret_backbone_feat and not ret_feats:
+            ret_feats = True
+        if ret_backbone_feat:
+            return style_tokens, masked_all_feats, feat
         if ret_feats:
             return style_tokens, masked_all_feats
         return style_tokens
@@ -562,6 +638,16 @@ class WriterIdentifier(nn.Module):
         if ret_feats:
             return wid_logits, all_feats
         return wid_logits
+
+    def forward_from_feat(self, feat, img_len, cnn_backbone):
+        """Classify an already-computed backbone feature map.
+
+        StyleEncoder has just run the frozen backbone on the style-transfer
+        image. Reusing that feature avoids a second identical CNN pass while
+        retaining gradients from the writer loss back to the generated image.
+        """
+        wid_feat = self._pool_features(feat, img_len, cnn_backbone)
+        return self.linear_wid(wid_feat)
 
     def return_feat(self, img, img_len, cnn_backbone):
         """Return intermediate writer features (before classification head)."""

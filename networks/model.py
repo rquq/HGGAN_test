@@ -1,5 +1,6 @@
 import csv
 import io
+import glob
 import torch, os
 import wandb
 from PIL import Image
@@ -99,6 +100,7 @@ class BaseModel(object):
         self.eval_history = []
         self.completed_epoch = 0
         self.last_eval_scores = {}
+        self.last_eval_kid = None
         alphabet_key = 'rimes_word' if opt.dataset.startswith('rimes') else 'all'
         self.alphabet = Alphabets[alphabet_key]
         self.label_converter = strLabelConverter(alphabet_key)
@@ -384,7 +386,8 @@ class BaseModel(object):
                 f"{os.path.join(self.log_root, 'eval_metrics.csv')}"
             )
 
-    def save(self, tag='best', epoch_done=0, iter_count=None, best_fid=None, **kwargs):
+    def save(self, tag='best', epoch_done=0, iter_count=None,
+             best_fid=None, **kwargs):
         if self.local_rank > 0:
             return
         ckpt = {}
@@ -471,6 +474,17 @@ class BaseModel(object):
             except (TypeError, ValueError):
                 this_fid = None
 
+        this_kid = kwargs.get('kid', kwargs.get('KID', getattr(self, 'last_eval_kid', None)))
+        if this_kid is not None:
+            try:
+                this_kid = float(this_kid)
+                if not np.isfinite(this_kid):
+                    this_kid = None
+                else:
+                    self.last_eval_kid = this_kid
+            except (TypeError, ValueError):
+                this_kid = None
+
         cached_best = getattr(self, 'best_fid', None)
         if cached_best is None:
             cached_best = getattr(
@@ -504,6 +518,8 @@ class BaseModel(object):
 
         if this_fid is not None:
             ckpt['fid'] = this_fid
+        if this_kid is not None:
+            ckpt['kid'] = this_kid
 
         ckpt_dir = os.path.join(self.log_root, self.opt.training.ckpt_dir)
         os.makedirs(ckpt_dir, exist_ok=True)
@@ -714,7 +730,6 @@ class BaseModel(object):
                     self.print(f"Restored best_fid={best_fid} from existing best.pth in resume directory")
                 except Exception as e:
                     self.print(f"Could not read best_fid from {source_best_pth}: {e}")
-
         restored_fid = ckpt_data.get('fid', ckpt_data.get('last_eval_fid', None))
         if restored_fid is None and isinstance(ckpt, str):
             import re
@@ -732,11 +747,13 @@ class BaseModel(object):
             except Exception:
                 pass
 
+        self.last_eval_kid = ckpt_data.get('kid', None)
         self.restored_metadata = {
             'Epoch': ckpt_data.get('Epoch', 0),
             'iter_count': ckpt_data.get('iter_count', None),
             'best_fid': best_fid,
             'last_eval_fid': getattr(self, 'last_eval_fid', None),
+            'last_eval_kid': ckpt_data.get('kid', None),
             'ema_step': ckpt_data.get('ema_step', None),
             # Pretraining teacher-selection state.  These keys are harmless for
             # GAN checkpoints and let R/W resume without forgetting the best
@@ -881,6 +898,22 @@ class AdversarialModel(BaseModel):
             opt.dataset, opt.training.dset_split,
             recogn_aug=False, wid_aug=False, process_style=True,
         )
+        # Keep the configured English lexicon for broad content diversity, but
+        # expose real training transcriptions as a rare-word pool.  Unlike
+        # fabricated symbol strings, this preserves IAM's punctuation/digit
+        # distribution and gives genuinely rare glyphs real image/text pairs.
+        self.rare_lexicon = []
+        if all(hasattr(dataset, name) for name in ('lbs', 'lb_seek_idxs', 'lb_lens')):
+            for seek, length in zip(dataset.lb_seek_idxs, dataset.lb_lens):
+                raw = dataset.lbs[int(seek): int(seek) + int(length)]
+                try:
+                    word = ''.join(chr(int(char)) for char in raw)
+                except (TypeError, ValueError):
+                    word = ''
+                if word:
+                    self.rare_lexicon.append(word)
+        if not self.rare_lexicon:
+            self.rare_lexicon = self.lexicon
         if self.local_rank > -1:
             from torch.utils.data.distributed import DistributedSampler
             self.train_sampler = DistributedSampler(
@@ -970,7 +1003,9 @@ class AdversarialModel(BaseModel):
             self.eval_y.sample_()
             sampled_words = idx_to_words(self.eval_y, self.lexicon, 0,
                                          self.opt.training.capitalize_ratio,
-                                         self.opt.training.blank_ratio)
+                                         self.opt.training.blank_ratio,
+                                         rare_ratio=0.0,
+                                         rare_lexicon=self.rare_lexicon)
             sampled_words[-2] = sampled_words[-1]
             fake_lbs, fake_lb_lens = self.label_converter.encode(sampled_words)
             fake_lbs, fake_lb_lens = fake_lbs.to(device), fake_lb_lens.to(device)
@@ -1038,7 +1073,12 @@ class AdversarialModel(BaseModel):
                         word_idx_sampler.sample_()
                         sampled_words = idx_to_words(word_idx_sampler[:style_imgs.size(0)],
                                                      self.lexicon, 0, self.opt.training.capitalize_ratio,
-                                                     blank_ratio=0)
+                                                     blank_ratio=0,
+                                                     rare_ratio=float(getattr(
+                                                         self.opt.training,
+                                                         'rare_word_ratio', 0.15,
+                                                     )),
+                                                     rare_lexicon=self.rare_lexicon)
                         content_lbs, content_lb_lens = self.label_converter.encode(sampled_words)
                     else:
                         content_lbs, content_lb_lens = style_lbs, style_lb_lens
@@ -1087,7 +1127,12 @@ class AdversarialModel(BaseModel):
 
         try:
             # OPTIMIZATION: Cache validation DataLoader to avoid worker startup/shutdown overhead
-            if not hasattr(self, 'eval_dloader') or self.eval_dloader is None:
+            loader_key = (
+                self.opt.valid.dset_name, self.opt.valid.dset_split,
+                self.opt.valid.batch_size, getattr(self.opt, 'img_height', 64),
+            )
+            if (not hasattr(self, 'eval_dloader') or self.eval_dloader is None
+                    or getattr(self, '_eval_dloader_key', None) != loader_key):
                 self.eval_dloader = DataLoader(
                     get_dataset(self.opt.valid.dset_name, self.opt.valid.dset_split, process_style=True),
                     collate_fn=self.collect_fn,
@@ -1095,6 +1140,10 @@ class AdversarialModel(BaseModel):
                     shuffle=False,
                     **self.eval_loader_worker_options,
                 )
+                self._eval_dloader_key = loader_key
+                self.valid_real_hwd_features = None
+                self.valid_real_hwd_dataset = None
+                self.real_cmmd_embeddings = None
             eval_dloader = self.eval_dloader
 
             if 'E' not in self.models:
@@ -1151,8 +1200,19 @@ class AdversarialModel(BaseModel):
                 validate_wier_enabled,
             ))
 
-            # Pre-generate and cache fake image batches on CPU. Images are kept
-            # as int8 until a metric first consumes them to limit host RAM.
+            # Pre-generate and cache fake image batches on CPU.  Int8 storage is
+            # cheap but quantizes away precisely the high-frequency stroke
+            # differences KID is meant to detect, so the default is lossless
+            # float32 with an explicit float16 fallback for RAM-constrained runs.
+            metric_cache_dtype = str(getattr(
+                self.opt.valid, 'metric_cache_dtype', 'float32'
+            )).lower()
+            if metric_cache_dtype not in {'float32', 'float16', 'int8'}:
+                raise ValueError(
+                    'valid.metric_cache_dtype must be float32, float16, or int8'
+                )
+            metric_cache_quantized = metric_cache_dtype == 'int8'
+
             def batch_to_cpu(batch):
                 cpu_batch = {}
                 for k, v in batch.items():
@@ -1160,7 +1220,14 @@ class AdversarialModel(BaseModel):
                         if k == 'style_imgs' and not keep_style_images:
                             continue
                         if k in ['org_imgs', 'style_imgs']:
-                            cpu_batch[k] = (v.cpu().clamp(-1.0, 1.0) * 127.0).round().to(torch.int8)
+                            image = v.detach().cpu().clamp(-1.0, 1.0)
+                            if metric_cache_quantized:
+                                image = (image * 127.0).round().to(torch.int8)
+                            elif metric_cache_dtype == 'float16':
+                                image = image.to(torch.float16)
+                            else:
+                                image = image.to(torch.float32)
+                            cpu_batch[k] = image
                         else:
                             cpu_batch[k] = v.cpu()
                     else:
@@ -1180,7 +1247,9 @@ class AdversarialModel(BaseModel):
                         for key, value in batch.items():
                             if (key in ('org_imgs', 'style_imgs')
                                     and isinstance(value, torch.Tensor)):
-                                value = value.to(torch.float32).div_(127.0)
+                                value = value.to(torch.float32)
+                                if metric_cache_quantized:
+                                    value = value.div_(127.0)
                                 if self.device.type == 'cuda':
                                     value = value.pin_memory()
                                 decompressed[key] = value
@@ -1191,8 +1260,14 @@ class AdversarialModel(BaseModel):
 
             res = {}
             if validate_distribution_metrics:
+                real_stats_key = (
+                    id(eval_dloader.dataset), self.opt.valid.dset_name,
+                    self.opt.valid.dset_split, self.opt.valid.dims,
+                    not test_stage, validate_is_enabled,
+                )
                 if (not hasattr(self, 'valid_real_stats')
-                        or self.valid_real_stats is None):
+                        or self.valid_real_stats is None
+                        or getattr(self, '_valid_real_stats_key', None) != real_stats_key):
                     from metric.val_metrics import (
                         calculate_activation_statistics, InceptionV3,
                     )
@@ -1207,6 +1282,7 @@ class AdversarialModel(BaseModel):
                         self.opt.valid.dims, self.device,
                         crop=not test_stage, eval_is=validate_is_enabled,
                     )
+                    self._valid_real_stats_key = real_stats_key
 
                 if test_stage:
                     res = calculate_fid_kid_is(
@@ -1440,7 +1516,7 @@ class AdversarialModel(BaseModel):
                 fake_lbs = torch.LongTensor(fake_lbs).unsqueeze(0)
                 fake_lb_lens = torch.IntTensor([len(text)])
 
-                num_tokens = getattr(self.opt.EncModel, 'num_style_tokens', 32)
+                num_tokens = getattr(self.opt.EncModel, 'num_style_tokens', 8)
                 style_dim = getattr(self.opt.EncModel, 'style_dim', 32)
                 style0 = torch.randn((1, num_tokens, style_dim))
                 style1 = torch.randn(style0.size())
@@ -1615,6 +1691,9 @@ class GlobalLocalAdversarialModel(AdversarialModel):
         generator = Generator(**opt.GenModel).to(device)
         style_backbone = StyleBackbone(**opt.StyBackbone, img_height=getattr(opt, 'img_height', 64)).to(device)
         style_encoder = StyleEncoder(**opt.EncModel).to(device)
+        # All random-style paths must use the encoder's effective token count,
+        # including configurations that specify only num_local_queries.
+        opt.EncModel.num_style_tokens = style_encoder.num_style_tokens
         writer_identifier = WriterIdentifier(**opt.WidModel).to(device)
         discriminator = Discriminator(**opt.DiscModel).to(device)
         patch_discriminator = PatchDiscriminator(**opt.PatchDiscModel).to(device)
@@ -1852,6 +1931,15 @@ class GlobalLocalAdversarialModel(AdversarialModel):
         patch_adv_weight = float(
             getattr(self.opt.training, 'lambda_patch_adv', 0.5)
         )
+        patch_char_conditioning = bool(getattr(
+            self.opt.training, 'patch_char_conditioning', True
+        ))
+        patch_char_min_confidence = float(getattr(
+            self.opt.training, 'patch_char_min_confidence', 0.0
+        ))
+        rare_word_ratio = float(getattr(
+            self.opt.training, 'rare_word_ratio', 0.15
+        ))
         masking_mode = getattr(self.opt.training, 'masking_mode', 'none')
         num_critic_train = int(self.opt.training.num_critic_train)
         r1_interval = int(getattr(self.opt.training, 'r1_interval', 16))
@@ -1872,6 +1960,10 @@ class GlobalLocalAdversarialModel(AdversarialModel):
             raise ValueError('invalid discriminator augmentation configuration')
         if patch_adv_weight < 0:
             raise ValueError('lambda_patch_adv must be non-negative')
+        if not 0.0 <= patch_char_min_confidence <= 1.0:
+            raise ValueError('patch_char_min_confidence must be in [0, 1]')
+        if not 0.0 <= rare_word_ratio <= 1.0:
+            raise ValueError('rare_word_ratio must be in [0, 1]')
 
         loader_length = len(self.train_loader)
         eval_epoch_interval = float(
@@ -1908,19 +2000,48 @@ class GlobalLocalAdversarialModel(AdversarialModel):
         def prepare_stroke_patches(
             images, image_lens, labels, label_lens
         ):
-            patches, _, character_ids = sample_character_patches(
-                images,
-                image_lens,
-                labels,
-                label_lens,
-                patch_size=patch_size,
-                min_crops=min_patch_crops,
-                max_crops=max_patch_crops,
-                horizontal_jitter=patch_char_jitter,
+            # The fourth return value is a soft geometry/ink confidence.  It
+            # prevents approximate word-box alignment from turning StrokePatchD
+            # into a noisy character classifier while retaining the local GAN
+            # signal for every crop.
+            patches, _, character_ids, patch_confidence = (
+                sample_character_patches(
+                    images,
+                    image_lens,
+                    labels,
+                    label_lens,
+                    patch_size=patch_size,
+                    min_crops=min_patch_crops,
+                    max_crops=max_patch_crops,
+                    horizontal_jitter=patch_char_jitter,
+                    return_confidence=True,
+                )
             )
             if masking_mode != 'none':
                 patches = apply_light_mixed_patch_mask(patches)
-            return patches, character_ids
+            if patch_char_min_confidence:
+                patch_confidence = torch.where(
+                    patch_confidence >= patch_char_min_confidence,
+                    patch_confidence,
+                    torch.zeros_like(patch_confidence),
+                )
+            if not patch_char_conditioning:
+                character_ids = None
+                patch_confidence = None
+            return patches, character_ids, patch_confidence
+
+        def run_patch_discriminator(groups):
+            patches = torch.cat([group[0] for group in groups], dim=0)
+            char_ids = None
+            char_confidence = None
+            if patch_char_conditioning:
+                char_ids = torch.cat([group[1] for group in groups], dim=0)
+                char_confidence = torch.cat(
+                    [group[2] for group in groups], dim=0
+                )
+            return self.models.P(
+                patches, char_ids, char_confidence=char_confidence
+            )
 
         def prepare_global_discriminator_input(images, image_lens):
             if not use_d_diffaug:
@@ -1936,8 +2057,12 @@ class GlobalLocalAdversarialModel(AdversarialModel):
         if best_fid is None:
             best_fid = np.inf
         else:
-            self.print(f"Resumed best_fid={best_fid:.4f} from checkpoint")
-
+            try:
+                best_fid = float(best_fid)
+            except (TypeError, ValueError):
+                best_fid = np.inf
+            if np.isfinite(best_fid):
+                self.print(f"Resumed best_fid={best_fid:.4f} from checkpoint")
         if self.use_ema:
             if restored_ema_step is not None:
                 self.ema_tracker.step = restored_ema_step
@@ -1987,20 +2112,28 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                     self.y.sample_()
                     sampled_words = idx_to_words(self.y, self.lexicon, max_label_len,
                                                  self.opt.training.capitalize_ratio,
-                                                 self.opt.training.blank_ratio)
+                                                 self.opt.training.blank_ratio,
+                                                 rare_ratio=rare_word_ratio,
+                                                 rare_lexicon=self.rare_lexicon)
                     fake_lbs, fake_lb_lens = self.label_converter.encode(sampled_words, max_label_len)
                     fake_lbs, fake_lb_lens = fake_lbs.to(device).detach(), fake_lb_lens.to(device).detach()
 
                     self.z.sample_()
                     z_in = self.z
 
+                    # B is frozen and in eval mode. Cache only its real-image
+                    # features for this batch; E must run again with gradients
+                    # during the G update.
+                    reference_features = self.models.B(style_refs, ret_feats=True)
                     if self.vae_mode:
                         enc_z, _, _ = self.models.E(
-                            style_refs, style_ref_lens, self.models.B, vae_mode=True
+                            style_refs, style_ref_lens, self.models.B, vae_mode=True,
+                            backbone_features=reference_features,
                         )
                     else:
                         enc_z = self.models.E(
-                            style_refs, style_ref_lens, self.models.B, vae_mode=False
+                            style_refs, style_ref_lens, self.models.B, vae_mode=False,
+                            backbone_features=reference_features,
                         )
 
                     # Batch forward all fake/generated types to avoid multiple GPU kernel launches
@@ -2043,10 +2176,7 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                     ),
                 ]
                 fake_patch_sizes = [group[0].size(0) for group in fake_patch_groups]
-                p_all = self.models.P(
-                    torch.cat([group[0] for group in fake_patch_groups], dim=0),
-                    torch.cat([group[1] for group in fake_patch_groups], dim=0),
-                )
+                p_all = run_patch_discriminator(fake_patch_groups)
                 p_fake, p_style, p_recn = torch.split(
                     p_all, fake_patch_sizes, dim=0
                 )
@@ -2086,10 +2216,7 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                     ),
                 ]
                 real_patch_sizes = [group[0].size(0) for group in real_patch_groups]
-                real_patch_logits = self.models.P(
-                    torch.cat([group[0] for group in real_patch_groups], dim=0),
-                    torch.cat([group[1] for group in real_patch_groups], dim=0),
-                )
+                real_patch_logits = run_patch_discriminator(real_patch_groups)
                 real_patch_logits, real_aug_patch_logits = torch.split(
                     real_patch_logits, real_patch_sizes, dim=0
                 )
@@ -2103,16 +2230,20 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                     + (real_disc_loss_patch + fake_disc_loss_patch)
                     + r1_loss
                 )
-                self.averager_meters.update('d_total', disc_loss.item())
-                self.averager_meters.update('d_real', real_disc_loss.item())
-                self.averager_meters.update('d_fake', fake_disc_loss.item())
-                self.averager_meters.update('d_real_patch', real_disc_loss_patch.item())
-                self.averager_meters.update('d_fake_patch', fake_disc_loss_patch.item())
-                self.averager_meters.update('r1_loss', r1_loss.item())
-
                 disc_loss.backward()
                 self.optimizers.D.step()
                 self.optimizers.P.step()
+                self.averager_meters.update_many({
+                    'd_total': disc_loss,
+                    'd_real': real_disc_loss,
+                    'd_fake': fake_disc_loss,
+                    'd_real_patch': real_disc_loss_patch,
+                    'd_fake_patch': fake_disc_loss_patch,
+                    'r1_loss': r1_loss,
+                })
+                # D/P gradients are no longer needed during the G phase.
+                self.optimizers.D.zero_grad(set_to_none=True)
+                self.optimizers.P.zero_grad(set_to_none=True)
 
                 #############################
                 # Optimizing Generator
@@ -2130,7 +2261,9 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                     sampled_words = idx_to_words(self.y, self.lexicon, max_label_len,
                                                  self.opt.training.capitalize_ratio,
                                                  self.opt.training.blank_ratio,
-                                                 sort=True)
+                                                 sort=True,
+                                                 rare_ratio=rare_word_ratio,
+                                                 rare_lexicon=self.rare_lexicon)
 
                     fake_lbs, fake_lb_lens = self.label_converter.encode(sampled_words, max_label_len)
                     fake_lbs, fake_lb_lens = fake_lbs.to(device).detach(), fake_lb_lens.to(device).detach()
@@ -2143,11 +2276,13 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                         (enc_z, mu, logvar), real_img_feats = self.models.E(
                             style_refs, style_ref_lens, self.models.B,
                             ret_feats=True, vae_mode=True,
+                            backbone_features=reference_features,
                         )
                     else:
                         enc_z, real_img_feats = self.models.E(
                             style_refs, style_ref_lens, self.models.B,
                             ret_feats=True, vae_mode=False,
+                            backbone_features=reference_features,
                         )
 
                     # Batch forward all fake/generated types through G to avoid multiple GPU kernel launches
@@ -2191,10 +2326,7 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                     fake_patch_sizes = [
                         group[0].size(0) for group in fake_patch_groups
                     ]
-                    p_all = self.models.P(
-                        torch.cat([group[0] for group in fake_patch_groups], dim=0),
-                        torch.cat([group[1] for group in fake_patch_groups], dim=0),
-                    )
+                    p_all = run_patch_discriminator(fake_patch_groups)
                     p_fake, p_style, p_recn = torch.split(
                         p_all, fake_patch_sizes, dim=0
                     )
@@ -2236,8 +2368,14 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                     styles = self.models.E(
                         fake_imgs, fake_lb_lens * self.opt.char_width, self.models.B
                     )
-                    transferred_styles = self.models.E(
-                        style_imgs, style_img_lens, self.models.B
+                    transferred_styles, style_img_feats, style_backbone_feat = (
+                        self.models.E(
+                            style_imgs,
+                            style_img_lens,
+                            self.models.B,
+                            ret_feats=True,
+                            ret_backbone_feat=True,
+                        )
                     )
                     info_loss = torch.mean(torch.abs(styles - z_in.detach()))
                     real_style_for_loss = mu if self.vae_mode else enc_z
@@ -2265,9 +2403,11 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                     recn_loss = recn_l1_loss(recn_imgs, real_imgs, real_img_lens)
 
                     ### Writer identity and non-aligned style supervision ###
-                    style_wid_logits, fake_imgs_feats = self.models.W(
-                        style_imgs, style_img_lens, self.models.B, ret_feats=True
+                    writer = self.unwrap_model(self.models.W)
+                    style_wid_logits = writer.forward_from_feat(
+                        style_backbone_feat, style_img_lens, self.models.B
                     )
+                    fake_imgs_feats = style_img_feats
                     fake_wid_loss = self.classify_loss(style_wid_logits, real_wids)
 
                     ctx_loss = torch.tensor(0.0, device=self.device)
@@ -2385,34 +2525,34 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                         chain(self.models.G.parameters(), self.models.E.parameters()),
                         getattr(self.opt.training, 'grad_clip', 5.0),
                     )
-                    self.averager_meters.update('g_total', g_loss.item())
-                    self.averager_meters.update('g_adv', g_adv.item())
-                    self.averager_meters.update('g_adv_global', adv_loss.item())
-                    self.averager_meters.update(
-                        'g_adv_patch', weighted_adv_loss_patch.item()
-                    )
-                    self.averager_meters.update('g_ctc', g_ctc.item())
-                    self.averager_meters.update('g_ctc_rand', fake_ctc_loss_rand.item())
-                    self.averager_meters.update('g_ctc_style', fake_ctc_loss_style.item())
-                    self.averager_meters.update('g_writer', g_writer.item())
-                    self.averager_meters.update('g_recn', g_recn.item())
-                    self.averager_meters.update('g_style', g_style.item())
-                    self.averager_meters.update('g_info', info_loss.item())
-                    self.averager_meters.update('g_style_cycle', style_cycle_loss.item())
-                    self.averager_meters.update('g_content_adv', content_adv_loss.item())
-                    self.averager_meters.update('g_context', g_context.item())
-                    self.averager_meters.update('g_kl', g_kl.item())
-
                     generator = self.unwrap_model(self.models.G)
                     fusion_gate = torch.sigmoid(generator.fusion_gate_logits).detach()
-                    self.averager_meters.update('fusion_strength', fusion_gate.mean().item())
-                    self.averager_meters.update('fusion_gate_min', fusion_gate.min().item())
-                    self.averager_meters.update('fusion_gate_max', fusion_gate.max().item())
+                    self.averager_meters.update_many({
+                        'g_total': g_loss,
+                        'g_adv': g_adv,
+                        'g_adv_global': adv_loss,
+                        'g_adv_patch': weighted_adv_loss_patch,
+                        'g_ctc': g_ctc,
+                        'g_ctc_rand': fake_ctc_loss_rand,
+                        'g_ctc_style': fake_ctc_loss_style,
+                        'g_writer': g_writer,
+                        'g_recn': g_recn,
+                        'g_style': g_style,
+                        'g_info': info_loss,
+                        'g_style_cycle': style_cycle_loss,
+                        'g_content_adv': content_adv_loss,
+                        'g_context': g_context,
+                        'g_kl': g_kl,
+                        'fusion_strength': fusion_gate.mean(),
+                        'fusion_gate_min': fusion_gate.min(),
+                        'fusion_gate_max': fusion_gate.max(),
+                    })
                     self.optimizers.G.step()
                     if self.use_ema:
                         self.ema_tracker.step_ema(self.models_ema.G, self.models.G)
                         self.ema_tracker.step_ema(self.models_ema.E, self.models.E)
                         self.ema_tracker.step += 1
+                    self.optimizers.G.zero_grad(set_to_none=True)
 
                 if iter_count % self.opt.training.print_iter_val == 0:
                     meter_vals = self.averager_meters.eval_all()
@@ -2520,6 +2660,8 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                     self.last_eval_scores = dict(scores)
                     if 'fid' in scores:
                         self.last_eval_fid = float(scores['fid'])
+                    if 'kid' in scores:
+                        self.last_eval_kid = float(scores['kid'])
                     if _is_master:
                         self.record_eval_metrics(eval_epoch, scores)
                         score_str = ", ".join([f"{k}: {v:.4f}" if isinstance(v, float) else f"{k}: {v}" for k, v in scores.items()])
@@ -2532,7 +2674,10 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                             )
                             _wandb.log(valid_log, step=iter_count + 1)
 
-                    if 'fid' in scores and scores['fid'] < best_fid:
+                    fid_improved = (
+                        'fid' in scores and scores['fid'] < best_fid
+                    )
+                    if fid_improved:
                         best_fid = scores['fid']
                         best_scores = scores
                         # When eval and regular saving coincide, save('last')
@@ -2543,7 +2688,6 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                                 'best', epoch, iter_count=iter_count,
                                 best_fid=best_fid, **(best_scores or {})
                             )
-
                 if is_save:
                     if _is_master:
                         current_scores = (
@@ -2560,9 +2704,13 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                                 self.restored_metadata.get('best_fid', None),
                             )
                         current_scores['fid'] = current_eval_fid
+                        current_scores['kid'] = current_scores.get(
+                            'kid', getattr(self, 'last_eval_kid', None)
+                        )
                         self.save(
                             'last', epoch, iter_count=iter_count,
-                            best_fid=best_fid, **current_scores
+                            best_fid=best_fid,
+                            **current_scores
                         )
 
                 iter_count += 1

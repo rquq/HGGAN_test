@@ -50,6 +50,9 @@ training:
   n_class: 80
   capitalize_ratio: 0.5
   blank_ratio: 0.
+  # Sample real corpus words with rare glyphs more often; never invent
+  # punctuation/digit strings that are absent from the training distribution.
+  rare_word_ratio: 0.15
   sort_input: true
   num_critic_train: 2
   lambda_patch_adv: 0.45
@@ -57,6 +60,8 @@ training:
   min_patch_crops: 4
   max_patch_crops: 8
   patch_char_jitter: 4
+  patch_char_conditioning: true
+  patch_char_min_confidence: 0.25
   d_diffaug: true
   d_aug_translate: 4
   d_aug_width_scale: 0.05
@@ -106,6 +111,10 @@ valid:
   validate_psnr: false
   validate_mssim: false
   validate_wier: false
+  # Float32 avoids the old int8 fake-image cache erasing high-frequency stroke
+  # differences that KID is intended to measure.  Use float16 only if host RAM
+  # becomes the limiting resource.
+  metric_cache_dtype: 'float32'
   use_rand_corpus: false
   n_rand_repeat: 10
   batch_size: 32
@@ -236,11 +245,12 @@ EncModel:
   style_dim: 32
   in_dim: 256
   init: 'none'
+  num_style_tokens: 8
   num_local_queries: 7
   query_dim: 256
   heads: 4
   cross_attn_dropout: 0.0
-  local_attention_gate_init: 0.5
+  local_attention_residual_init: 0.5
   local_query_residual: 0.1
   local_query_anchor_strength: 0.1
   feature_scales: [1, 2, 4]

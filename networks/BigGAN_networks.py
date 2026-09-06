@@ -575,7 +575,7 @@ class PatchDiscriminator(nn.Module):
         with torch.no_grad():
             self.char_embedding.weight[0].zero_()
 
-    def forward(self, x, char_ids=None, **kwargs):
+    def forward(self, x, char_ids=None, char_confidence=None, **kwargs):
         h = self.stem(x)
         for block in self.blocks:
             h = block(h)
@@ -593,5 +593,16 @@ class PatchDiscriminator(nn.Module):
             projection = torch.sum(
                 h * condition.unsqueeze(-1).unsqueeze(-1), dim=1, keepdim=True
             ) / (h.size(1) ** 0.5)
+            if char_confidence is not None:
+                if (char_confidence.ndim != 1
+                        or char_confidence.numel() != x.size(0)):
+                    raise ValueError(
+                        'char_confidence must have shape '
+                        '(number_of_patches,)'
+                    )
+                confidence = char_confidence.to(
+                    device=h.device, dtype=projection.dtype
+                ).clamp_(0.0, 1.0)
+                projection = projection * confidence.view(-1, 1, 1, 1)
             output = output + projection
         return output

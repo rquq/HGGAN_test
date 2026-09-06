@@ -84,6 +84,11 @@ class Distribution(torch.Tensor):
 
     # Overwrite to() method to preserve distribution attributes and Generator device state
     def to(self, *args, **kwargs):
+        # Tensor operations propagate the subclass without sampler metadata.
+        # Such results are ordinary tensors; Tensor.var/mean are methods, not
+        # the numeric distribution attributes expected below.
+        if 'dist_type' not in self.__dict__:
+            return self.as_subclass(torch.Tensor).to(*args, **kwargs)
         device_tensor = super().to(*args, **kwargs)
         new_obj = device_tensor.as_subclass(Distribution)
         dist_type = getattr(self, 'dist_type', 'normal')
