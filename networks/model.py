@@ -212,9 +212,10 @@ class BaseModel(object):
         ]
         if not enabled_metrics:
             enabled_metrics = ['none']
+        branch_name = os.path.basename(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         lines = [
             '',
-            '==================== HGGAN RUN ====================',
+            f'==================== {branch_name} ====================',
             f"model       : {getattr(self.opt, 'model', 'unknown')}",
             f"dataset     : {getattr(self.opt, 'dataset', 'unknown')}",
             f"resolution  : {getattr(self.opt, 'img_height', '?')} px",
