@@ -18,8 +18,8 @@ training:
   lr: 1.0e-3
   print_iter_val: 20
   eval_epoch_val: 10
-  teacher_ema: true
-  teacher_ema_beta: 0.999
+  teacher_ema: false  # true: validate/export EMA; false: current trained weights
+  teacher_ema_beta: 0.999  # Used only when teacher_ema is true
   ckpt_dir: 'ckpts'
   n_class: 80
   sort_input: true
