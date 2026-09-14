@@ -2480,7 +2480,19 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                         ),
                     )
                     lambda_info = float(getattr(self.opt.training, 'lambda_info', 1.0))
-                    lambda_wid = float(getattr(self.opt.training, 'lambda_wid', 1.0))
+                    # Optional late taper: retain identity supervision while
+                    # reducing its pressure during visual refinement. Missing
+                    # schedule fields preserve the original constant weight.
+                    lambda_wid = linear_epoch_weight(
+                        getattr(self.opt.training, 'lambda_wid', 1.0),
+                        getattr(
+                            self.opt.training, 'lambda_wid_final',
+                            getattr(self.opt.training, 'lambda_wid', 1.0),
+                        ),
+                        epoch,
+                        getattr(self.opt.training, 'wid_decay_start_epoch', epoch),
+                        getattr(self.opt.training, 'wid_decay_end_epoch', epoch),
+                    )
                     # Reconstruction establishes alignment early, then yields
                     # capacity to adversarial refinement instead of enforcing an
                     # L1-smoothed solution for the entire run.

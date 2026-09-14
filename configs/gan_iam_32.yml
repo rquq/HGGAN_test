@@ -73,6 +73,10 @@ training:
   ctc_style_decay_end_epoch: 28
   lambda_info: 1.0
   lambda_wid: 0.5
+  # Preserve early identity learning; soften late writer-gradient outliers.
+  lambda_wid_final: 0.25
+  wid_decay_start_epoch: 48
+  wid_decay_end_epoch: 60
   lambda_recn: 10.0
   lambda_recn_final: 2.5
   recn_decay_start_epoch: 24
