@@ -22,6 +22,7 @@ checkpoint/
 checkpoints/
 .cache/
 scratch/
+docs/
 
 # Kill Hugging Face cache completely
 pretrained/hf_cache/
