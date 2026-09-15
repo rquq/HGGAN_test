@@ -1,9 +1,12 @@
 import os
+import glob
+import json
 import logging
 import datetime
 import numpy
 from munch import Munch
 import matplotlib.pyplot as plt
+import torch
 
 
 def get_logger(logdir):
@@ -46,6 +49,123 @@ def yaml2config(yml_path):
 
     cfg = to_munch(json)
     return cfg
+
+
+def _result_scalar(value):
+    if value is None:
+        return ''
+    if isinstance(value, torch.Tensor):
+        value = value.detach().cpu().item() if value.numel() == 1 else str(value.detach().cpu().tolist())
+    elif isinstance(value, numpy.generic):
+        value = value.item()
+    return value if isinstance(value, (bool, int, float, str)) else str(value)
+
+
+def update_job_status(status_path, status, **fields):
+    """Atomically publish completion state for the notebook monitor."""
+    if not status_path:
+        return
+    os.makedirs(os.path.dirname(os.path.abspath(status_path)) or '.', exist_ok=True)
+    temporary = str(status_path) + '.tmp-{}'.format(os.getpid())
+    try:
+        with open(temporary, 'w', encoding='utf-8') as handle:
+            json.dump({'status': str(status), **fields}, handle, indent=2,
+                      default=_result_scalar)
+            handle.write('\n')
+        os.replace(temporary, status_path)
+    finally:
+        if os.path.exists(temporary):
+            os.remove(temporary)
+
+
+def write_wandb_log(message):
+    """Send text explicitly to the W&B Logs tab when a run is active."""
+    try:
+        import wandb
+        write_logs = getattr(wandb.run, 'write_logs', None) if wandb.run else None
+        if callable(write_logs):
+            write_logs(str(message))
+    except Exception:
+        pass
+
+
+def init_wandb_run(opt, project='HiGANplus'):
+    """Start W&B before model construction so startup messages are retained."""
+    if int(getattr(opt, 'local_rank', -1)) > 0 or bool(getattr(opt, 'no_wandb', False)):
+        return None
+    try:
+        import wandb
+        branch = os.path.basename(os.path.abspath(os.getcwd()))
+        cfg_wandb = getattr(opt, 'wandb', {})
+        project = getattr(cfg_wandb, 'project', project)
+        key = os.environ.get('WANDB_API_KEY', '') or getattr(cfg_wandb, 'key', '')
+        if key:
+            wandb.login(key=key)
+        run = wandb.init(
+            project=project,
+            name='{}_{}_src{}_{}'.format(
+                branch, getattr(opt, 'model', 'model'),
+                getattr(opt, 'source_height', getattr(opt, 'img_height', 'unknown')),
+                datetime.datetime.now().strftime('%Y%m%d_%H%M%S'),
+            ),
+            config=dict(opt),
+            resume='allow',
+            settings=wandb.Settings(console='off'),
+        )
+        wandb.define_metric('pretrain/epoch')
+        wandb.define_metric('pretrain/*', step_metric='pretrain/epoch')
+        wandb.define_metric('valid/epoch')
+        wandb.define_metric('valid/*', step_metric='valid/epoch')
+        write_wandb_log('[WandB] startup logging is active before model construction.')
+        return run
+    except Exception as exc:
+        print('WandB initialization skipped or failed: {}'.format(exc))
+        return None
+
+
+def write_results_table(logdir, opt, model=None, status='completed', started_at=None,
+                        error='', metadata=None):
+    """Write the compact RESULTS table consumed by the Kaggle monitor."""
+    import time
+    os.makedirs(logdir, exist_ok=True)
+    metadata = metadata or {}
+    metrics = dict(getattr(model, 'last_eval_scores', {}) or {}) if model is not None else {}
+    rows = [
+        ('status', status), ('job', metadata.get('job', '')),
+        ('branch', metadata.get('branch', '')), ('config', metadata.get('config', '')),
+        ('model', getattr(opt, 'model', 'unknown')), ('dataset', getattr(opt, 'dataset', 'unknown')),
+        ('image_height', getattr(opt, 'img_height', '')),
+        ('source_height', getattr(opt, 'source_height', getattr(opt, 'img_height', ''))),
+        ('requested_epochs', getattr(getattr(opt, 'training', {}), 'epochs', '')),
+        ('completed_epoch', getattr(model, 'completed_epoch', '')),
+        ('batch_size', getattr(getattr(opt, 'training', {}), 'batch_size', '')),
+        ('elapsed_seconds', round(time.time() - started_at, 2) if started_at else ''),
+    ]
+    for key, value in sorted(metrics.items()):
+        rows.append(('last_{}'.format(str(key).lower()), value))
+    for attr in ('best_cer', 'best_wrr'):
+        if model is not None and hasattr(model, attr):
+            rows.append((attr, getattr(model, attr)))
+    ckpt_dir = os.path.join(logdir, getattr(getattr(opt, 'training', {}), 'ckpt_dir', 'ckpts'))
+    candidates = [p for p in glob.glob(os.path.join(ckpt_dir, '*.pth'))
+                  if not os.path.basename(p).startswith('.tmp_')]
+    if candidates:
+        rows.append(('latest_checkpoint', max(candidates, key=os.path.getmtime)))
+    if error:
+        rows.append(('error', str(error).strip().splitlines()[-1]))
+    width = max([len(str(key)) for key, _ in rows] + [7])
+    table = ['==================== RESULTS ====================']
+    table.extend('{:<{}} | {}'.format(str(key), width, _result_scalar(value)) for key, value in rows)
+    table.append('====================================================')
+    text = '\n'.join(table)
+    path = os.path.join(logdir, 'RESULTS.txt')
+    temporary = path + '.tmp-{}'.format(os.getpid())
+    with open(temporary, 'w', encoding='utf-8') as handle:
+        handle.write(text + '\n')
+    os.replace(temporary, path)
+    print(text)
+    write_wandb_log(text)
+    return path, dict(rows)
 
 
 from torchvision.utils import make_grid

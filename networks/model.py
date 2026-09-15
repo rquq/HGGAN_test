@@ -20,7 +20,7 @@ from networks.BigGAN_networks import Generator, Discriminator, PatchDiscriminato
 from networks.module import Recognizer, WriterIdentifier, StyleEncoder, StyleBackbone
 from lib.datasets import get_dataset, get_collect_fn, Hdf5Dataset
 from lib.alphabet import strLabelConverter, get_lexicon, get_true_alphabet, Alphabets
-from lib.utils import draw_image, get_logger, AverageMeterManager, option_to_string, AverageMeter, plot_heatmap
+from lib.utils import draw_image, get_logger, AverageMeterManager, option_to_string, AverageMeter, plot_heatmap, write_wandb_log
 from networks.rand_dist import prepare_z_dist, prepare_y_dist
 from networks.loss import recn_l1_loss, CXLoss, KLloss
 import random
@@ -70,6 +70,7 @@ class BaseModel(object):
             print(info)
         else:
             self.logger.info(info)
+        write_wandb_log(info)
 
     def create_logger(self):
         if self.logger or self.writer:
@@ -599,11 +600,23 @@ class AdversarialModel(BaseModel):
                 wier = self.validate_wid(get_generator(), real_dloader=eval_dloader, split=self.opt.valid.dset_split)
                 res['wier'] = wier
 
-        if getattr(self.opt.valid, 'validate_ocr', True):
-            res['cer'], res['wer'] = self.validate_ocr(get_generator(), n_iters=len(eval_dloader) * n_rand_repeat)
+        # Accept the dev metric toggles while preserving the legacy
+        # ``validate_ocr`` behaviour for existing Classic configurations.
+        legacy_ocr = bool(getattr(self.opt.valid, 'validate_ocr', False))
+        validate_cer = bool(getattr(self.opt.valid, 'validate_cer', False))
+        validate_wer = bool(getattr(self.opt.valid, 'validate_wer', False))
+        if legacy_ocr or validate_cer or validate_wer:
+            cer, wer = self.validate_ocr(get_generator(), n_iters=len(eval_dloader) * n_rand_repeat)
+            if legacy_ocr or validate_cer:
+                res['cer'] = cer
+            if legacy_ocr or validate_wer:
+                res['wer'] = wer
 
         if getattr(self.opt.valid, 'validate_hwd', True):
-            hwd_val = calculate_hwd_score(eval_dloader, get_generator(), n_rand_repeat, self.device)
+            hwd_val = calculate_hwd_score(
+                eval_dloader, get_generator(), n_rand_repeat, self.device,
+                batchsize=getattr(self.opt.valid, 'hwd_batch_size', 32),
+            )
             res['hwd'] = hwd_val
 
         if getattr(self.opt.valid, 'validate_cmmd', True):
@@ -957,7 +970,7 @@ class GlobalLocalAdversarialModel(AdversarialModel):
 
         # ── WandB init (master process only) ──────────────────────────────
         _is_master = self.local_rank < 1
-        if _is_master and hasattr(self.opt, 'wandb'):
+        if _is_master and hasattr(self.opt, 'wandb') and wandb.run is None:
             # Get branchname and dates dynamically
             import subprocess
             from datetime import datetime
@@ -1403,13 +1416,16 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                 if is_eval:
                     self.print('Calculate FID_KID (iter {})'.format(iter_count + 1)) if self.local_rank < 1 else None
                     scores = self.validate(current_epoch=epoch)
+                    self.last_eval_scores = dict(scores)
                     if 'fid' in scores:
                         self.last_eval_fid = float(scores['fid'])
                     if _is_master:
                         score_str = ", ".join([f"{k}: {v:.4f}" if isinstance(v, float) else f"{k}: {v}" for k, v in scores.items()])
                         self.print(f"Validation metrics at iter {iter_count + 1}: {score_str}")
                         if wandb.run:
-                            wandb.log({'valid/' + k: v for k, v in scores.items()}, step=iter_count + 1)
+                            valid_log = {'valid/' + k: v for k, v in scores.items()}
+                            valid_log['valid/epoch'] = epoch
+                            wandb.log(valid_log)
 
                     if 'fid' in scores and scores['fid'] < best_fid:
                         best_fid = scores['fid']
@@ -1432,6 +1448,7 @@ class GlobalLocalAdversarialModel(AdversarialModel):
 
             for scheduler in self.lr_schedulers.values():
                 scheduler.step(epoch)
+            self.completed_epoch = epoch
 
         if _is_master:
             wandb.finish()
@@ -1514,10 +1531,13 @@ class RecognizeModel(BaseModel):
         ctc_loss_meter = AverageMeter()
         ctc_len_scale = self.models.R.module.len_scale if self.local_rank > -1 else self.models.R.len_scale
         best_cer = np.inf
+        self.best_cer = best_cer
+        self.last_eval_scores = {}
+        self.completed_epoch = max(0, epoch_done - 1)
         iter_count = getattr(self, 'iter_count_loaded', None)
         if iter_count is None:
             iter_count = (epoch_done - 1) * len(self.train_loader)
-        for epoch in range(epoch_done, self.opt.training.epochs):
+        for epoch in range(epoch_done, self.opt.training.epochs + 1):
             if self.local_rank > -1 and hasattr(self.train_loader, 'sampler') and self.train_loader.sampler is not None:
                 self.train_loader.sampler.set_epoch(epoch)
             for i, batch in enumerate(self.train_loader):
@@ -1559,6 +1579,10 @@ class RecognizeModel(BaseModel):
                     if self.writer:
                         self.writer.add_scalar('loss/ctc_loss', ctc_loss_avg, iter_count + 1)
                         self.writer.add_scalar('loss/lr', lr, iter_count + 1)
+                    if self.local_rank < 1 and wandb.run is not None:
+                        wandb.log({'pretrain/ocr_ctc': ctc_loss_avg,
+                                   'pretrain/ocr_lr': lr,
+                                   'pretrain/epoch': epoch}, step=iter_count + 1)
 
                 iter_count += 1
 
@@ -1578,16 +1602,30 @@ class RecognizeModel(BaseModel):
 
                     scores = self.validate()
                     wer, cer = scores['WER'], scores['CER']
+                    self.last_eval_scores = dict(scores)
                     self.print('WER:{} CER:{}'.format(wer, cer))
                     if cer < best_cer:
                         best_cer = cer
                         self.save('best', epoch, iter_count=iter_count, WER=wer, CER=cer)
+                        export_path = getattr(self.opt.training, 'export_recognizer', '')
+                        if export_path:
+                            os.makedirs(os.path.dirname(export_path) or '.', exist_ok=True)
+                            torch.save({'Recognizer': self.unwrap_model(self.models.R).state_dict(),
+                                        'Epoch': epoch, 'CER': cer, 'WER': wer,
+                                        'dataset': self.opt.dataset}, export_path)
+                            self.print('Exported best recognizer: {}'.format(export_path))
+                    self.best_cer = best_cer
                     if self.writer:
                         self.writer.add_scalar('valid/WER', wer, epoch)
                         self.writer.add_scalar('valid/CER', cer, epoch)
+                    if self.local_rank < 1 and wandb.run is not None:
+                        wandb.log({'pretrain/ocr_cer': cer,
+                                   'pretrain/ocr_wer': wer,
+                                   'pretrain/epoch': epoch}, step=iter_count)
 
             for scheduler in self.lr_schedulers.values():
                 scheduler.step(epoch)
+            self.completed_epoch = epoch
 
     def validate(self, *args, **kwargs):
         self.set_mode('eval')
@@ -1720,10 +1758,13 @@ class WriterIdentifyModel(BaseModel):
         device = self.device
         wid_loss_meter = AverageMeter()
         best_wrr = 0
+        self.best_wrr = best_wrr
+        self.last_eval_scores = {}
+        self.completed_epoch = max(0, epoch_done - 1)
         iter_count = getattr(self, 'iter_count_loaded', None)
         if iter_count is None:
             iter_count = (epoch_done - 1) * len(self.train_loader)
-        for epoch in range(epoch_done, self.opt.training.epochs):
+        for epoch in range(epoch_done, self.opt.training.epochs + 1):
             if self.local_rank > -1 and hasattr(self.train_loader, 'sampler') and self.train_loader.sampler is not None:
                 self.train_loader.sampler.set_epoch(epoch)
             for i, batch in enumerate(self.train_loader):
@@ -1767,6 +1808,10 @@ class WriterIdentifyModel(BaseModel):
                            % (epoch, self.opt.training.epochs, iter_count % len(self.train_loader),
                               len(self.train_loader), wid_loss_avg, lr)
                     self.print(info)
+                    if self.local_rank < 1 and wandb.run is not None:
+                        wandb.log({'pretrain/wid_loss': wid_loss_avg,
+                                   'pretrain/wid_lr': lr,
+                                   'pretrain/epoch': epoch}, step=iter_count + 1)
 
                 iter_count += 1
 
@@ -1785,15 +1830,31 @@ class WriterIdentifyModel(BaseModel):
                         os.makedirs(ckpt_root)
 
                     wrr = self.validate()
-                    self.print('WRR:{:.2f}'.format(wrr))
+                    wier = 1.0 - (wrr / 100.0)
+                    self.last_eval_scores = {'WRR': wrr, 'WIER': wier}
+                    self.print('WRR:{:.2f} WIER:{:.5f}'.format(wrr, wier))
                     if wrr > best_wrr:
                         best_wrr = wrr
                         self.save('best', epoch, iter_count=iter_count, WRR=wrr)
+                        export_path = getattr(self.opt.training, 'export_writer_teacher', '')
+                        if export_path:
+                            os.makedirs(os.path.dirname(export_path) or '.', exist_ok=True)
+                            torch.save({'WriterIdentifier': self.unwrap_model(self.models.W).state_dict(),
+                                        'StyleBackbone': self.unwrap_model(self.models.B).state_dict(),
+                                        'Epoch': epoch, 'WRR': wrr, 'WIER': wier,
+                                        'dataset': self.opt.dataset}, export_path)
+                            self.print('Exported best writer teacher: {}'.format(export_path))
+                    self.best_wrr = best_wrr
                     if self.writer:
                         self.writer.add_scalar('valid/WRR', wrr, epoch)
+                    if self.local_rank < 1 and wandb.run is not None:
+                        wandb.log({'pretrain/wid_wrr': wrr,
+                                   'pretrain/wid_wier': wier,
+                                   'pretrain/epoch': epoch}, step=iter_count)
 
             for scheduler in self.lr_schedulers.values():
                 scheduler.step(epoch)
+            self.completed_epoch = epoch
 
     def validate(self, *args, **kwargs):
         self.set_mode('eval')

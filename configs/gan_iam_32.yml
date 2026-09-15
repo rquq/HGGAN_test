@@ -1,3 +1,5 @@
+# Architecture-preserving x32-source benchmark.  Classic HiGAN+ itself remains
+# a 64px network; the dataset adapter upscales only the x32 source samples.
 device: 'cuda:0'
 model: 'gl_adversarial_model'
 
@@ -9,9 +11,8 @@ wandb:
 dataset: 'iam_word_org'
 seed: 123456
 img_height: 64
-source_height: 64
+source_height: 32
 char_width: 32
-
 
 training:
   dset_split: 'trnval'
@@ -19,20 +20,17 @@ training:
   lr_policy: 'linear'
   start_decay_epoch: 25
   n_epochs_decay: 46
-  batch_size: 2
-  eval_batch_size: 2
+  batch_size: 4
+  eval_batch_size: 12
   sample_nrow: 3
-  # optimization:
   lr: 2.0e-4
   adam_b1: 0.5
   adam_b2: 0.999
-  # sampling and saving
   sample_iter_val: 200
   print_iter_val: 20
   start_save_epoch_val: 0
   eval_epoch_val: 1
   save_epoch_val: 1
-  # val_iter: 6500
   sample_dir: 'imgs'
   ckpt_dir: 'ckpts'
   lexicon: './data/english_words.txt'
@@ -46,10 +44,9 @@ training:
   lambda_kl: 0.0001
   lambda_ctx: 2.0
   lambda_gram: 2.0
-  pretrained_w: './pretrained/wid_iam_train64.pth'
-  pretrained_r: './pretrained/ocr_iam_train64.pth'
+  pretrained_w: './pretrained/wid_iam_train32.pth'
+  pretrained_r: './pretrained/ocr_iam_train32.pth'
   pretrained_ckpt: ''
-
 
 valid:
   dset_name: 'iam_word_org'
@@ -57,14 +54,13 @@ valid:
   validate_ocr: false
   validate_fid: true
   validate_kid: true
-  validate_is: false
+  validate_is_gen: true
+  validate_is_org: true
   validate_hwd: true
   validate_cmmd: true
-  validate_cmmd_every_n_epochs: 3
+  validate_cmmd_every_n_epochs: 4
   validate_cer: false
   validate_wer: false
-  validate_is_gen: false
-  validate_is_org: false
   validate_psnr: false
   validate_mssim: false
   validate_wier: false
@@ -85,7 +81,7 @@ valid:
     in_dim: 256
     init: 'none'
   ctcdecode:
-    model_path: ~ #'./data/english_word_3gram.binary'
+    model_path: ~
     blank_id: 0
     alpha: 1
     beta: 3
@@ -94,13 +90,10 @@ valid:
     cutoff_top_n: 32
     num_processes: 8
 
-
 test:
   interp_num: 7
   nrow: 8
 
-
-# network configuration
 GenModel:
   G_ch: 64
   style_dim: 32
@@ -125,7 +118,6 @@ GenModel:
   bn_linear: 'SN'
   input_nc: 1
 
-
 DiscModel:
   D_ch: 64
   D_wide: true
@@ -142,7 +134,6 @@ DiscModel:
   bn_linear: 'SN'
   input_nc: 1
   one_hot: true
-
 
 PatchDiscModel:
   D_ch: 64
@@ -168,11 +159,9 @@ OcrModel:
   norm: 'bn'
   init: 'none'
   dropout: 0.
-  # ctc config
   n_class: 80
   rnn_depth: 2
   bidirectional: true
-
 
 StyBackbone:
   resolution: 16
@@ -182,12 +171,10 @@ StyBackbone:
   dropout: 0.0
   norm: 'bn'
 
-
 EncModel:
   style_dim: 32
   in_dim: 256
   init: 'none'
-
 
 WidModel:
   n_writer: 339

@@ -9,6 +9,7 @@ wandb:
 dataset: 'iam_word_org'
 seed: 123456
 img_height: 64
+source_height: 64
 char_width: 32
 
 
@@ -44,8 +45,8 @@ training:
   lambda_kl: 0.0001
   lambda_ctx: 2.0
   lambda_gram: 2.0
-  pretrained_w: './pretrained/wid_iam_new.pth'
-  pretrained_r: './pretrained/ocr_iam_new.pth'
+  pretrained_w: './pretrained/wid_iam_train64.pth'
+  pretrained_r: './pretrained/ocr_iam_train64.pth'
   pretrained_ckpt: ''
 
 
@@ -59,9 +60,17 @@ valid:
   validate_hwd: true
   validate_cmmd: true
   validate_cmmd_every_n_epochs: 4
+  validate_cer: false
+  validate_wer: false
+  validate_is_gen: true
+  validate_is_org: true
+  validate_psnr: false
+  validate_mssim: false
+  validate_wier: false
   use_rand_corpus: false
   n_rand_repeat: 10
   batch_size: 32
+  hwd_batch_size: 32
   dims: 2048
   mmd_degree: 3
   mmd_gamma: ~
@@ -180,6 +189,6 @@ EncModel:
 
 
 WidModel:
-  n_writer: 372
+  n_writer: 339
   in_dim: 256
   init: 'none'

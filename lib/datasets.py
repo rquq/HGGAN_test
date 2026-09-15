@@ -15,9 +15,11 @@ from lib.transforms import RandomScale, RandomClip
 
 
 class Hdf5Dataset(Dataset):
-    def __init__(self, root, split, transforms=None, alphabet_key='all', process_style=False, normalize_wid=True):
+    def __init__(self, root, split, transforms=None, alphabet_key='all', process_style=False,
+                 normalize_wid=True, invert_polarity=True):
         super(Hdf5Dataset, self).__init__()
         self.root = root
+        self.invert_polarity = bool(invert_polarity)
         self._load_h5py(os.path.join(self.root, split), normalize_wid)
         self.transforms = transforms
         self.org_transforms = Compose([ToTensor(), Normalize([0.5], [0.5])])
@@ -25,7 +27,6 @@ class Hdf5Dataset(Dataset):
         self.process_style = process_style
 
     def _load_h5py(self, file_path, normalize_wid=True):
-        # print(self.file_path)
         self.file_path = file_path
         if os.path.exists(self.file_path):
             h5f = h5py.File(self.file_path, 'r')
@@ -35,19 +36,47 @@ class Hdf5Dataset(Dataset):
             self.wids = h5f['wids'][:]
             if normalize_wid:
                 self.wids -= self.wids.min()
+            self.source_is_white_paper = self._source_is_white_paper()
             h5f.close()
         else:
-            print(self.file_path, ' does not exist!')
-            self.imgs, self.lbs = None, None
-            self.img_seek_idxs, self.lb_seek_idxs =  None, None
-            self.img_lens, self.lb_lens =  None, None
-            self.wids = None
+            raise FileNotFoundError('HDF5 dataset file does not exist: {}'.format(self.file_path))
+
+        # New IAM releases are white paper / black ink.  Classic HiGAN+ was
+        # trained with the inverse normalized convention, so canonicalize only
+        # the source polarity—not the model or any loss.
+        self.invert_polarity = bool(self.invert_polarity and self.source_is_white_paper)
+
+    def _source_is_white_paper(self, sample_count=128):
+        count = min(len(self.img_lens), int(sample_count))
+        if count == 0:
+            raise ValueError('HDF5 dataset contains no images: {}'.format(self.file_path))
+        indices = np.linspace(0, len(self.img_lens) - 1, count, dtype=np.int64)
+        edges = []
+        for index in indices:
+            start, width = int(self.img_seek_idxs[index]), int(self.img_lens[index])
+            word = self.imgs[:, start:start + width]
+            if word.size:
+                edges.append(np.concatenate((word[0].ravel(), word[-1].ravel(),
+                                             word[:, 0].ravel(), word[:, -1].ravel())))
+        if not edges:
+            raise ValueError('HDF5 dataset has no valid image borders: {}'.format(self.file_path))
+        return float(np.median(np.concatenate(edges))) >= 128.0
 
     def __getitem__(self, idx):
         data = {}
         img_seek_idx, img_len = self.img_seek_idxs[idx], self.img_lens[idx]
         lb_seek_idx, lb_len = self.lb_seek_idxs[idx], self.lb_lens[idx]
         img = self.imgs[:, img_seek_idx : img_seek_idx + img_len]
+        if self.invert_polarity:
+            img = 255 - img
+        # Classic HiGAN+ is intentionally kept at its native 64px model
+        # height.  This lets the x32 release serve as a source dataset without
+        # altering any CNN stage, checkpoint shape, loss, or evaluator.
+        if img.shape[0] != ImgHeight:
+            scale = float(ImgHeight) / float(img.shape[0])
+            width = max(1, int(round(img.shape[1] * scale)))
+            interpolation = cv2.INTER_AREA if width < img.shape[1] else cv2.INTER_LINEAR
+            img = cv2.resize(img, (width, ImgHeight), interpolation=interpolation)
         text = ''.join(chr(ch) for ch in self.lbs[lb_seek_idx : lb_seek_idx + lb_len])
         data['text'] = text
         lb = self.label_converter.encode(text)

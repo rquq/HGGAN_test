@@ -156,7 +156,7 @@ def get_activations(data_source, n_batches, model, dims, device, crop=False, eva
         is_neg_one = (imgs_fid == -1)
         all_neg_one_in_padding = (is_neg_one | ~padding_mask).flatten(1).all(dim=1)
         replace_mask = padding_mask & all_neg_one_in_padding.view(batch_size, 1, 1, 1)
-        imgs_fid = torch.where(replace_mask, torch.tensor(1.0, device=device), imgs_fid)
+        imgs_fid.masked_fill_(replace_mask, 1.0)
 
         # Normalize to [0, 1]
         imgs_fid = (imgs_fid + 1) / 2
@@ -260,7 +260,8 @@ def calculate_activation_statistics(*args, **kwargs):
     return act, mu, sigma, logits
 
 def polynomial_mmd_averages(codes_g, codes_r, n_subsets=50, subset_size=1000,
-                            ret_var=True, output=sys.stdout, **kernel_args):
+                            ret_var=True, output=sys.stdout, device=None,
+                            **kernel_args):
     m = min(codes_g.shape[0], codes_r.shape[0])
     mmds = np.zeros(n_subsets)
     if ret_var:
@@ -276,7 +277,8 @@ def polynomial_mmd_averages(codes_g, codes_r, n_subsets=50, subset_size=1000,
         for i in bar:
             g = codes_g[choice(len(codes_g), subset_size, replace=False)]
             r = codes_r[choice(len(codes_r), subset_size, replace=False)]
-            o = polynomial_mmd(g, r, **kernel_args, var_at_m=m, ret_var=ret_var)
+            o = polynomial_mmd(g, r, **kernel_args, var_at_m=m, ret_var=ret_var,
+                               device=device)
             if ret_var:
                 mmds[i], vars[i] = o
             else:
@@ -285,9 +287,10 @@ def polynomial_mmd_averages(codes_g, codes_r, n_subsets=50, subset_size=1000,
     return (mmds, vars) if ret_var else mmds
 
 def polynomial_mmd(codes_g, codes_r, degree=3, gamma=None, coef0=1,
-                   var_at_m=None, ret_var=True):
-    if torch.cuda.is_available():
-        device = 'cuda'
+                   var_at_m=None, ret_var=True, device=None):
+    if device is None:
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    if torch.cuda.is_available() and str(device).startswith('cuda'):
         X_t = torch.from_numpy(codes_g).to(device)
         Y_t = torch.from_numpy(codes_r).to(device)
         
@@ -407,9 +410,12 @@ def calculate_inception_score(logits, splits=1):
     return np.mean(split_scores)
 
 def calculate_fid_kid_is(cfg, data_loader, generator, n_rand_repeat, device, crop=False, real_stats=None, n_batches=None, inceptionV3_model=None):
-    eval_fid = getattr(cfg, 'validate_fid', True)
-    eval_kid = getattr(cfg, 'validate_kid', True)
-    eval_is = getattr(cfg, 'validate_is', True)
+    eval_fid = bool(getattr(cfg, 'validate_fid', False))
+    eval_kid = bool(getattr(cfg, 'validate_kid', False))
+    legacy_is = getattr(cfg, 'validate_is', None)
+    eval_is_gen = bool(getattr(cfg, 'validate_is_gen', legacy_is if legacy_is is not None else False))
+    eval_is_org = bool(getattr(cfg, 'validate_is_org', legacy_is if legacy_is is not None else False))
+    eval_is = eval_is_gen or eval_is_org
     
     res = {}
     if not (eval_fid or eval_kid or eval_is):
@@ -436,17 +442,17 @@ def calculate_fid_kid_is(cfg, data_loader, generator, n_rand_repeat, device, cro
         fid_value = calculate_frechet_distance(m1, s1, m2, s2)
         res['fid'] = fid_value
 
-    if eval_is:
-        is_org = calculate_inception_score(logits1)
-        is_gen = calculate_inception_score(logits2)
-        res['is_org'] = is_org
-        res['is_gen'] = is_gen
+    if eval_is_gen:
+        res['is_gen'] = calculate_inception_score(logits2)
+    if eval_is_org:
+        res['is_org'] = calculate_inception_score(logits1)
 
     if eval_kid:
         ret = polynomial_mmd_averages(
                 act1, act2, degree=cfg.mmd_degree, gamma=cfg.mmd_gamma,
                 coef0=cfg.mmd_coef0, ret_var=cfg.mmd_var,
-                n_subsets=cfg.mmd_subsets, subset_size=cfg.mmd_subset_size)
+                n_subsets=cfg.mmd_subsets, subset_size=cfg.mmd_subset_size,
+                device=device)
 
         if cfg.mmd_var:
             mmd2s, vars = ret
@@ -458,7 +464,8 @@ def calculate_fid_kid_is(cfg, data_loader, generator, n_rand_repeat, device, cro
     return res
 
 # Handwriting Distance (HWD) Wrapper
-def calculate_hwd_score(data_loader, generator, n_rand_repeat, device, n_batches=None, real_dataset=None, real_features=None):
+def calculate_hwd_score(data_loader, generator, n_rand_repeat, device, n_batches=None,
+                        real_dataset=None, real_features=None, batchsize=32):
     if n_batches is None:
         n_batches = len(data_loader)
         
@@ -497,8 +504,7 @@ def calculate_hwd_score(data_loader, generator, n_rand_repeat, device, n_batches
     fake_dataset = ImageListDataset(fake_imgs_list, fake_authors_list)
     
     print("Computing HWD Score...")
-    # Use batch size 64 to speed up VGG16 extraction
-    hwd_scorer = HWDScore(batchsize=64).to(device)
+    hwd_scorer = HWDScore(batchsize=int(batchsize)).to(device)
     
     fake_pd = hwd_scorer.digest(fake_dataset)
     if real_features is None:

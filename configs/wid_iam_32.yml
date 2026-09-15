@@ -1,0 +1,53 @@
+# x32 source data, evaluated by the unchanged 64px Classic HiGAN+ teacher.
+device: 'cuda:0'
+multi_gpu: false
+gpus: [0]
+model: 'identifier_model'
+dataset: 'iam_word'
+seed: 123456
+img_height: 64
+source_height: 32
+finetune: false
+
+wandb:
+  key: ''
+  project: 'HiGANplus'
+
+training:
+  dset_name: 'iam_word'
+  dset_split: 'trnval'
+  epochs: 100
+  lr_policy: 'linear'
+  start_decay_epoch: 60
+  n_epochs_decay: 40
+  batch_size: 128
+  lr: 1.0e-3
+  print_iter_val: 20
+  start_save_epoch_val: 10
+  save_epoch_val: 10
+  ckpt_dir: 'ckpts'
+  n_class: 80
+  sort_input: true
+  resume: ''
+  pretrained_backbone: './pretrained/ocr_iam_train32.pth'
+  random_clip: true
+  process_style: true
+  frozen_backbone: false
+  export_writer_teacher: './pretrained/wid_iam_train32.pth'
+
+valid:
+  dset_split: 'trnval'
+  batch_size: 256
+
+StyBackbone:
+  resolution: 16
+  max_dim: 256
+  in_channel: 1
+  init: 'N02'
+  dropout: 0.2
+  norm: 'bn'
+
+WidModel:
+  n_writer: 339
+  in_dim: 256
+  init: 'none'
