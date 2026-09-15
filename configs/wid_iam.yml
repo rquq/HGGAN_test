@@ -21,7 +21,7 @@ training:
   start_save_epoch_val: 20
   save_epoch_val: 4
   ckpt_dir: 'ckpts'
-  n_class: 80
+  n_class: 81
   sort_input: true
   resume: ~
   pretrained_backbone: './pretrained/ocr_iam_new.pth'

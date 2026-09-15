@@ -27,7 +27,7 @@ training:
   start_save_epoch_val: 10
   save_epoch_val: 10
   ckpt_dir: 'ckpts'
-  n_class: 80
+  n_class: 81
   sort_input: true
   pretrained_backbone: ''
   export_recognizer: './pretrained/ocr_iam_train32.pth'
@@ -36,7 +36,7 @@ valid:
   dset_name: 'iam_word'
   dset_split: 'test'
   batch_size: 256
-  n_class: 80
+  n_class: 81
   ctcdecode:
     model_path: ~
     blank_id: 0
@@ -54,6 +54,6 @@ OcrModel:
   norm: 'bn'
   init: 'none'
   dropout: 0.2
-  n_class: 80
+  n_class: 81
   rnn_depth: 2
   bidirectional: true

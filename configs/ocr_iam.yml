@@ -22,7 +22,7 @@ training:
   start_save_epoch_val: 20
   save_epoch_val: 4
   ckpt_dir: 'ckpts'
-  n_class: 80
+  n_class: 81
   sort_input: true
   pretrained_backbone: ''
 
@@ -31,7 +31,7 @@ valid:
   dset_name: 'iam_word'
   dset_split: 'test'
   batch_size: 256
-  n_class: 80
+  n_class: 81
   # ctc decoder configuration
   ctcdecode:
     model_path: ~
@@ -52,6 +52,6 @@ OcrModel:
   init: 'none'
   dropout: 0.2
   # ctc config
-  n_class: 80
+  n_class: 81
   rnn_depth: 2
   bidirectional: True
