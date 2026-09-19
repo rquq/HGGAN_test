@@ -7,6 +7,15 @@ from networks.utils import _len2mask, init_weights
 import torch.nn.functional as F
 
 
+def _input_stride_for_height(img_height, base_height=32):
+    """Scale encoder stride from image geometry, independent of dataset name."""
+    height = int(img_height)
+    base_height = int(base_height)
+    if height < 1 or base_height < 1:
+        raise ValueError('image and base heights must be positive')
+    return max(1, height // base_height)
+
+
 class HeavyCNNAttention(nn.Module):
     def __init__(self, in_dim):
         super().__init__()
@@ -79,12 +88,11 @@ class HeavyCNNAttention(nn.Module):
 class StyleBackbone(nn.Module):
     def __init__(self, resolution=16, max_dim=256, in_channel=1, init='N02', dropout=0.0, norm='bn', img_height=64, **kwargs):
         super(StyleBackbone, self).__init__()
-        # The 32px path uses stride 1 in the first convolution, so its total
-        # horizontal reduction is 8 rather than 16. Keep length metadata in
-        # lock-step with the CNN or half of each reference is masked.
-        self.reduce_len_scale = 8 if int(img_height) <= 32 else 16
+        # Derive the front-end stride from input geometry and keep length
+        # metadata in lock-step with the CNN at every supported resolution.
+        init_stride = _input_stride_for_height(img_height)
+        self.reduce_len_scale = 8 * init_stride
         nf = resolution
-        init_stride = 1 if int(img_height) <= 32 else 2
         cnn_f = [nn.ConstantPad2d(2, -1),
                  Conv2dBlock(in_channel, nf, 5, init_stride, 0,
                              norm='none',
@@ -201,6 +209,8 @@ class StyleEncoder(nn.Module):
                  local_query_residual=0.5,
                  local_attention_residual_init=0.25,
                  local_query_anchor_strength=0.5,
+                 local_evidence_gate_init=0.75,
+                 local_evidence_gate_hidden=64,
                  # These names are kept as aliases because older DEV YAML files
                  # used them.  Previously they landed in **kwargs and were
                  # silently ignored, making the printed configuration untrue.
@@ -270,6 +280,8 @@ class StyleEncoder(nn.Module):
         self.local_query_anchor_strength = float(
             local_query_anchor_strength
         )
+        self.local_evidence_gate_init = float(local_evidence_gate_init)
+        self.local_evidence_gate_hidden = int(local_evidence_gate_hidden)
         if num_style_tokens < 1:
             raise ValueError('num_style_tokens must be at least 1')
         if self.local_query_residual < 0:
@@ -282,6 +294,12 @@ class StyleEncoder(nn.Module):
             raise ValueError(
                 'local_query_anchor_strength must be in [0, 1]'
             )
+        if not 0.0 < self.local_evidence_gate_init < 1.0:
+            raise ValueError(
+                'local_evidence_gate_init must be strictly between 0 and 1'
+            )
+        if self.local_evidence_gate_hidden < 1:
+            raise ValueError('local_evidence_gate_hidden must be positive')
 
         self.linear_style = nn.Sequential(
             nn.Linear(in_dim, in_dim),
@@ -345,10 +363,24 @@ class StyleEncoder(nn.Module):
         self.style_key_norm = nn.LayerNorm(in_dim, elementwise_affine=False)
         self.style_query_norm = nn.LayerNorm(in_dim, elementwise_affine=False)
         self.local_output_norm = nn.LayerNorm(in_dim, elementwise_affine=False)
+        # Predict local-token reliability from visual evidence, not from a
+        # character ID, transcription length, image height, or assumed glyph
+        # aspect ratio.  The fourth descriptor is the masked feature variance,
+        # so the same rule applies to other resolutions, scripts, and datasets.
+        self.local_evidence_gate = nn.Sequential(
+            nn.Linear(in_dim * 4, self.local_evidence_gate_hidden),
+            nn.SiLU(),
+            nn.Linear(self.local_evidence_gate_hidden, 1),
+        )
         self.content_probe = nn.Linear(style_dim, n_class)
 
         if init != 'none':
             init_weights(self, init)
+        nn.init.zeros_(self.local_evidence_gate[-1].weight)
+        nn.init.constant_(
+            self.local_evidence_gate[-1].bias,
+            torch.logit(torch.tensor(self.local_evidence_gate_init)).item(),
+        )
         nn.init.constant_(self.logvar.weight, 0.)
         nn.init.constant_(self.logvar.bias, -10.)
 
@@ -361,6 +393,20 @@ class StyleEncoder(nn.Module):
         ).long().clamp_(min=1, max=target_width)
         positions = torch.arange(target_width, device=img_len.device).unsqueeze(0)
         return positions < scaled_len.unsqueeze(1), scaled_len
+
+    def _load_from_state_dict(self, state_dict, prefix, local_metadata, strict,
+                              missing_keys, unexpected_keys, error_msgs):
+        # Texture ablations should remain possible with checkpoints created
+        # before the evidence gate existed.  Only the newly introduced gate is
+        # initialized locally; every historical model key remains strict.
+        for name, value in self.local_evidence_gate.state_dict().items():
+            key = prefix + 'local_evidence_gate.' + name
+            if key not in state_dict:
+                state_dict[key] = value.detach().clone()
+        super()._load_from_state_dict(
+            state_dict, prefix, local_metadata, strict,
+            missing_keys, unexpected_keys, error_msgs,
+        )
 
     @staticmethod
     def global_token(style_tokens):
@@ -402,8 +448,17 @@ class StyleEncoder(nn.Module):
         feat_m = self.sequence_model(feat * feat_mask_f) * feat_mask_f
         if feat_mask is None:
             global_context = feat_m.mean(dim=-1)
+            feature_variation = (
+                feat_m - global_context.unsqueeze(-1)
+            ).square().mean(dim=-1)
         else:
             global_context = feat_m.sum(dim=-1) / feat_len.unsqueeze(1).to(feat.dtype)
+            centered = (
+                feat_m - global_context.unsqueeze(-1)
+            ) * feat_mask_f
+            feature_variation = centered.square().sum(dim=-1) / feat_len.unsqueeze(1).to(
+                feat.dtype
+            )
 
         feat_m_trans = feat_m.transpose(1, 2)
         pe_1d = get_1d_sinusoidal_embeddings(
@@ -477,31 +532,27 @@ class StyleEncoder(nn.Module):
 
         global_style = self.linear_style(global_context).unsqueeze(1)
 
-        # A one-character reference (especially '.', ',', '/', or '-') has
-        # almost no horizontal evidence. Its local attention slots otherwise
-        # become overconfident and can elongate vertical strokes when they are
-        # broadcast over a long target word. Derive a smooth support factor
-        # from both physical and encoded width. Two or more character widths
-        # retain the full local path; a single-character reference receives a
-        # bounded blend towards the global writer style.
-        if feat_len is not None:
-            reference_char_width = max(1, int(img.size(-2)) // 2)
-            approx_char_count = img_len.to(dtype=torch.float32).clamp_min(1)
-            approx_char_count = approx_char_count / float(reference_char_width)
-            char_support = (approx_char_count / 2.0).clamp(
-                min=0.25, max=1.0
-            )
-            feature_support = (feat_len.to(dtype=torch.float32) / 4.0).clamp(
-                min=0.25, max=1.0
-            )
-            breadth_factor = torch.minimum(
-                char_support, feature_support
-            ).view(batch_size, 1, 1)
-        else:
-            breadth_factor = 1.0
-
         if local_style.size(1):
-            local_style_for_stats = global_style + breadth_factor * (
+            expanded_global = global_style.expand_as(local_style)
+            normalized_global = F.layer_norm(
+                expanded_global, (expanded_global.size(-1),)
+            )
+            normalized_local = F.layer_norm(
+                local_style, (local_style.size(-1),)
+            )
+            normalized_variation = F.layer_norm(
+                feature_variation, (feature_variation.size(-1),)
+            ).unsqueeze(1).expand_as(local_style)
+            evidence_descriptor = torch.cat([
+                normalized_global,
+                normalized_local,
+                torch.abs(normalized_local - normalized_global),
+                normalized_variation,
+            ], dim=-1)
+            local_reliability = torch.sigmoid(
+                self.local_evidence_gate(evidence_descriptor)
+            )
+            local_style_for_stats = global_style + local_reliability * (
                 local_style - global_style
             )
         else:
@@ -535,7 +586,7 @@ class StyleEncoder(nn.Module):
                 local_data_mu
                 + self.local_query_residual * local_data_rms * local_identity
             )
-            local_mu = global_mu + breadth_factor * (local_mu_raw - global_mu)
+            local_mu = global_mu + local_reliability * (local_mu_raw - global_mu)
             l_norm = local_mu.norm(dim=-1, keepdim=True)
             local_mu = local_mu * torch.clamp(
                 safe_norm_cap / (l_norm + 1e-6), max=1.0
@@ -664,9 +715,10 @@ class Recognizer(nn.Module):
     def __init__(self, n_class, resolution=16, max_dim=256, in_channel=1, norm='none',
                  init='none', rnn_depth=1, dropout=0.0, bidirectional=True, img_height=64, **kwargs):
         super(Recognizer, self).__init__()
-        # Match the CNN's horizontal downsampling. At 32px the first
-        # convolution is stride 1, making the CTC scale 8 instead of 16.
-        self.len_scale = 8 if int(img_height) <= 32 else 16
+        # Match the CNN's horizontal downsampling using the same geometry rule
+        # as StyleBackbone; no dataset or benchmark identity is consulted.
+        init_stride = _input_stride_for_height(img_height)
+        self.len_scale = 8 * init_stride
         self.use_rnn = rnn_depth > 0
         self.bidirectional = bidirectional
 
@@ -674,7 +726,6 @@ class Recognizer(nn.Module):
         # Construct Backbone
         ######################################
         nf = resolution
-        init_stride = 1 if int(img_height) <= 32 else 2
         cnn_f = [nn.ConstantPad2d(2, -1),
                  Conv2dBlock(in_channel, nf, 5, init_stride, 0,
                              norm='none',

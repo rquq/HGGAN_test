@@ -17,10 +17,15 @@ from networks.utils import init_weights, _len2mask
 def G_arch(ch=64, attention='64', ksize='333333', dilation='111111'):
     arch = {}
 
-    arch[32] = {'in_channels': [ch * item for item in [4, 2, 1]],
-                'out_channels': [ch * item for item in [2, 1, 1]],
-                'upsample': [(2, 1), (2, 2), (2, 2)],
-                'resolution': [8, 16, 32],
+    # Keep one architecture at every supported resolution: four conditioned
+    # stages and the same channel schedule. Resolution controls geometry only.
+    # At 32px the image reaches its target after stage three, so stage four is
+    # a learned same-resolution refinement. At 64px that stage performs the
+    # final 2x upsample. There is no dataset- or metric-specific capacity path.
+    arch[32] = {'in_channels': [ch * item for item in [8, 4, 2, 1]],
+                'out_channels': [ch * item for item in [4, 2, 1, 1]],
+                'upsample': [(2, 1), (2, 2), (2, 2), None],
+                'resolution': [8, 16, 32, 32],
                 'attention': {2 ** i: (2 ** i in [int(item) for item in attention.split('_')])
                               for i in range(2, 6)}}
 
@@ -76,7 +81,8 @@ class Generator(nn.Module):
                  allograph_modulation_rms_cap=1.0,
                  allograph_routing_center_init=0.5,
                  allograph_routing_scale_max=2.0,
-                 allograph_routing_uniform_mix=0.05):
+                 allograph_routing_uniform_mix=0.05,
+                 texture_refinement_enabled=True):
         super(Generator, self).__init__()
         dim_z = style_dim
         self.style_dim = style_dim
@@ -86,6 +92,9 @@ class Generator(nn.Module):
         # Dimensionality of the latent space
         self.dim_z = dim_z
         self.embed_dim = embed_dim
+        if not isinstance(texture_refinement_enabled, bool):
+            raise TypeError('texture_refinement_enabled must be a boolean')
+        self.texture_refinement_enabled = texture_refinement_enabled
         # The initial width dimensions
         self.bottom_width = bottom_width
         # The initial height dimension
@@ -181,15 +190,17 @@ class Generator(nn.Module):
         # while the inner loop is over a given block
         self.blocks = []
         for index in range(len(self.arch['out_channels'])):
+            upsample_scale = self.arch['upsample'][index]
             self.blocks += [[layers.GBlock(in_channels=self.arch['in_channels'][index],
                                            out_channels=self.arch['out_channels'][index],
                                            which_conv1=self.which_conv,
                                            which_conv2=self.which_conv,
                                            which_bn=self.which_bn,
                                            activation=self.activation,
-                                           upsample=(functools.partial(F.interpolate,
-                                                                       scale_factor=self.arch['upsample'][index])
-                                                     if index < len(self.arch['upsample']) else None))]]
+                                           upsample=(functools.partial(
+                                               F.interpolate,
+                                               scale_factor=upsample_scale,
+                                           ) if upsample_scale is not None else None))]]
 
             if self.arch['attention'][self.arch['resolution'][index]]:
                 self.blocks[-1] += [layers.Attention(self.arch['out_channels'][index], self.which_conv)]
@@ -218,6 +229,8 @@ class Generator(nn.Module):
         # identity-like nonzero residual handoffs afterwards.
         self.style_content_mix.reset_stability_parameters()
         self.texture_refinement.reset_stability_parameters()
+        if not self.texture_refinement_enabled:
+            self.texture_refinement.requires_grad_(False)
 
     def forward(self, z, y, y_lens):
         # Distribution is a reusable sampler container, not an activation
@@ -257,13 +270,16 @@ class Generator(nn.Module):
                     h = block(h, x_lens=x_lens * len_scale)
                 else:
                     h = block(h, y=ys[index])
-            len_scale *= self.arch['upsample'][index][1]
+            upsample_scale = self.arch['upsample'][index]
+            if upsample_scale is not None:
+                len_scale *= upsample_scale[1]
 
         # Preserve the reliable base image and add only a bounded,
         # style-distribution-conditioned high-frequency residual.
         base_logits = self.output_layer(h)
-        texture_detail = self.texture_refinement(h, z)
-        output = torch.tanh(base_logits + texture_detail)
+        if self.texture_refinement_enabled:
+            base_logits = base_logits + self.texture_refinement(h, z)
+        output = torch.tanh(base_logits)
 
         # Mask blanks
         if not self.training:

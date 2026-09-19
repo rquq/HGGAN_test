@@ -241,9 +241,6 @@ def set_requires_grad(nets, requires_grad=False):
                 param.requires_grad = requires_grad
 
 
-SPECIAL_CHARS = '0123456789\'-"/,.+_!#&():;?ABCDEFGHIJKLMNOPQRSTUVWXYZ'
-
-
 def _rare_lexicon_sampler(lexicon):
     """Return corpus words weighted toward genuinely rare alphabet symbols.
 

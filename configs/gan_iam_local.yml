@@ -169,6 +169,7 @@ test:
 GenModel:
   G_ch: 64
   style_dim: 32
+  texture_refinement_enabled: false
   fusion_gate_init: 0.25
   local_projection_residual_init: 0.1
   allograph_routing_temperature: 0.7
@@ -261,6 +262,8 @@ EncModel:
   local_query_residual: 0.5
   local_attention_residual_init: 0.25
   local_query_anchor_strength: 0.5
+  local_evidence_gate_init: 0.75
+  local_evidence_gate_hidden: 64
   init: 'none'
 
 

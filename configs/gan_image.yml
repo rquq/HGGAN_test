@@ -48,6 +48,7 @@ test:
 GenModel:
   G_ch: 64
   style_dim: 32
+  texture_refinement_enabled: false
   bottom_width: 4
   bottom_height: 4
   resolution: 64

@@ -46,31 +46,26 @@ Với reference là một từ đủ dài, encoder quan sát nhiều nét, cách
 
 Đây là nguồn gốc của fix reference đặc biệt; không nên ghi nhận chúng là hoàn toàn mới trong commit 06/09.
 
-### 3.3. Cải tiến ngày 06/09: dùng cả độ rộng ảnh và feature
+### 3.3. Trạng thái hiện tại: reliability gate học từ visual evidence
 
-Trong [StyleEncoder.forward](./networks/module.py), commit `84dec47` kết hợp hai dấu hiệu:
+Cơ chế ngày 06/09 dùng `image_height // 2` để ước lượng character width đã bị thay thế. Dù không kiểm tra trực tiếp `/`, `.` hay digit, heuristic đó vẫn gắn với hình học IAM và có thể đánh giá sai glyph hẹp của dataset khác.
+
+[StyleEncoder.forward](./networks/module.py) hiện tính reliability riêng cho từng local token từ bốn nguồn visual evidence đã normalize:
 
 ```text
-char_width_estimate = max(1, image_height // 2)
-approx_char_count  = valid_reference_width / char_width_estimate
-char_support       = clamp(approx_char_count / 2, 0.25, 1)
-feature_support    = clamp(valid_feature_length / 4, 0.25, 1)
-support            = min(char_support, feature_support)
-
-local_mu = global_mu + support × (local_mu_raw − global_mu)
+evidence = concat(global_token,
+                  local_token,
+                  abs(local_token - global_token),
+                  masked_visual_feature_variance)
+reliability = sigmoid(MLP(evidence))
+local_stable = global_token + reliability × (local_token - global_token)
 ```
 
-Ảnh hẹp được giữ lại local variation nhưng với biên độ nhỏ hơn. Việc lấy minimum khiến chỉ cần một trong hai dấu hiệu cho thấy thiếu thông tin thì model giảm độ mạnh của local style.
-
-Ví dụ với ảnh cao 64 px: độ rộng 32 px tương ứng khoảng một character width; `char_support = 0.5`. Nếu feature còn ít hơn mức đó thì support tiếp tục giảm. Độ rộng 16 px chạm mức `0.25`. Reference rộng từ 64 px trở lên có `char_support = 1`, nhưng vẫn phải thỏa điều kiện về feature length mới dùng toàn bộ local path.
-
-**Đây là heuristic theo hình học, không phải bộ phân loại punctuation.** Code không kiểm tra label có phải `/` hay `.`; bất kỳ reference hẹp nào cũng được xử lý. Một dấu `/` nằm trong ảnh quá rộng có thể được đánh giá là nhiều thông tin hơn thực tế. Ngược lại, một chữ cái hẹp nhưng chứa style có ích cũng có thể bị giảm local variation.
+Gate không dùng image height, không ước lượng số character, không đọc character ID và không có danh sách punctuation. Vì vậy nó có thể học khi nào một local slot thực sự có evidence trên bất kỳ alphabet hoặc dataset nào, thay vì mặc định rằng reference hẹp luôn thiếu style.
 
 ### 3.4. Đồng bộ cả nhánh VAE
 
-Trước đây local mean được thu hẹp nhưng tensor dùng để tính `logvar` vẫn chứa local style chưa ổn định. Vì thế đường sampling VAE có thể đưa biến thiên trở lại.
-
-Commit `84dec47` tạo `local_style_for_stats` bằng cùng công thức pha về global trước khi tính thống kê VAE. Sau đó model vẫn dùng:
+Reliability nói trên được áp dụng cho cả local mean và tensor local dùng để tính `logvar`, nên sampling VAE không thể bypass gate bằng cách đưa lại local variation chưa ổn định. Sau đó model vẫn dùng:
 
 ```text
 logvar = clamp(logvar_head(style), −14, 4)
