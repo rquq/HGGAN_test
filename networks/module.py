@@ -7,6 +7,15 @@ from networks.utils import _len2mask, init_weights
 import torch.nn.functional as F
 
 
+def _input_stride_for_height(img_height, base_height=32):
+    """Scale encoder stride from image geometry, independent of dataset name."""
+    height = int(img_height)
+    base_height = int(base_height)
+    if height < 1 or base_height < 1:
+        raise ValueError('image and base heights must be positive')
+    return max(1, height // base_height)
+
+
 class HeavyCNNAttention(nn.Module):
     def __init__(self, in_dim):
         super().__init__()
@@ -15,12 +24,12 @@ class HeavyCNNAttention(nn.Module):
         self.conv_dilated1 = nn.Conv1d(in_dim, in_dim, kernel_size=3, padding=2, dilation=2)
         self.conv_dilated2 = nn.Conv1d(in_dim, in_dim, kernel_size=3, padding=4, dilation=4)
         self.conv_dilated3 = nn.Conv1d(in_dim, in_dim, kernel_size=3, padding=8, dilation=8)
-        
+
         # 2. Local detail branch (depthwise and small convolutions to capture fine-grained glyph strokes and curves)
         self.local_conv1 = nn.Conv1d(in_dim, in_dim, kernel_size=3, padding=1)
         self.local_conv2 = nn.Conv1d(in_dim, in_dim, kernel_size=5, padding=2, groups=in_dim)
         self.local_fuse = nn.Conv1d(in_dim * 2, in_dim, kernel_size=1)
-        
+
         # 3. Global bottleneck fusion
         self.fuse = nn.Sequential(
             nn.Conv1d(in_dim * 4, in_dim, kernel_size=1),
@@ -28,7 +37,7 @@ class HeavyCNNAttention(nn.Module):
             nn.SiLU(),
             nn.Conv1d(in_dim, in_dim, kernel_size=3, padding=1)
         )
-        
+
         # 4. Gating layers to dynamically fuse local and global features based on allographic complexity
         self.gate_global = nn.Sequential(
             nn.Conv1d(in_dim, in_dim, kernel_size=1),
@@ -38,7 +47,7 @@ class HeavyCNNAttention(nn.Module):
             nn.Conv1d(in_dim, in_dim, kernel_size=1),
             nn.Sigmoid()
         )
-        
+
         # 5. Channel Squeeze-and-Excitation for focused style extraction
         self.se = nn.Sequential(
             nn.AdaptiveAvgPool1d(1),
@@ -48,41 +57,44 @@ class HeavyCNNAttention(nn.Module):
             nn.Sigmoid()
         )
         self.gamma = nn.Parameter(torch.zeros(1))
-        
+
     def forward(self, x, **kwargs):
         # Global context mapping
         x1 = F.silu(self.conv1(x))
         x2 = F.silu(self.conv_dilated1(x))
         x3 = F.silu(self.conv_dilated2(x))
         x4 = F.silu(self.conv_dilated3(x))
-        
+
         fused_global = torch.cat([x1, x2, x3, x4], dim=1)
         out_global = self.fuse(fused_global)
-        
+
         # Local context mapping
         l1 = F.silu(self.local_conv1(x))
         l2 = F.silu(self.local_conv2(x))
         out_local = self.local_fuse(torch.cat([l1, l2], dim=1))
-        
+
         # Dynamic Gated Fusion of Global and Local contexts
         g_g = self.gate_global(out_global)
         g_l = self.gate_local(out_local)
         out_fused = out_global * g_g + out_local * g_l
-        
+
         # Squeeze-and-Excitation gating
         scale = self.se(out_fused)
         out = out_fused * scale
-        
+
         return x + self.gamma * out
 
 
 class StyleBackbone(nn.Module):
-    def __init__(self, resolution=16, max_dim=256, in_channel=1, init='N02', dropout=0.0, norm='bn'):
+    def __init__(self, resolution=16, max_dim=256, in_channel=1, init='N02', dropout=0.0, norm='bn', img_height=64, **kwargs):
         super(StyleBackbone, self).__init__()
-        self.reduce_len_scale = 16
+        # Derive the front-end stride from input geometry and keep length
+        # metadata in lock-step with the CNN at every supported resolution.
+        init_stride = _input_stride_for_height(img_height)
+        self.reduce_len_scale = 8 * init_stride
         nf = resolution
         cnn_f = [nn.ConstantPad2d(2, -1),
-                 Conv2dBlock(in_channel, nf, 5, 2, 0,
+                 Conv2dBlock(in_channel, nf, 5, init_stride, 0,
                              norm='none',
                              activation='none')]
         for i in range(2):
@@ -127,7 +139,9 @@ class StyleBackbone(nn.Module):
             if ret_feats and name in self.layer_name_mapping:
                 feats.append(x)
 
-        out = self.cnn_ctc(x).squeeze(-2)
+        out = self.cnn_ctc(x)
+        if out.dim() == 4:
+            out = out.squeeze(2) if out.size(2) == 1 else out.mean(dim=2)
 
         return out, feats
 
@@ -148,7 +162,7 @@ def get_2d_sinusoidal_embeddings(height, width, dim, device):
     pe = torch.zeros(height, width, dim, device=device)
     d_h = dim // 2
     d_w = dim - d_h
-    
+
     # Height embeddings
     div_term_h = torch.exp(torch.arange(0, d_h, 2, device=device).float() * -(np.log(10000.0) / d_h))
     pos_h = torch.arange(0, height, device=device).float().unsqueeze(1)
@@ -158,7 +172,7 @@ def get_2d_sinusoidal_embeddings(height, width, dim, device):
         pe_h[:, 1::2] = torch.cos(pos_h * div_term_h)
     else:
         pe_h[:, 1::2] = torch.cos(pos_h * div_term_h[:d_h//2])
-        
+
     # Width embeddings
     div_term_w = torch.exp(torch.arange(0, d_w, 2, device=device).float() * -(np.log(10000.0) / d_w))
     pos_w = torch.arange(0, width, device=device).float().unsqueeze(1)
@@ -168,151 +182,478 @@ def get_2d_sinusoidal_embeddings(height, width, dim, device):
         pe_w[:, 1::2] = torch.cos(pos_w * div_term_w)
     else:
         pe_w[:, 1::2] = torch.cos(pos_w * div_term_w[:d_w//2])
-        
+
     pe[:, :, :d_h] = pe_h.unsqueeze(1).expand(-1, width, -1)
     pe[:, :, d_h:] = pe_w.unsqueeze(0).expand(height, -1, -1)
     return pe
 
 
-class StyleEncoder(nn.Module):
-    def __init__(self, style_dim=32, in_dim=256, init='N02', **kwargs):
-        super(StyleEncoder, self).__init__()
-        self.style_dim = style_dim
+class _GradientReverse(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, x, scale):
+        ctx.scale = scale
+        return x.view_as(x)
 
-        ######################################
-        # Construct StyleEncoder
-        ######################################
+    @staticmethod
+    def backward(ctx, grad_output):
+        return -ctx.scale * grad_output, None
+
+
+def _gradient_reverse(x, scale):
+    return _GradientReverse.apply(x, scale)
+
+
+class StyleEncoder(nn.Module):
+    def __init__(self, style_dim=32, in_dim=256, init='N02', num_style_tokens=None,
+                 backbone_channels=(64, 128, 256), n_class=80, content_grl=1.0,
+                 local_query_residual=0.5,
+                 local_attention_residual_init=0.25,
+                 local_query_anchor_strength=0.5,
+                 local_evidence_gate_init=0.75,
+                 local_evidence_gate_hidden=64,
+                 # These names are kept as aliases because older DEV YAML files
+                 # used them.  Previously they landed in **kwargs and were
+                 # silently ignored, making the printed configuration untrue.
+                 num_local_queries=None, query_dim=None, heads=4,
+                 cross_attn_dropout=0.0, local_attention_gate_init=None,
+                 feature_scales=None, **kwargs):
+        super(StyleEncoder, self).__init__()
+        if kwargs:
+            unknown = ', '.join(sorted(str(key) for key in kwargs))
+            raise TypeError(f'Unknown StyleEncoder option(s): {unknown}')
+        if (num_style_tokens is not None and num_local_queries is not None
+                and int(num_style_tokens) != int(num_local_queries) + 1):
+            raise ValueError(
+                'num_style_tokens must equal num_local_queries + 1'
+            )
+        if num_style_tokens is None:
+            num_style_tokens = (
+                int(num_local_queries) + 1
+                if num_local_queries is not None else 8
+            )
+        if query_dim is not None and int(query_dim) != int(in_dim):
+            raise ValueError(
+                f'query_dim ({query_dim}) must equal in_dim ({in_dim}); '
+                'separate query projections are not implemented.'
+            )
+        if local_attention_gate_init is not None:
+            local_attention_residual_init = local_attention_gate_init
+        if not 1 <= int(heads) <= int(in_dim):
+            raise ValueError('heads must be in [1, in_dim]')
+        if int(in_dim) % int(heads) != 0:
+            raise ValueError('in_dim must be divisible by heads')
+        if not 0.0 <= float(cross_attn_dropout) < 1.0:
+            raise ValueError('cross_attn_dropout must be in [0, 1)')
+        if feature_scales is not None:
+            feature_scales = tuple(feature_scales)
+            if not feature_scales:
+                raise ValueError('feature_scales cannot be empty')
+            if len(feature_scales) > len(backbone_channels):
+                raise ValueError(
+                    'feature_scales cannot request more maps than '
+                    'backbone_channels'
+                )
+            if any(float(scale) <= 0 for scale in feature_scales):
+                raise ValueError('feature_scales must contain positive values')
+            available_scales = tuple(2 ** i for i in range(len(backbone_channels)))
+            if (len(set(feature_scales)) != len(feature_scales)
+                    or any(scale not in available_scales for scale in feature_scales)):
+                raise ValueError(
+                    f'feature_scales must be distinct members of {available_scales}'
+                )
+        self.style_dim = style_dim
+        self._in_dim = in_dim
+        self.num_style_tokens = int(num_style_tokens)
+        self.num_local_queries = self.num_style_tokens - 1
+        self.attention_heads = int(heads)
+        self.cross_attn_dropout = float(cross_attn_dropout)
+        # The backbone exposes three feature maps.  Keep all of them by
+        # default. Scale IDs 1/2/4 select the corresponding shallow/deeper maps;
+        # [2, 4] must not silently select the first two maps.
+        self.feature_scales = feature_scales
+        self.feature_indices = tuple(
+            available_scales.index(scale) for scale in feature_scales
+        ) if feature_scales is not None else tuple(range(len(backbone_channels)))
+        self.content_grl = content_grl
+        self.local_query_residual = float(local_query_residual)
+        self.local_attention_residual_init = float(local_attention_residual_init)
+        self.local_query_anchor_strength = float(
+            local_query_anchor_strength
+        )
+        self.local_evidence_gate_init = float(local_evidence_gate_init)
+        self.local_evidence_gate_hidden = int(local_evidence_gate_hidden)
+        if num_style_tokens < 1:
+            raise ValueError('num_style_tokens must be at least 1')
+        if self.local_query_residual < 0:
+            raise ValueError('local_query_residual must be non-negative')
+        if not 0.0 < self.local_attention_residual_init < 1.0:
+            raise ValueError(
+                'local_attention_residual_init must be strictly between 0 and 1'
+            )
+        if not 0.0 <= self.local_query_anchor_strength <= 1.0:
+            raise ValueError(
+                'local_query_anchor_strength must be in [0, 1]'
+            )
+        if not 0.0 < self.local_evidence_gate_init < 1.0:
+            raise ValueError(
+                'local_evidence_gate_init must be strictly between 0 and 1'
+            )
+        if self.local_evidence_gate_hidden < 1:
+            raise ValueError('local_evidence_gate_hidden must be positive')
+
         self.linear_style = nn.Sequential(
             nn.Linear(in_dim, in_dim),
             nn.LeakyReLU(),
             nn.Linear(in_dim, in_dim),
             nn.LeakyReLU(),
         )
-
         self.mu = nn.Linear(in_dim, style_dim)
         self.logvar = nn.Linear(in_dim, style_dim)
-        
-        # ADD: Heavy CNN to capture global word geometry (slant, spacing, ratio)
         self.sequence_model = HeavyCNNAttention(in_dim)
-        
-        # Projection layers for multi-scale CNN backbone features — pre-built with default
-        # channels [64, 128, 256] matching StyleBackbone, dynamically adaptable if needed.
-        self._in_dim = in_dim
+
+        # Build every trainable projection before the optimizer is created. The old
+        # forward-time replacement silently left new parameters unoptimised.
         self.proj_layers = nn.ModuleList([
-            nn.Conv2d(64, in_dim, kernel_size=1),
-            nn.Conv2d(128, in_dim, kernel_size=1),
-            nn.Conv2d(256, in_dim, kernel_size=1),
+            nn.Conv2d(backbone_channels[index], in_dim, kernel_size=1)
+            for index in self.feature_indices
         ])
         for layer in self.proj_layers:
             nn.init.normal_(layer.weight, 0.0, 0.02)
             if layer.bias is not None:
                 nn.init.zeros_(layer.bias)
-        
-        # Learned style query tokens (style_dim tokens, each of size in_dim)
-        self.num_style_tokens = style_dim  # one query per style-dim slot
-        self.style_queries = nn.Parameter(torch.randn(1, self.num_style_tokens, in_dim) * 0.02)
-        self.style_cross_attn = nn.MultiheadAttention(embed_dim=in_dim, num_heads=4, batch_first=True)
-        
+
+        # Token zero is an explicit global style summary. The remaining compact
+        # query set captures local stroke details without a 32x32 content-rich code.
+        query_count = self.num_local_queries
+        style_query_init = torch.empty(1, query_count, in_dim)
+        if query_count:
+            # Orthogonal rows start as distinct local stroke slots while matching
+            # the old N(0, 0.02) per-component scale in expectation.
+            nn.init.orthogonal_(style_query_init[0])
+            style_query_init.mul_(0.02 * (in_dim ** 0.5))
+        self.style_queries = nn.Parameter(style_query_init)
+        # Keep spatial-attention queries separated throughout long training.
+        # The trainable component still adapts, while the fixed copy prevents
+        # the partial query collapse measured in the epoch-50 checkpoint.
+        self.register_buffer(
+            'style_query_anchors', style_query_init.detach().clone()
+        )
+
+        # A fixed orthogonal code gives every local slot a permanent identity.
+        # Writer evidence is still learned; the code only prevents all slots from
+        # converging to the same direction after attention and projection.
+        slot_anchors = torch.empty(1, query_count, style_dim)
+        if query_count:
+            nn.init.orthogonal_(slot_anchors[0])
+            slot_anchors.mul_(style_dim ** 0.5)
+        self.register_buffer('local_slot_anchors', slot_anchors)
+
+        attention_gate_logit = torch.logit(torch.tensor(
+            self.local_attention_residual_init
+        )).item()
+        self.local_attention_gate_logits = nn.Parameter(
+            torch.full((in_dim,), attention_gate_logit)
+        )
+        self.style_cross_attn = nn.MultiheadAttention(
+            embed_dim=in_dim, num_heads=self.attention_heads,
+            dropout=self.cross_attn_dropout, batch_first=True
+        )
+        # Affine-free norms add no checkpoint state. They prevent the frozen
+        # backbone's very different feature scales from dominating attention.
+        self.style_key_norm = nn.LayerNorm(in_dim, elementwise_affine=False)
+        self.style_query_norm = nn.LayerNorm(in_dim, elementwise_affine=False)
+        self.local_output_norm = nn.LayerNorm(in_dim, elementwise_affine=False)
+        # Predict local-token reliability from visual evidence, not from a
+        # character ID, transcription length, image height, or assumed glyph
+        # aspect ratio.  The fourth descriptor is the masked feature variance,
+        # so the same rule applies to other resolutions, scripts, and datasets.
+        self.local_evidence_gate = nn.Sequential(
+            nn.Linear(in_dim * 4, self.local_evidence_gate_hidden),
+            nn.SiLU(),
+            nn.Linear(self.local_evidence_gate_hidden, 1),
+        )
+        self.content_probe = nn.Linear(style_dim, n_class)
+
         if init != 'none':
             init_weights(self, init)
-
-        # Initialize log-variance weights to 0.0 and bias to -10.0 to start training almost deterministically
+        nn.init.zeros_(self.local_evidence_gate[-1].weight)
+        nn.init.constant_(
+            self.local_evidence_gate[-1].bias,
+            torch.logit(torch.tensor(self.local_evidence_gate_init)).item(),
+        )
         nn.init.constant_(self.logvar.weight, 0.)
         nn.init.constant_(self.logvar.bias, -10.)
 
-    def _build_proj_layers(self, all_feats):
-        """Build projection Conv2d layers matching the actual backbone feature channels."""
-        if self.proj_layers is not None and len(self.proj_layers) == len(all_feats):
-            channels_match = all(
-                layer.weight.shape[1] == f.size(1) 
-                for layer, f in zip(self.proj_layers, all_feats)
+    @staticmethod
+    def _width_mask(img_len, source_width, target_width):
+        if img_len is None:
+            return None, None
+        scaled_len = torch.ceil(
+            img_len.to(dtype=torch.float32) * (float(target_width) / float(source_width))
+        ).long().clamp_(min=1, max=target_width)
+        positions = torch.arange(target_width, device=img_len.device).unsqueeze(0)
+        return positions < scaled_len.unsqueeze(1), scaled_len
+
+    def _load_from_state_dict(self, state_dict, prefix, local_metadata, strict,
+                              missing_keys, unexpected_keys, error_msgs):
+        # Texture ablations should remain possible with checkpoints created
+        # before the evidence gate existed.  Only the newly introduced gate is
+        # initialized locally; every historical model key remains strict.
+        for name, value in self.local_evidence_gate.state_dict().items():
+            key = prefix + 'local_evidence_gate.' + name
+            if key not in state_dict:
+                state_dict[key] = value.detach().clone()
+        super()._load_from_state_dict(
+            state_dict, prefix, local_metadata, strict,
+            missing_keys, unexpected_keys, error_msgs,
+        )
+
+    @staticmethod
+    def global_token(style_tokens):
+        return style_tokens[:, 0]
+
+    def predict_content(self, style_tokens, reverse=True):
+        style_for_probe = style_tokens
+        if reverse:
+            style_for_probe = _gradient_reverse(style_for_probe, self.content_grl)
+        return self.content_probe(style_for_probe)
+
+    def forward(self, img, img_len, cnn_backbone=None, ret_feats=False,
+                vae_mode=False, ret_backbone_feat=False, backbone_features=None):
+        feat, all_feats = (
+            cnn_backbone(img, ret_feats=True)
+            if backbone_features is None else backbone_features
+        )
+        if self.feature_indices and max(self.feature_indices) >= len(all_feats):
+            raise RuntimeError(
+                f'StyleEncoder requested feature map indices {self.feature_indices}, '
+                f'but the backbone returned {len(all_feats)} maps.'
             )
-            if channels_match:
-                self.proj_layers = self.proj_layers.to(all_feats[0].device)
-                return
+        selected_all_feats = [all_feats[index] for index in self.feature_indices]
+        if len(self.proj_layers) != len(selected_all_feats):
+            raise RuntimeError(
+                f'StyleEncoder expected {len(self.proj_layers)} backbone feature maps, '
+                f'but received {len(selected_all_feats)}. Set EncModel.feature_scales '
+                'and EncModel.backbone_channels consistently.'
+            )
+        for index, (proj_layer, feature) in enumerate(zip(self.proj_layers, selected_all_feats)):
+            if proj_layer.in_channels != feature.size(1):
+                raise RuntimeError(
+                    f'Backbone feature {index} has {feature.size(1)} channels, but the '
+                    f'configured projection expects {proj_layer.in_channels}.'
+                )
 
-        layers = []
-        for f in all_feats:
-            layers.append(nn.Conv2d(f.size(1), self._in_dim, kernel_size=1))
-        self.proj_layers = nn.ModuleList(layers).to(all_feats[0].device)
-        # Apply same init as rest of the module
-        for layer in self.proj_layers:
-            nn.init.normal_(layer.weight, 0.0, 0.02)
-            if layer.bias is not None:
-                nn.init.zeros_(layer.bias)
-
-    def forward(self, img, img_len, cnn_backbone=None, ret_feats=False, vae_mode=False):
-        # Always request intermediate features to capture local details
-        feat, all_feats = cnn_backbone(img, ret_feats=True)
-        
-        # Build/adapt projection layers if needed
-        if self.proj_layers is None or len(self.proj_layers) != len(all_feats):
-            self._build_proj_layers(all_feats)
+        feat_mask, feat_len = self._width_mask(img_len, img.size(-1), feat.size(-1))
+        feat_mask_f = feat_mask.unsqueeze(1).to(feat.dtype) if feat_mask is not None else 1.0
+        feat_m = self.sequence_model(feat * feat_mask_f) * feat_mask_f
+        if feat_mask is None:
+            global_context = feat_m.mean(dim=-1)
+            feature_variation = (
+                feat_m - global_context.unsqueeze(-1)
+            ).square().mean(dim=-1)
         else:
-            self.proj_layers = self.proj_layers.to(all_feats[0].device)
-        
-        # 1. Global context from main feature using Heavy CNN
-        feat_m = self.sequence_model(feat) # feat is (B, C, W), feat_m is (B, C, W)
-        
-        # Transpose and add 1D sinusoidal positional embedding
-        feat_m_trans = feat_m.transpose(1, 2) # (B, W, in_dim)
-        pe_1d = get_1d_sinusoidal_embeddings(feat_m_trans.size(1), self._in_dim, feat_m_trans.device)
+            global_context = feat_m.sum(dim=-1) / feat_len.unsqueeze(1).to(feat.dtype)
+            centered = (
+                feat_m - global_context.unsqueeze(-1)
+            ) * feat_mask_f
+            feature_variation = centered.square().sum(dim=-1) / feat_len.unsqueeze(1).to(
+                feat.dtype
+            )
+
+        feat_m_trans = feat_m.transpose(1, 2)
+        pe_1d = get_1d_sinusoidal_embeddings(
+            feat_m_trans.size(1), self._in_dim, feat_m_trans.device
+        )
         feat_m_trans = feat_m_trans + pe_1d.unsqueeze(0)
-        
-        # 2. Project and pool each intermediate feature map dynamically
-        spatial_tokens = [feat_m_trans] # Start with global sequence (B, W, in_dim)
-        for proj_layer, f in zip(self.proj_layers, all_feats):
-            f_proj = proj_layer(f) # (B, in_dim, H_f, W_f)
-            # Pool height to 4 to condense vertical dimension while retaining full horizontal resolution
-            f_pooled = F.adaptive_avg_pool2d(f_proj, (4, f.size(-1))) # (B, in_dim, 4, W_f)
-            # Add 2D sinusoidal positional embedding
-            H_p, W_p = f_pooled.size(2), f_pooled.size(3)
-            pe_2d = get_2d_sinusoidal_embeddings(H_p, W_p, self._in_dim, f_pooled.device)
-            f_pooled = f_pooled + pe_2d.permute(2, 0, 1).unsqueeze(0)
-            
-            f_flat = f_pooled.flatten(2).transpose(1, 2) # (B, 4 * W_f, in_dim)
-            spatial_tokens.append(f_flat)
-            
-        # Concatenate all spatial/global tokens
-        style_keys = torch.cat(spatial_tokens, dim=1) # (B, total_tokens, in_dim)
-        
-        # 3. Query style sequence dynamically using learned style query tokens
-        B = img.size(0)
-        style_queries = self.style_queries.expand(B, -1, -1) # (B, num_style_tokens, in_dim)
-        # Add 1D sinusoidal positional embedding to queries to distinguish query slots chronologically
-        pe_queries = get_1d_sinusoidal_embeddings(self.num_style_tokens, self._in_dim, style_queries.device)
-        style_queries = style_queries + pe_queries.unsqueeze(0)
-        
-        # Cross-attention: queries look at the spatial style keys
-        style_seq, _ = self.style_cross_attn(query=style_queries, key=style_keys, value=style_keys)
-        
-        style = self.linear_style(style_seq)
-        style_tokens_mu = self.mu(style) # (B, 32, style_dim)
+        if feat_mask is not None:
+            feat_m_trans = feat_m_trans * feat_mask.unsqueeze(-1).to(feat_m_trans.dtype)
+
+        spatial_tokens = [feat_m_trans]
+        padding_masks = [~feat_mask] if feat_mask is not None else []
+        masked_all_feats = []
+        for proj_layer, feature in zip(self.proj_layers, selected_all_feats):
+            width_mask, _ = self._width_mask(img_len, img.size(-1), feature.size(-1))
+            width_mask_f = (
+                width_mask[:, None, None, :].to(feature.dtype)
+                if width_mask is not None else 1.0
+            )
+            feature_masked = feature * width_mask_f
+            masked_all_feats.append(feature_masked)
+            # A pointwise affine projection commutes with average pooling.
+            # Project four height rows instead of the entire feature map.
+            feature_pooled = proj_layer(F.adaptive_avg_pool2d(
+                feature_masked, (4, feature.size(-1))
+            ))
+            height, width = feature_pooled.shape[-2:]
+            pe_2d = get_2d_sinusoidal_embeddings(
+                height, width, self._in_dim, feature_pooled.device
+            )
+            feature_pooled = feature_pooled + pe_2d.permute(2, 0, 1).unsqueeze(0)
+            if width_mask is not None:
+                feature_pooled = feature_pooled * width_mask[:, None, None, :].to(
+                    feature_pooled.dtype
+                )
+            spatial_tokens.append(feature_pooled.flatten(2).transpose(1, 2))
+            if width_mask is not None:
+                padding_masks.append(
+                    ~width_mask[:, None, :].expand(-1, height, -1).reshape(feature.size(0), -1)
+                )
+
+        style_keys = self.style_key_norm(torch.cat(spatial_tokens, dim=1))
+        key_padding_mask = torch.cat(padding_masks, dim=1) if padding_masks else None
+
+        batch_size = img.size(0)
+        style_queries = (
+            self.style_queries
+            + self.local_query_anchor_strength * self.style_query_anchors
+        ).expand(batch_size, -1, -1)
+        if style_queries.size(1):
+            pe_queries = get_1d_sinusoidal_embeddings(
+                style_queries.size(1), self._in_dim, style_queries.device
+            )
+            style_queries = self.style_query_norm(
+                style_queries + pe_queries.unsqueeze(0)
+            )
+            local_attended, _ = self.style_cross_attn(
+                query=style_queries,
+                key=style_keys,
+                value=style_keys,
+                key_padding_mask=key_padding_mask,
+                need_weights=False,
+            )
+            attention_strength = torch.sigmoid(
+                self.local_attention_gate_logits
+            ).view(1, 1, -1)
+            local_style = self.linear_style(self.local_output_norm(
+                style_queries + attention_strength * local_attended
+            ))
+        else:
+            local_style = style_queries
+
+        global_style = self.linear_style(global_context).unsqueeze(1)
+
+        if local_style.size(1):
+            expanded_global = global_style.expand_as(local_style)
+            normalized_global = F.layer_norm(
+                expanded_global, (expanded_global.size(-1),)
+            )
+            normalized_local = F.layer_norm(
+                local_style, (local_style.size(-1),)
+            )
+            normalized_variation = F.layer_norm(
+                feature_variation, (feature_variation.size(-1),)
+            ).unsqueeze(1).expand_as(local_style)
+            evidence_descriptor = torch.cat([
+                normalized_global,
+                normalized_local,
+                torch.abs(normalized_local - normalized_global),
+                normalized_variation,
+            ], dim=-1)
+            local_reliability = torch.sigmoid(
+                self.local_evidence_gate(evidence_descriptor)
+            )
+            local_style_for_stats = global_style + local_reliability * (
+                local_style - global_style
+            )
+        else:
+            local_style_for_stats = local_style
+        # Use the same stabilized tokens for VAE statistics; otherwise
+        # sampling would re-introduce the unstable short-reference variation.
+        style = torch.cat([global_style, local_style_for_stats], dim=1)
+        global_mu = self.mu(global_style)
+
+        # Keep writer/style conditioning in the range learned by GBlocks. The
+        # bound is inactive for normal references and compresses only anomalous
+        # short-crop vectors.
+        safe_norm_cap = 9.5
+        g_norm = global_mu.norm(dim=-1, keepdim=True)
+        global_mu = global_mu * torch.clamp(
+            safe_norm_cap / (g_norm + 1e-6), max=1.0
+        )
+
+        if local_style.size(1):
+            local_data_mu = self.mu(local_style)
+            # Match the fixed code to each token's learned RMS. This makes the
+            # anti-collapse residual scale-aware without backpropagating through
+            # the scale estimate or overpowering writer-specific evidence.
+            local_data_rms = local_data_mu.detach().square().mean(
+                dim=-1, keepdim=True
+            ).sqrt().clamp_min(0.05)
+            local_identity = self.local_slot_anchors.expand(
+                batch_size, -1, -1
+            ).to(dtype=local_data_mu.dtype)
+            local_mu_raw = (
+                local_data_mu
+                + self.local_query_residual * local_data_rms * local_identity
+            )
+            local_mu = global_mu + local_reliability * (local_mu_raw - global_mu)
+            l_norm = local_mu.norm(dim=-1, keepdim=True)
+            local_mu = local_mu * torch.clamp(
+                safe_norm_cap / (l_norm + 1e-6), max=1.0
+            )
+        else:
+            local_mu = self.mu(local_style)
+        style_tokens_mu = torch.cat([global_mu, local_mu], dim=1)
 
         if vae_mode:
-            logvar = self.logvar(style)
-            # Clamp logvar to prevent exponential exploding values and training instability
-            logvar = torch.clamp(logvar, min=-14.0, max=4.0)
+            logvar = torch.clamp(self.logvar(style), min=-14.0, max=4.0)
             std = torch.exp(0.5 * logvar)
-            eps = torch.randn_like(std)
-            style_tokens_sampled = eps * std + style_tokens_mu
-
-
-        if vae_mode:
+            style_tokens_sampled = torch.randn_like(std) * std + style_tokens_mu
             style_tokens = (style_tokens_sampled, style_tokens_mu, logvar)
         else:
             style_tokens = style_tokens_mu
 
+        if ret_backbone_feat and not ret_feats:
+            ret_feats = True
+        if ret_backbone_feat:
+            return style_tokens, masked_all_feats, feat
         if ret_feats:
-            return style_tokens, all_feats
-        else:
-            return style_tokens
+            return style_tokens, masked_all_feats
+        return style_tokens
+
+
+class MaskedAttentiveStatsPool(nn.Module):
+    """Pool writer features while ignoring right-padding.
+
+    The mean carries broad writer style while the standard deviation preserves
+    stroke and spacing variation that uniform temporal averaging discards.
+    Attention focuses the pool on informative glyph positions.
+    """
+    def __init__(self, in_dim, attention_dim=128):
+        super().__init__()
+        attention_dim = max(1, int(attention_dim))
+        self.attention = nn.Sequential(
+            nn.Conv1d(in_dim, attention_dim, kernel_size=1),
+            nn.Tanh(),
+            nn.Conv1d(attention_dim, 1, kernel_size=1),
+        )
+        self.projection = nn.Sequential(
+            nn.Linear(in_dim * 2, in_dim),
+            nn.LayerNorm(in_dim),
+            nn.LeakyReLU(0.2, inplace=True),
+        )
+
+    def forward(self, feat, valid_mask):
+        if valid_mask.dtype is not torch.bool:
+            valid_mask = valid_mask.bool()
+        scores = self.attention(feat).squeeze(1)
+        scores = scores.masked_fill(~valid_mask, torch.finfo(scores.dtype).min)
+        weights = torch.softmax(scores.float(), dim=-1).to(dtype=feat.dtype)
+        mean = torch.sum(feat * weights.unsqueeze(1), dim=-1)
+        centered = feat - mean.unsqueeze(-1)
+        var = torch.sum(centered.square() * weights.unsqueeze(1), dim=-1)
+        std = torch.sqrt(var.clamp_min(1e-5))
+        return self.projection(torch.cat((mean, std), dim=1))
 
 
 class WriterIdentifier(nn.Module):
-    def __init__(self, n_writer=372, in_dim=256, init='N02'):
+    def __init__(self, n_writer=372, in_dim=256, init='N02',
+                 pool='mean', attention_dim=128):
         super(WriterIdentifier, self).__init__()
         self.reduce_len_scale = 32
+        self.pool = str(pool).lower()
+        if self.pool not in ('mean', 'attentive_stats'):
+            raise ValueError("Writer pool must be 'mean' or 'attentive_stats'")
 
         ######################################
         # Construct WriterIdentifier
@@ -323,28 +664,47 @@ class WriterIdentifier(nn.Module):
             nn.LeakyReLU(),
             nn.Linear(in_dim, n_writer),
         )
+        self.attentive_pool = (
+            MaskedAttentiveStatsPool(in_dim, attention_dim)
+            if self.pool == 'attentive_stats' else None
+        )
 
         if init != 'none':
             init_weights(self, init)
 
+    def _pool_features(self, feat, img_len, cnn_backbone):
+        feat_len = torch.div(
+            img_len, cnn_backbone.reduce_len_scale, rounding_mode='trunc'
+        ).clamp(min=1, max=feat.size(-1))
+        valid_mask = _len2mask(feat_len, feat.size(-1), dtype=None)
+        if self.attentive_pool is not None:
+            return self.attentive_pool(feat, valid_mask)
+        mask = valid_mask.unsqueeze(1).to(dtype=feat.dtype)
+        return (feat * mask).sum(dim=-1) / feat_len.unsqueeze(1).to(feat.dtype)
+
     def forward(self, img, img_len, cnn_backbone, ret_feats=False):
         feat, all_feats = cnn_backbone(img, ret_feats)
-        img_len = torch.div(img_len, cnn_backbone.reduce_len_scale, rounding_mode='trunc')
-        img_len_mask = _len2mask(img_len, feat.size(-1)).unsqueeze(1).float().detach()
-        wid_feat = (feat * img_len_mask).sum(dim=-1) / (img_len.unsqueeze(1).float() + 1e-8)
+        wid_feat = self._pool_features(feat, img_len, cnn_backbone)
         wid_logits = self.linear_wid(wid_feat)
         if ret_feats:
             return wid_logits, all_feats
-        else:
-            return wid_logits
+        return wid_logits
+
+    def forward_from_feat(self, feat, img_len, cnn_backbone):
+        """Classify an already-computed backbone feature map.
+
+        StyleEncoder has just run the frozen backbone on the style-transfer
+        image. Reusing that feature avoids a second identical CNN pass while
+        retaining gradients from the writer loss back to the generated image.
+        """
+        wid_feat = self._pool_features(feat, img_len, cnn_backbone)
+        return self.linear_wid(wid_feat)
 
     def return_feat(self, img, img_len, cnn_backbone):
         """Return intermediate writer features (before classification head)."""
         feat, _ = cnn_backbone(img, ret_feats=False)
-        img_len = torch.div(img_len, cnn_backbone.reduce_len_scale, rounding_mode='trunc')
-        img_len_mask = _len2mask(img_len, feat.size(-1)).unsqueeze(1).float().detach()
-        wid_feat = (feat * img_len_mask).sum(dim=-1) / (img_len.unsqueeze(1).float() + 1e-8)
-        # Pass through all linear layers except the last classification one
+        wid_feat = self._pool_features(feat, img_len, cnn_backbone)
+        # Pass through all linear layers except the last classification one.
         for layer in self.linear_wid[:-1]:
             wid_feat = layer(wid_feat)
         return wid_feat
@@ -353,9 +713,12 @@ class WriterIdentifier(nn.Module):
 class Recognizer(nn.Module):
     # resolution: 32  max_dim: 512  in_channel: 1  norm: 'none'  init: 'N02'  dropout: 0.  n_class: 72  rnn_depth: 0
     def __init__(self, n_class, resolution=16, max_dim=256, in_channel=1, norm='none',
-                 init='none', rnn_depth=1, dropout=0.0, bidirectional=True):
+                 init='none', rnn_depth=1, dropout=0.0, bidirectional=True, img_height=64, **kwargs):
         super(Recognizer, self).__init__()
-        self.len_scale = 16
+        # Match the CNN's horizontal downsampling using the same geometry rule
+        # as StyleBackbone; no dataset or benchmark identity is consulted.
+        init_stride = _input_stride_for_height(img_height)
+        self.len_scale = 8 * init_stride
         self.use_rnn = rnn_depth > 0
         self.bidirectional = bidirectional
 
@@ -364,7 +727,7 @@ class Recognizer(nn.Module):
         ######################################
         nf = resolution
         cnn_f = [nn.ConstantPad2d(2, -1),
-                 Conv2dBlock(in_channel, nf, 5, 2, 0,
+                 Conv2dBlock(in_channel, nf, 5, init_stride, 0,
                              norm='none',
                              activation='none')]
         for i in range(2):
@@ -407,7 +770,7 @@ class Recognizer(nn.Module):
         if init != 'none':
             init_weights(self, init)
 
-    def forward(self, x, x_len=None):
+    def forward(self, x, x_len=None, return_log_probs=None):
         cnn_feat = self.cnn_backbone(x)
         cnn_feat2 = self.cnn_ctc(cnn_feat)
         ctc_feat = cnn_feat2.squeeze(-2).transpose(1, 2)
@@ -418,11 +781,15 @@ class Recognizer(nn.Module):
                 ctc_len = torch.clamp(torch.div(x_len, self.len_scale, rounding_mode='trunc'), min=1)
             else:
                 ctc_len = None
-            ctc_feat = self.rnn_ctc(ctc_feat, ctc_len.cpu() if isinstance(ctc_len, torch.Tensor) else ctc_len)
+            ctc_feat = self.rnn_ctc(
+                ctc_feat,
+                ctc_len.cpu() if isinstance(ctc_len, torch.Tensor) else ctc_len,
+            )
         logits = self.ctc_cls(ctc_feat)
-        if self.training:
-            logits = logits.transpose(0, 1).log_softmax(2)
-            logits.requires_grad_(True)
+        if return_log_probs is None:
+            return_log_probs = self.training
+        if return_log_probs:
+            return logits.transpose(0, 1).log_softmax(2)
         return logits
 
     def frozen_bn(self):

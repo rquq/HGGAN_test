@@ -1,3 +1,6 @@
+import csv
+import io
+import glob
 import torch, os
 import wandb
 from PIL import Image
@@ -8,20 +11,21 @@ import numpy as np
 from distance import levenshtein
 from tqdm import tqdm
 from torch.utils.data.dataloader import DataLoader
+from torch.utils.data import WeightedRandomSampler
 from torch.nn import CTCLoss, CrossEntropyLoss
 import torch.distributed as dist
 import torch.nn.functional as F
 from metric.val_metrics import calculate_fid_kid_is
 from metric.mssim_psnr import calculate_mssim_psnr
 from networks.utils import _info, set_requires_grad, get_scheduler, idx_to_words, rescale_images, rescale_images2, \
-                            words_to_images, ctc_greedy_decoder, extract_all_patches, frozen_bn
+                            words_to_images, ctc_greedy_decoder, sample_character_patches, augment_word_batch, frozen_bn, restore_scheduler_state
 from networks.BigGAN_networks import Generator, Discriminator, PatchDiscriminator
 from networks.module import Recognizer, WriterIdentifier, StyleEncoder, StyleBackbone
 from lib.datasets import get_dataset, get_collect_fn, Hdf5Dataset
 from lib.alphabet import strLabelConverter, get_lexicon, get_true_alphabet, Alphabets
-from lib.utils import draw_image, get_logger, AverageMeterManager, option_to_string, AverageMeter, plot_heatmap
+from lib.utils import draw_image, get_logger, AverageMeterManager, option_to_string, AverageMeter, plot_heatmap, write_wandb_log
 from networks.rand_dist import prepare_z_dist, prepare_y_dist
-from networks.loss import recn_l1_loss, CXLoss, KLloss, contrastive_style_loss
+from networks.loss import recn_l1_loss, CXLoss, KLloss, r1_reg
 from networks.masking import apply_vertical_stripe_mask, apply_horizontal_stripe_mask, apply_combined_stripe_mask, apply_light_mixed_patch_mask
 
 
@@ -31,16 +35,22 @@ class EMA(object):
         self.beta = beta
         self.step = 0
 
+    @torch.no_grad()
     def update_model_average(self, ma_model, current_model, beta):
-        curr_model_unwrapped = getattr(current_model, 'module', current_model)
-        for current_params, ma_params in zip(curr_model_unwrapped.parameters(), ma_model.parameters()):
-            old_weight, up_weight = ma_params.data, current_params.data
-            ma_params.data = old_weight * beta + (1 - beta) * up_weight
+        current = getattr(current_model, 'module', current_model)
+        ema_parameters = dict(ma_model.named_parameters())
+        for name, parameter in current.named_parameters():
+            ema_parameters[name].mul_(beta).add_(parameter, alpha=1.0 - beta)
+        # Running means, variances, spectral-norm buffers, and counters must match
+        # the current model; parameter-only EMA left these buffers stale.
+        ema_buffers = dict(ma_model.named_buffers())
+        for name, buffer in current.named_buffers():
+            ema_buffers[name].copy_(buffer)
 
     def step_ema(self, ema_model, model, step_start_ema=0):
         if self.step < step_start_ema:
-            curr_model_unwrapped = getattr(model, 'module', model)
-            ema_model.load_state_dict(curr_model_unwrapped.state_dict())
+            current = getattr(model, 'module', model)
+            ema_model.load_state_dict(current.state_dict())
             return
         beta = min(self.beta, (1 + self.step) / (10 + self.step))
         self.update_model_average(ema_model, model, beta)
@@ -53,7 +63,29 @@ def seed_worker(worker_id):
     random.seed(worker_seed)
 
 
+def linear_epoch_weight(initial, final, epoch, start_epoch, end_epoch):
+    """Linearly move a loss weight, with exact constant endpoints."""
+    initial = float(initial)
+    final = float(final)
+    if end_epoch <= start_epoch:
+        return final if epoch >= end_epoch else initial
+    progress = min(max(
+        (float(epoch) - float(start_epoch))
+        / (float(end_epoch) - float(start_epoch)),
+        0.0,
+    ), 1.0)
+    return initial + progress * (final - initial)
+
+
 class BaseModel(object):
+    # Keep this schema stable across runs and configurations. Metrics that are
+    # disabled (or not scheduled for a particular epoch) remain empty in CSV.
+    EVAL_METRIC_COLUMNS = (
+        'epoch',
+        'fid', 'kid', 'hwd', 'cmmd', 'cer', 'wer',
+        'is_gen', 'is_org', 'psnr', 'mssim', 'wier',
+    )
+
     def __init__(self, opt, log_root='./'):
         self.opt = opt
         self.local_rank = getattr(opt, 'local_rank', -1)
@@ -64,10 +96,17 @@ class BaseModel(object):
         self.log_root = log_root
         self.logger = None
         self.is_resumed_start = False
+        self.eval_metric_columns = list(self.EVAL_METRIC_COLUMNS)
+        self.eval_history = []
+        self.completed_epoch = 0
+        self.last_eval_scores = {}
+        self.last_eval_kid = None
         alphabet_key = 'rimes_word' if opt.dataset.startswith('rimes') else 'all'
         self.alphabet = Alphabets[alphabet_key]
         self.label_converter = strLabelConverter(alphabet_key)
         self.epoch_start = 1
+        if self.log_root:
+            self.create_logger()
 
     @staticmethod
     def unwrap_model(model):
@@ -75,44 +114,304 @@ class BaseModel(object):
             return None
         return getattr(model, 'module', model)
 
+    @staticmethod
+    def resume_position(epoch_done, restored_iter, loader_len):
+        """Return the saved epoch, batch offset, and next global iteration.
+
+        ``Epoch`` is authoritative because a global iteration can start from a
+        transferred checkpoint and therefore need not encode the current epoch.
+        """
+        if loader_len <= 0:
+            raise ValueError('loader_len must be positive')
+        if restored_iter is None:
+            epoch_done = int(epoch_done)
+            return max(1, epoch_done + 1), 0, epoch_done * loader_len
+
+        iter_count = int(restored_iter) + 1
+        skip_batches = iter_count % loader_len
+        start_epoch = int(epoch_done) + (1 if skip_batches == 0 else 0)
+        return max(1, start_epoch), skip_batches, iter_count
+
+    @staticmethod
+    def capture_process_rng_state():
+        """Capture RNGs that validation libraries may consume."""
+        import random
+        return {
+            'torch': torch.get_rng_state(),
+            'cuda': (
+                torch.cuda.get_rng_state_all()
+                if torch.cuda.is_available() else None
+            ),
+            'numpy': np.random.get_state(),
+            'python': random.getstate(),
+        }
+
+    @staticmethod
+    def seed_process_rng(seed):
+        """Use a repeatable validation RNG without changing cuDNN policy."""
+        import random
+        seed = int(seed)
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
+        np.random.seed(seed)
+        random.seed(seed)
+
+    @staticmethod
+    def restore_process_rng_state(state):
+        """Restore training RNGs after deterministic validation."""
+        import random
+        torch.set_rng_state(state['torch'].cpu().to(torch.uint8))
+        if state.get('cuda') is not None and torch.cuda.is_available():
+            for device_index, device_state in enumerate(state['cuda']):
+                if device_index < torch.cuda.device_count():
+                    torch.cuda.set_rng_state(
+                        device_state.cpu().to(torch.uint8),
+                        device=device_index,
+                    )
+        np.random.set_state(state['numpy'])
+        random.setstate(state['python'])
+
     def print(self, info):
         if self.local_rank > 0:
             return
+        message = str(info)
         if self.logger is None:
-            print(info)
+            print(message)
         else:
-            self.logger.info(info)
+            self.logger.info(message)
+        # Explicit upload is robust to Kaggle/Jupyter stdout proxying and
+        # captures parameter counts, checkpoint messages, and train progress.
+        write_wandb_log(message)
 
     def create_logger(self):
         if self.logger:
             return
 
+        if self.local_rank > 0:
+            return
+
         if not os.path.exists(self.log_root):
             os.makedirs(self.log_root)
 
+        self.logger = get_logger(self.log_root)
         opt_str = option_to_string(self.opt)
         with open(os.path.join(self.log_root, 'config.txt'), 'w') as f:
             f.writelines(opt_str)
-        self.logger = get_logger(self.log_root)
 
     def info(self, extra=None):
-        self.print("RUNDIR: {}".format(self.log_root))
-        opt_str = option_to_string(self.opt)
-        self.print(opt_str)
-        for model in self.models.values():
-            self.print(_info(model, ret=True))
+        """Print a compact startup summary; full config remains in config.txt/W&B."""
+        training = getattr(self.opt, 'training', {})
+        valid = getattr(self.opt, 'valid', {})
+        enabled_metrics = [
+            key for key in (
+                'fid', 'kid', 'hwd', 'cmmd', 'cer', 'wer', 'is_gen', 'is_org',
+                'psnr', 'mssim', 'wier',
+            )
+            if bool(getattr(valid, f'validate_{key}', False))
+        ]
+        if not enabled_metrics:
+            enabled_metrics = ['none']
+        branch_name = os.path.basename(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        lines = [
+            '',
+            f'==================== {branch_name} ====================',
+            f"model       : {getattr(self.opt, 'model', 'unknown')}",
+            f"dataset     : {getattr(self.opt, 'dataset', 'unknown')}",
+            f"resolution  : {getattr(self.opt, 'img_height', '?')} px",
+            f"device      : {getattr(self.opt, 'device', '?')}",
+            f"train       : batch={getattr(training, 'batch_size', '?')} "
+            f"epochs={getattr(training, 'epochs', '?')} "
+            f"workers={getattr(training, 'num_workers', '?')}",
+            f"optim       : G/lr={getattr(training, 'lr', '?')} "
+            f"D/lr={getattr(training, 'd_lr', '-') } "
+            f"P/lr={getattr(training, 'patch_d_lr', '-')}",
+            f"adversarial : critic_steps={getattr(training, 'num_critic_train', '-')}",
+            f"validation  : {', '.join(enabled_metrics)}",
+            'networks    :',
+        ]
+        self.print('\n'.join(lines))
+        for name, network in self.models.items():
+            self.print(_info(network, ret=True).replace('*', f'{name}:', 1))
+        self.print(f"full config : {os.path.join(self.log_root, 'config.txt')}")
         if extra is not None:
             self.print(extra)
-        self.print('=' * 20)
+        self.print('=' * 54)
 
-    def save(self, tag='best', epoch_done=0, iter_count=None, best_fid=None, **kwargs):
+    @staticmethod
+    def _eval_scalar(value):
+        """Convert metric scalars to checkpoint/CSV-safe Python values."""
+        if value is None:
+            return ''
+        if isinstance(value, torch.Tensor):
+            if value.numel() != 1:
+                return str(value.detach().cpu().tolist())
+            value = value.detach().cpu().item()
+        elif isinstance(value, np.ndarray):
+            if value.size != 1:
+                return str(value.tolist())
+            value = value.reshape(-1)[0].item()
+        elif isinstance(value, np.generic):
+            value = value.item()
+        if isinstance(value, (bool, int, float, str)):
+            return value
+        return str(value)
+
+    @staticmethod
+    def _checkpoint_safe_config(value):
+        """Recursively convert Munch/config values to portable primitives."""
+        if isinstance(value, dict):
+            return {
+                str(key): BaseModel._checkpoint_safe_config(item)
+                for key, item in value.items()
+            }
+        if isinstance(value, (list, tuple)):
+            return [
+                BaseModel._checkpoint_safe_config(item) for item in value
+            ]
+        if isinstance(value, torch.device):
+            return str(value)
+        if isinstance(value, np.generic):
+            return value.item()
+        if value is None or isinstance(value, (bool, int, float, str)):
+            return value
+        return str(value)
+
+    @staticmethod
+    def _eval_epoch_key(epoch):
+        try:
+            return ('number', round(float(epoch), 10))
+        except (TypeError, ValueError):
+            return ('text', str(epoch))
+
+    @staticmethod
+    def _eval_epoch_sort_key(epoch):
+        try:
+            return (0, float(epoch))
+        except (TypeError, ValueError):
+            return (1, str(epoch))
+
+    def _eval_csv_text(self):
+        stream = io.StringIO(newline='')
+        writer = csv.DictWriter(
+            stream,
+            fieldnames=self.eval_metric_columns,
+            extrasaction='ignore',
+            lineterminator='\n',
+        )
+        writer.writeheader()
+        for row in self.eval_history:
+            writer.writerow({key: row.get(key, '') for key in self.eval_metric_columns})
+        return stream.getvalue()
+
+    def write_eval_metrics_csv(self):
+        """Atomically materialize the complete validation history in the run root."""
+        if self.local_rank > 0 or not self.log_root:
+            return
+        os.makedirs(self.log_root, exist_ok=True)
+        csv_path = os.path.join(self.log_root, 'eval_metrics.csv')
+        tmp_path = csv_path + '.tmp'
+        with open(tmp_path, 'w', newline='', encoding='utf-8') as handle:
+            handle.write(self._eval_csv_text())
+        os.replace(tmp_path, csv_path)
+
+    def record_eval_metrics(self, epoch, scores):
+        """Insert or replace one epoch, then persist the complete CSV ledger."""
+        if self.local_rank > 0:
+            return
+        row = {key: '' for key in self.eval_metric_columns}
+        row['epoch'] = self._eval_scalar(epoch)
+
+        extra_columns = sorted(
+            key for key in scores.keys()
+            if key != 'epoch' and key not in self.eval_metric_columns
+        )
+        if extra_columns:
+            self.eval_metric_columns.extend(extra_columns)
+            for old_row in self.eval_history:
+                for key in extra_columns:
+                    old_row.setdefault(key, '')
+            for key in extra_columns:
+                row[key] = ''
+
+        for key, value in scores.items():
+            if key != 'epoch':
+                row[key] = self._eval_scalar(value)
+
+        epoch_key = self._eval_epoch_key(row['epoch'])
+        self.eval_history = [
+            old_row for old_row in self.eval_history
+            if self._eval_epoch_key(old_row.get('epoch', '')) != epoch_key
+        ]
+        self.eval_history.append(row)
+        self.eval_history.sort(
+            key=lambda item: self._eval_epoch_sort_key(item.get('epoch', ''))
+        )
+        self.write_eval_metrics_csv()
+
+    def restore_eval_history(self, ckpt_data):
+        """Restore the embedded ledger and recreate it under the new run root."""
+        restored_columns = ckpt_data.get('eval_metric_columns', [])
+        self.eval_metric_columns = list(self.EVAL_METRIC_COLUMNS)
+        for key in restored_columns:
+            if key not in self.eval_metric_columns:
+                self.eval_metric_columns.append(key)
+
+        restored_history = ckpt_data.get('eval_history', None)
+        if restored_history is None:
+            csv_text = ckpt_data.get('eval_metrics_csv', '')
+            if csv_text:
+                restored_history = list(csv.DictReader(io.StringIO(csv_text)))
+        if not isinstance(restored_history, (list, tuple)):
+            restored_history = []
+
+        self.eval_history = []
+        for restored_row in restored_history:
+            if not isinstance(restored_row, dict) or 'epoch' not in restored_row:
+                continue
+            for key in restored_row:
+                if key not in self.eval_metric_columns:
+                    self.eval_metric_columns.append(key)
+            row = {key: '' for key in self.eval_metric_columns}
+            for key, value in restored_row.items():
+                row[key] = self._eval_scalar(value)
+            self.eval_history.append(row)
+
+        self.eval_history.sort(
+            key=lambda item: self._eval_epoch_sort_key(item.get('epoch', ''))
+        )
+        self.write_eval_metrics_csv()
+        if self.eval_history:
+            self.print(
+                f"Restored {len(self.eval_history)} evaluation rows to "
+                f"{os.path.join(self.log_root, 'eval_metrics.csv')}"
+            )
+
+    def save(self, tag='best', epoch_done=0, iter_count=None,
+             best_fid=None, **kwargs):
         if self.local_rank > 0:
             return
         ckpt = {}
+        model_manifest = {}
         for name, model in self.models.items():
             m_unwrapped = self.unwrap_model(model)
             m_dict = m_unwrapped.state_dict()
             ckpt[name] = m_dict
+            model_manifest[name] = {
+                'class': (
+                    f'{type(m_unwrapped).__module__}.'
+                    f'{type(m_unwrapped).__name__}'
+                ),
+                'parameters': sum(
+                    parameter.numel()
+                    for parameter in m_unwrapped.parameters()
+                ),
+                'module_types': sorted({
+                    type(module).__name__
+                    for module in m_unwrapped.modules()
+                }),
+            }
+        ckpt['model_manifest'] = model_manifest
 
         if hasattr(self, 'models_ema') and self.models_ema:
             for name, model_ema in self.models_ema.items():
@@ -146,9 +445,17 @@ class BaseModel(object):
         for key, val in kwargs.items():
             ckpt[key] = val
 
+        ckpt['checkpoint_format_version'] = 2
+        ckpt['config_snapshot'] = self._checkpoint_safe_config(self.opt)
         ckpt['Epoch'] = epoch_done
         if iter_count is not None:
             ckpt['iter_count'] = iter_count
+        # Embed both structured rows and an immediately usable CSV copy. The
+        # structured form supports lossless resume/upsert; the CSV string makes
+        # the complete table directly recoverable from the .pth itself.
+        ckpt['eval_metric_columns'] = list(self.eval_metric_columns)
+        ckpt['eval_history'] = [dict(row) for row in self.eval_history]
+        ckpt['eval_metrics_csv'] = self._eval_csv_text()
 
         # ── Best/Last Checkpoint Saving (Only last_fid_X.pth & best_fid_X.pth) ──
         import shutil, glob
@@ -158,21 +465,47 @@ class BaseModel(object):
         if this_fid is not None:
             try:
                 this_fid = float(this_fid)
-                self.last_eval_fid = this_fid
-            except Exception:
+                if not np.isfinite(this_fid):
+                    self.print(
+                        f'Ignoring non-finite checkpoint FID: {this_fid}'
+                    )
+                    this_fid = None
+                else:
+                    self.last_eval_fid = this_fid
+            except (TypeError, ValueError):
                 this_fid = None
+
+        this_kid = kwargs.get('kid', kwargs.get('KID', getattr(self, 'last_eval_kid', None)))
+        if this_kid is not None:
+            try:
+                this_kid = float(this_kid)
+                if not np.isfinite(this_kid):
+                    this_kid = None
+                else:
+                    self.last_eval_kid = this_kid
+            except (TypeError, ValueError):
+                this_kid = None
 
         cached_best = getattr(self, 'best_fid', None)
         if cached_best is None:
-            cached_best = getattr(self, 'restored_metadata', {}).get('best_fid', np.inf)
-            if cached_best is None: cached_best = np.inf
-            try: cached_best = float(cached_best)
-            except Exception: cached_best = np.inf
+            cached_best = getattr(
+                self, 'restored_metadata', {}
+            ).get('best_fid', np.inf)
+        try:
+            cached_best = float(cached_best)
+        except (TypeError, ValueError):
+            cached_best = np.inf
+        if not np.isfinite(cached_best):
+            cached_best = np.inf
 
         if best_fid is not None:
-            try: best_fid_val = float(best_fid)
-            except Exception: best_fid_val = cached_best
+            try:
+                best_fid_val = float(best_fid)
+            except (TypeError, ValueError):
+                best_fid_val = cached_best
         else:
+            best_fid_val = cached_best
+        if not np.isfinite(best_fid_val):
             best_fid_val = cached_best
 
         is_new_best = (tag == 'best') or (this_fid is not None and this_fid < cached_best)
@@ -186,56 +519,93 @@ class BaseModel(object):
 
         if this_fid is not None:
             ckpt['fid'] = this_fid
+        if this_kid is not None:
+            ckpt['kid'] = this_kid
 
         ckpt_dir = os.path.join(self.log_root, self.opt.training.ckpt_dir)
         os.makedirs(ckpt_dir, exist_ok=True)
 
-        # Write once to a temporary file
-        tmp_path = os.path.join(ckpt_dir, f".tmp_{tag}.pth")
+        # Serialize once, then atomically publish named checkpoints. Publish
+        # before removing stale files so an interrupted Kaggle session never
+        # leaves the run without a recoverable last/best checkpoint.
+        tmp_path = os.path.join(ckpt_dir, f'.tmp_{tag}.pth')
         torch.save(ckpt, tmp_path)
 
-        if tag == 'last':
-            fid_str = f"{this_fid:.4f}" if (this_fid is not None and np.isfinite(this_fid)) else "inf"
-            
-            for old_last in glob.glob(os.path.join(ckpt_dir, "last_fid_*.pth")) + glob.glob(os.path.join(ckpt_dir, "last.pth")):
-                try: os.remove(old_last)
-                except Exception: pass
+        def publish_checkpoint(destination):
+            staged = destination + f'.tmp-{os.getpid()}'
+            try:
+                shutil.copyfile(tmp_path, staged)
+                os.replace(staged, destination)
+            finally:
+                if os.path.exists(staged):
+                    os.remove(staged)
 
-            last_fid_path = os.path.join(ckpt_dir, f"last_fid_{fid_str}.pth")
-            shutil.copy(tmp_path, last_fid_path)
-            self.print(f"--> Saved last checkpoint: last_fid_{fid_str}.pth")
+        def remove_stale(patterns, keep_path):
+            for pattern in patterns:
+                for stale_path in glob.glob(os.path.join(ckpt_dir, pattern)):
+                    if os.path.abspath(stale_path) == os.path.abspath(keep_path):
+                        continue
+                    try:
+                        os.remove(stale_path)
+                    except OSError as error:
+                        self.print(
+                            f'Could not remove stale checkpoint {stale_path}: {error}'
+                        )
 
-            if is_new_best:
-                best_str = f"{best_fid_val:.4f}" if (best_fid_val is not None and np.isfinite(best_fid_val)) else fid_str
-                for old_best in glob.glob(os.path.join(ckpt_dir, "best_fid_*.pth")) + glob.glob(os.path.join(ckpt_dir, "best.pth")):
-                    try: os.remove(old_best)
-                    except Exception: pass
+        try:
+            if tag == 'last':
+                fid_str = (
+                    f'{this_fid:.4f}' if this_fid is not None else 'inf'
+                )
+                last_fid_path = os.path.join(
+                    ckpt_dir, f'last_fid_{fid_str}.pth'
+                )
+                publish_checkpoint(last_fid_path)
+                remove_stale(('last_fid_*.pth', 'last.pth'), last_fid_path)
+                self.print(f'--> Saved last checkpoint: last_fid_{fid_str}.pth')
 
-                best_fid_path = os.path.join(ckpt_dir, f"best_fid_{best_str}.pth")
-                shutil.copy(tmp_path, best_fid_path)
-                self.print(f"--> Saved new best checkpoint: best_fid_{best_str}.pth (FID: {best_fid_val:.4f})")
-
-        else:
-            if is_new_best or tag == 'best':
-                best_str = f"{best_fid_val:.4f}" if (best_fid_val is not None and np.isfinite(best_fid_val)) else "inf"
-                for old_best in glob.glob(os.path.join(ckpt_dir, "best_fid_*.pth")) + glob.glob(os.path.join(ckpt_dir, "best.pth")):
-                    try: os.remove(old_best)
-                    except Exception: pass
-
-                best_fid_path = os.path.join(ckpt_dir, f"best_fid_{best_str}.pth")
-                shutil.copy(tmp_path, best_fid_path)
-                self.print(f"--> Saved best checkpoint: best_fid_{best_str}.pth (FID: {best_fid_val:.4f})")
-
-        # Clean up temporary file
-        if os.path.exists(tmp_path):
-            os.remove(tmp_path)
+                if is_new_best:
+                    best_str = (
+                        f'{best_fid_val:.4f}'
+                        if np.isfinite(best_fid_val) else fid_str
+                    )
+                    best_fid_path = os.path.join(
+                        ckpt_dir, f'best_fid_{best_str}.pth'
+                    )
+                    publish_checkpoint(best_fid_path)
+                    remove_stale(
+                        ('best_fid_*.pth', 'best.pth'), best_fid_path
+                    )
+                    self.print(
+                        f'--> Saved new best checkpoint: '
+                        f'best_fid_{best_str}.pth (FID: {best_fid_val:.4f})'
+                    )
+            elif is_new_best or tag == 'best':
+                best_str = (
+                    f'{best_fid_val:.4f}'
+                    if np.isfinite(best_fid_val) else 'inf'
+                )
+                best_fid_path = os.path.join(
+                    ckpt_dir, f'best_fid_{best_str}.pth'
+                )
+                publish_checkpoint(best_fid_path)
+                remove_stale(
+                    ('best_fid_*.pth', 'best.pth'), best_fid_path
+                )
+                self.print(
+                    f'--> Saved best checkpoint: best_fid_{best_str}.pth '
+                    f'(FID: {best_fid_val:.4f})'
+                )
+        finally:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
 
     def restore_rng_state(self, rng=None):
         if rng is None:
             rng = getattr(self, '_restored_rng_state', None)
         if not rng:
             return
-        
+
         if 'torch' in rng and rng['torch'] is not None:
             try:
                 torch_rng = rng['torch'].cpu().to(torch.uint8) if isinstance(rng['torch'], torch.Tensor) else rng['torch']
@@ -291,19 +661,42 @@ class BaseModel(object):
                 self.print(f'Restoring eval_y RNG warning: {e}')
 
     def resolve_resume_path(self, resume_path):
+        """Resolve a checkpoint file, run directory, or ``latest`` request."""
         if not resume_path:
             return None
-        if os.path.isfile(resume_path):
+        if isinstance(resume_path, os.PathLike):
+            resume_path = os.fspath(resume_path)
+        if isinstance(resume_path, str) and os.path.isfile(resume_path):
             return resume_path
-        if isinstance(resume_path, bool) or str(resume_path).lower() in ('true', 'latest'):
-            candidate_dir = os.path.join(self.log_root, getattr(self.opt.training, 'ckpt_dir', 'ckpts'))
-            if os.path.isdir(candidate_dir):
-                import glob
-                pths = glob.glob(os.path.join(candidate_dir, "last_fid_*.pth")) + glob.glob(os.path.join(candidate_dir, "last.pth"))
-                pths = [p for p in pths if not os.path.basename(p).startswith('.tmp_')]
-                if pths:
-                    return max(set(pths), key=os.path.getmtime)
-        return None
+
+        requested_latest = (
+            isinstance(resume_path, bool)
+            or str(resume_path).lower() in ('true', 'latest')
+        )
+        candidate_roots = []
+        if requested_latest:
+            candidate_roots.append(self.log_root)
+        elif isinstance(resume_path, str) and os.path.isdir(resume_path):
+            candidate_roots.append(resume_path)
+        else:
+            return None
+
+        import glob
+        ckpt_subdir = getattr(self.opt.training, 'ckpt_dir', 'ckpts')
+        candidates = []
+        for root in candidate_roots:
+            for candidate_dir in (root, os.path.join(root, ckpt_subdir)):
+                candidates.extend(glob.glob(
+                    os.path.join(candidate_dir, 'last_fid_*.pth')
+                ))
+                candidates.extend(glob.glob(
+                    os.path.join(candidate_dir, 'last.pth')
+                ))
+        candidates = [
+            path for path in set(candidates)
+            if not os.path.basename(path).startswith('.tmp_')
+        ]
+        return max(candidates, key=os.path.getmtime) if candidates else None
 
     def load(self, ckpt, map_location=None, modules=None):
         if modules is None:
@@ -338,7 +731,6 @@ class BaseModel(object):
                     self.print(f"Restored best_fid={best_fid} from existing best.pth in resume directory")
                 except Exception as e:
                     self.print(f"Could not read best_fid from {source_best_pth}: {e}")
-
         restored_fid = ckpt_data.get('fid', ckpt_data.get('last_eval_fid', None))
         if restored_fid is None and isinstance(ckpt, str):
             import re
@@ -356,13 +748,21 @@ class BaseModel(object):
             except Exception:
                 pass
 
+        self.last_eval_kid = ckpt_data.get('kid', None)
         self.restored_metadata = {
             'Epoch': ckpt_data.get('Epoch', 0),
             'iter_count': ckpt_data.get('iter_count', None),
             'best_fid': best_fid,
             'last_eval_fid': getattr(self, 'last_eval_fid', None),
+            'last_eval_kid': ckpt_data.get('kid', None),
             'ema_step': ckpt_data.get('ema_step', None),
+            # Pretraining teacher-selection state.  These keys are harmless for
+            # GAN checkpoints and let R/W resume without forgetting the best
+            # exported EMA teacher.
+            'best_cer': ckpt_data.get('best_cer', np.inf),
+            'best_wier': ckpt_data.get('best_wier', np.inf),
         }
+        self.restore_eval_history(ckpt_data)
 
         for name, model in self.models.items():
             if len(modules) > 0 and model not in modules:
@@ -437,11 +837,9 @@ class BaseModel(object):
             else:
                 raise NotImplementedError()
         if hasattr(self, 'models_ema') and self.models_ema:
+            # EMA is an inference snapshot and must never update dropout/BN state.
             for model_ema in self.models_ema.values():
-                if mode == 'eval':
-                    model_ema.eval()
-                elif mode == 'train':
-                    model_ema.train()
+                model_ema.eval()
 
     def validate(self, *args, **kwargs):
         raise NotImplementedError()
@@ -461,50 +859,118 @@ class AdversarialModel(BaseModel):
         self.max_valid_image_width = self.opt.char_width * self.opt.training.max_word_len
         self.vae_mode = self.opt.training.vae_mode
         self.collect_fn = get_collect_fn(self.opt.training.sort_input, sort_style=True)
+        train_workers = int(getattr(self.opt.training, 'num_workers', 4))
+        eval_workers = int(getattr(self.opt.training, 'eval_num_workers', train_workers))
+        sample_workers = int(getattr(self.opt.training, 'sample_num_workers', 0))
+        prefetch_factor = int(getattr(self.opt.training, 'prefetch_factor', 2))
+        persistent_workers = bool(getattr(
+            self.opt.training, 'persistent_workers', True
+        ))
+        if min(train_workers, eval_workers, sample_workers) < 0:
+            raise ValueError(
+                'num_workers, eval_num_workers, and sample_num_workers '
+                'must be non-negative'
+            )
+        if prefetch_factor < 1:
+            raise ValueError('prefetch_factor must be at least 1')
+
+        def worker_options(worker_count):
+            options = {
+                'num_workers': worker_count,
+                'pin_memory': self.device.type == 'cuda',
+                'worker_init_fn': seed_worker,
+            }
+            if worker_count > 0:
+                options.update(
+                    persistent_workers=persistent_workers,
+                    prefetch_factor=prefetch_factor,
+                )
+            return options
+
+        self.train_loader_worker_options = worker_options(train_workers)
+        self.eval_loader_worker_options = worker_options(eval_workers)
+        self.sample_loader_worker_options = worker_options(sample_workers)
         self.inception_model = None
         self.valid_real_stats = None
-        dataset = get_dataset(opt.dataset, opt.training.dset_split,
-                              recogn_aug=True, wid_aug=True, process_style=True)
+        # The GAN path consumes clean style/org images.  Its former RandomScale
+        # + RandomClip tensor is no longer used; D now owns a matched,
+        # differentiable real/fake augmentation policy.
+        dataset = get_dataset(
+            opt.dataset, opt.training.dset_split,
+            recogn_aug=False, wid_aug=False, process_style=True,
+        )
+        # Keep the configured English lexicon for broad content diversity, but
+        # expose real training transcriptions as a rare-word pool.  Unlike
+        # fabricated symbol strings, this preserves IAM's punctuation/digit
+        # distribution and gives genuinely rare glyphs real image/text pairs.
+        self.rare_lexicon = []
+        if all(hasattr(dataset, name) for name in ('lbs', 'lb_seek_idxs', 'lb_lens')):
+            for seek, length in zip(dataset.lb_seek_idxs, dataset.lb_lens):
+                raw = dataset.lbs[int(seek): int(seek) + int(length)]
+                try:
+                    word = ''.join(chr(int(char)) for char in raw)
+                except (TypeError, ValueError):
+                    word = ''
+                if word:
+                    self.rare_lexicon.append(word)
+        if not self.rare_lexicon:
+            self.rare_lexicon = self.lexicon
         if self.local_rank > -1:
             from torch.utils.data.distributed import DistributedSampler
-            self.train_sampler = DistributedSampler(dataset, num_replicas=None, rank=self.local_rank, shuffle=True)
+            self.train_sampler = DistributedSampler(
+                dataset, num_replicas=None, rank=self.local_rank, shuffle=True
+            )
             shuffle = False
         else:
             self.train_sampler = None
             shuffle = True
-
         self.train_loader = DataLoader(
             dataset,
             batch_size=opt.training.batch_size,
             shuffle=shuffle,
             sampler=self.train_sampler,
             collate_fn=self.collect_fn,
-            num_workers=4,
             drop_last=True,
-            pin_memory=(self.device.type == 'cuda'),
-            persistent_workers=True,
-            worker_init_fn=seed_worker
+            **self.train_loader_worker_options,
         )
 
+        sample_batch_size = max(1, opt.training.eval_batch_size // 2)
         self.tst_loader = DataLoader(
             get_dataset(opt.dataset, opt.valid.dset_split,
                         recogn_aug=False, wid_aug=False, process_style=True),
-            batch_size=opt.training.eval_batch_size // 2,
+            batch_size=sample_batch_size,
             shuffle=True,
             collate_fn=self.collect_fn,
-            pin_memory=(self.device.type == 'cuda')
+            **self.sample_loader_worker_options,
         )
 
         self.tst_loader2 = DataLoader(
             get_dataset(opt.dataset, opt.training.dset_split,
                         recogn_aug=False, wid_aug=False, process_style=True),
-            batch_size=opt.training.eval_batch_size // 2,
+            batch_size=sample_batch_size,
             shuffle=True,
             collate_fn=self.collect_fn,
-            pin_memory=(self.device.type == 'cuda')
+            **self.sample_loader_worker_options,
         )
 
         self.models = None
+
+    def set_mode(self, mode='eval'):
+        super().set_mode(mode)
+        if mode == 'train' and self.models is not None:
+            # W/B are fixed feature teachers and remain entirely in eval mode.
+            for name in ('W', 'B'):
+                if name in self.models:
+                    self.models[name].eval()
+
+            if 'R' in self.models:
+                # Keep the recognizer deterministic/frozen, but cuDNN LSTM needs
+                # its own training flag to retain the workspace required for
+                # backward gradients into generated images.
+                recognizer = self.unwrap_model(self.models.R)
+                recognizer.eval()
+                if recognizer.use_rnn:
+                    recognizer.rnn_ctc.train()
 
     def train(self):
         raise NotImplementedError()
@@ -518,7 +984,11 @@ class AdversarialModel(BaseModel):
         batch = Hdf5Dataset.merge_batch(batchA, batchB, device)
 
         real_imgs, real_img_lens = batch['style_imgs'], batch['style_img_lens']
+        style_refs, style_ref_lens = batch['org_imgs'], batch['org_img_lens']
         real_lbs, real_lb_lens = batch['lbs'], batch['lb_lens']
+        use_ema = getattr(self, 'use_ema', False)
+        generator = self.models_ema.G if use_ema else self.models.G
+        encoder = self.models_ema.E if use_ema else self.models.E
 
         with torch.no_grad():
             self.eval_z.sample_()
@@ -526,20 +996,22 @@ class AdversarialModel(BaseModel):
 
             recn_imgs = None
             if 'E' in self.models:
-                enc_z = self.models.E(real_imgs, real_img_lens, self.models.B)
-                recn_imgs = self.models.G(enc_z, real_lbs, real_lb_lens)
+                enc_z = encoder(style_refs, style_ref_lens, self.models.B)
+                recn_imgs = generator(enc_z, real_lbs, real_lb_lens)
 
-            fake_real_imgs = self.models.G(eval_z_in, real_lbs, real_lb_lens)
+            fake_real_imgs = generator(eval_z_in, real_lbs, real_lb_lens)
 
             self.eval_y.sample_()
             sampled_words = idx_to_words(self.eval_y, self.lexicon, 0,
                                          self.opt.training.capitalize_ratio,
-                                         self.opt.training.blank_ratio)
+                                         self.opt.training.blank_ratio,
+                                         rare_ratio=0.0,
+                                         rare_lexicon=self.rare_lexicon)
             sampled_words[-2] = sampled_words[-1]
             fake_lbs, fake_lb_lens = self.label_converter.encode(sampled_words)
             fake_lbs, fake_lb_lens = fake_lbs.to(device), fake_lb_lens.to(device)
-            fake_imgs = self.models.G(eval_z_in, fake_lbs, fake_lb_lens)
-            style_imgs = self.models.G(enc_z, fake_lbs, fake_lb_lens)
+            fake_imgs = generator(eval_z_in, fake_lbs, fake_lb_lens)
+            style_imgs = generator(enc_z, fake_lbs, fake_lb_lens)
 
             tensors_to_pad = [real_imgs, fake_real_imgs, fake_imgs, style_imgs]
             if recn_imgs is not None:
@@ -594,23 +1066,36 @@ class AdversarialModel(BaseModel):
             for _ in range(n_repeats):
                 for batch in style_dloader:
                     fake_batch = {}
-                    style_imgs, style_img_lens = batch['style_imgs'].to(device), batch['style_img_lens'].to(device)
+                    style_imgs = batch['style_imgs'].to(device)
+                    style_refs = batch['org_imgs'].to(device)
+                    style_ref_lens = batch['org_img_lens'].to(device)
                     style_lbs, style_lb_lens = batch['lbs'].to(device), batch['lb_lens'].to(device)
                     if use_rand_corpus:
                         word_idx_sampler.sample_()
                         sampled_words = idx_to_words(word_idx_sampler[:style_imgs.size(0)],
                                                      self.lexicon, 0, self.opt.training.capitalize_ratio,
-                                                     blank_ratio=0)
+                                                     blank_ratio=0,
+                                                     rare_ratio=float(getattr(
+                                                         self.opt.training,
+                                                         'rare_word_ratio', 0.15,
+                                                     )),
+                                                     rare_lexicon=self.rare_lexicon)
                         content_lbs, content_lb_lens = self.label_converter.encode(sampled_words)
                     else:
                         content_lbs, content_lb_lens = style_lbs, style_lb_lens
 
-                    fake_batch['lbs'], fake_batch['lb_lens'] = content_lbs.to(device), content_lb_lens.to(device)
+                    content_lbs = content_lbs.to(device)
+                    content_lb_lens = content_lb_lens.to(device)
+                    fake_batch['lbs'], fake_batch['lb_lens'] = content_lbs, content_lb_lens
 
                     if style_guided:
-                        enc_z = self.models.E(style_imgs.to(device), style_img_lens.to(device), self.models.B)
+                        enc_z = self.models.E(style_refs, style_ref_lens, self.models.B)
                     else:
-                        enc_z = torch.randn(style_lb_lens.size(0), self.models.G.style_dim, self.models.G.style_dim).to(device)
+                        num_tokens = getattr(self.opt.EncModel, 'num_style_tokens', 8)
+                        enc_z = torch.randn(
+                            style_lb_lens.size(0), num_tokens, self.models.G.style_dim,
+                            device=device,
+                        )
 
                     fake_batch['style_imgs'] = self.models.G(enc_z, content_lbs, content_lb_lens)
                     fake_batch['style_img_lens'] = fake_batch['lb_lens'] * self.opt.char_width
@@ -624,30 +1109,42 @@ class AdversarialModel(BaseModel):
                     yield fake_batch
 
     def validate(self, style_guided=True, test_stage=False, *args, **kwargs):
+        # KID subset selection and a few validation helpers use process-global
+        # RNGs. Isolate them so metric toggles/frequency cannot change training.
+        training_rng_state = self.capture_process_rng_state()
+        eval_seed = int(getattr(
+            self.opt.valid, 'eval_seed', getattr(self.opt, 'seed', 123456)
+        ))
+        self.seed_process_rng(eval_seed)
+
         use_ema = getattr(self, 'use_ema', False)
         if use_ema:
             active_G = self.models.G
             active_E = self.models.E
-            active_B = self.models.B
             self.models.G = self.models_ema.G
             self.models.E = self.models_ema.E
-            self.models.B = self.models_ema.B
 
         self.set_mode('eval')
 
         try:
             # OPTIMIZATION: Cache validation DataLoader to avoid worker startup/shutdown overhead
-            if not hasattr(self, 'eval_dloader') or self.eval_dloader is None:
+            loader_key = (
+                self.opt.valid.dset_name, self.opt.valid.dset_split,
+                self.opt.valid.batch_size, getattr(self.opt, 'img_height', 64),
+            )
+            if (not hasattr(self, 'eval_dloader') or self.eval_dloader is None
+                    or getattr(self, '_eval_dloader_key', None) != loader_key):
                 self.eval_dloader = DataLoader(
                     get_dataset(self.opt.valid.dset_name, self.opt.valid.dset_split, process_style=True),
                     collate_fn=self.collect_fn,
                     batch_size=self.opt.valid.batch_size,
                     shuffle=False,
-                    num_workers=4,
-                    pin_memory=(self.device.type == 'cuda'),
-                    persistent_workers=True,
-                    worker_init_fn=seed_worker
+                    **self.eval_loader_worker_options,
                 )
+                self._eval_dloader_key = loader_key
+                self.valid_real_hwd_features = None
+                self.valid_real_hwd_dataset = None
+                self.real_cmmd_embeddings = None
             eval_dloader = self.eval_dloader
 
             if 'E' not in self.models:
@@ -662,16 +1159,76 @@ class AdversarialModel(BaseModel):
                                                  style_guided, n_rand_repeat)
                 return generator
 
-            # OPTIMIZATION: Pre-generate and cache fake image batches on CPU.
-            # We compress images to int8 and drop style_imgs if not test_stage to fit within tight 15GB RAM limits.
+            # Independent toggles supersede the old grouped flags. The grouped
+            # names remain read-only fallbacks so older YAML files still evaluate.
+            legacy_ocr = getattr(self.opt.valid, 'validate_ocr', None)
+            validate_cer_enabled = bool(getattr(
+                self.opt.valid, 'validate_cer',
+                legacy_ocr if legacy_ocr is not None else False,
+            ))
+            validate_wer_enabled = bool(getattr(
+                self.opt.valid, 'validate_wer',
+                legacy_ocr if legacy_ocr is not None else False,
+            ))
+            validate_psnr_enabled = bool(getattr(self.opt.valid, 'validate_psnr', False))
+            validate_mssim_enabled = bool(getattr(self.opt.valid, 'validate_mssim', False))
+            validate_wier_enabled = bool(getattr(self.opt.valid, 'validate_wier', False))
+            legacy_is = getattr(self.opt.valid, 'validate_is', None)
+            validate_is_gen_enabled = bool(getattr(
+                self.opt.valid, 'validate_is_gen',
+                legacy_is if legacy_is is not None else False,
+            ))
+            validate_is_org_enabled = bool(getattr(
+                self.opt.valid, 'validate_is_org',
+                legacy_is if legacy_is is not None else False,
+            ))
+            validate_is_enabled = (
+                validate_is_gen_enabled or validate_is_org_enabled
+            )
+            validate_fid_enabled = bool(getattr(
+                self.opt.valid, 'validate_fid', False
+            ))
+            validate_kid_enabled = bool(getattr(
+                self.opt.valid, 'validate_kid', False
+            ))
+            validate_distribution_metrics = any((
+                validate_fid_enabled, validate_kid_enabled,
+                validate_is_enabled,
+            ))
+            keep_style_images = any((
+                validate_cer_enabled, validate_wer_enabled,
+                validate_psnr_enabled, validate_mssim_enabled,
+                validate_wier_enabled,
+            ))
+
+            # Pre-generate and cache fake image batches on CPU.  Int8 storage is
+            # cheap but quantizes away precisely the high-frequency stroke
+            # differences KID is meant to detect, so the default is lossless
+            # float32 with an explicit float16 fallback for RAM-constrained runs.
+            metric_cache_dtype = str(getattr(
+                self.opt.valid, 'metric_cache_dtype', 'float32'
+            )).lower()
+            if metric_cache_dtype not in {'float32', 'float16', 'int8'}:
+                raise ValueError(
+                    'valid.metric_cache_dtype must be float32, float16, or int8'
+                )
+            metric_cache_quantized = metric_cache_dtype == 'int8'
+
             def batch_to_cpu(batch):
                 cpu_batch = {}
                 for k, v in batch.items():
                     if isinstance(v, torch.Tensor):
-                        if k == 'style_imgs' and not test_stage:
+                        if k == 'style_imgs' and not keep_style_images:
                             continue
                         if k in ['org_imgs', 'style_imgs']:
-                            cpu_batch[k] = (v.cpu().clamp(-1.0, 1.0) * 127.0).round().to(torch.int8)
+                            image = v.detach().cpu().clamp(-1.0, 1.0)
+                            if metric_cache_quantized:
+                                image = (image * 127.0).round().to(torch.int8)
+                            elif metric_cache_dtype == 'float16':
+                                image = image.to(torch.float16)
+                            else:
+                                image = image.to(torch.float32)
+                            cpu_batch[k] = image
                         else:
                             cpu_batch[k] = v.cpu()
                     else:
@@ -681,53 +1238,102 @@ class AdversarialModel(BaseModel):
             self.print("Generating and caching validation fake images...")
             generator_list = [batch_to_cpu(b) for b in get_generator()]
 
-            cached_decompressed_list = None
             def get_cached_generator():
-                nonlocal cached_decompressed_list
-                if cached_decompressed_list is None:
-                    cached_decompressed_list = []
+                # Return a fresh streaming view for every metric. Keeping both
+                # int8 and full float32 copies of the complete validation set
+                # multiplied host RAM and caused avoidable local/Kaggle crashes.
+                def decompressed_batches():
                     for batch in generator_list:
                         decompressed = {}
-                        for k, v in batch.items():
-                            if k in ['org_imgs', 'style_imgs'] and isinstance(v, torch.Tensor):
-                                decompressed[k] = (v.to(torch.float32) / 127.0).pin_memory()
+                        for key, value in batch.items():
+                            if (key in ('org_imgs', 'style_imgs')
+                                    and isinstance(value, torch.Tensor)):
+                                value = value.to(torch.float32)
+                                if metric_cache_quantized:
+                                    value = value.div_(127.0)
+                                if self.device.type == 'cuda':
+                                    value = value.pin_memory()
+                                decompressed[key] = value
                             else:
-                                decompressed[k] = v
-                        cached_decompressed_list.append(decompressed)
-                return cached_decompressed_list
+                                decompressed[key] = value
+                        yield decompressed
+                return decompressed_batches()
 
-            if not hasattr(self, 'valid_real_stats') or self.valid_real_stats is None:
-                from metric.val_metrics import calculate_activation_statistics, InceptionV3
-                self.print("Precalculating validation set statistics...")
-                block_idx = InceptionV3.BLOCK_INDEX_BY_DIM[2048]
-                if self.inception_model is None:
-                    self.inception_model = InceptionV3([block_idx]).to(self.device).eval()
-                self.valid_real_stats = calculate_activation_statistics(eval_dloader, len(eval_dloader), 
-                                                                       self.inception_model, self.opt.valid.dims, 
-                                                                       self.device, crop=not test_stage)
-                                                                       
+            res = {}
+            if validate_distribution_metrics:
+                real_stats_key = (
+                    id(eval_dloader.dataset), self.opt.valid.dset_name,
+                    self.opt.valid.dset_split, self.opt.valid.dims,
+                    not test_stage, validate_is_enabled,
+                )
+                if (not hasattr(self, 'valid_real_stats')
+                        or self.valid_real_stats is None
+                        or getattr(self, '_valid_real_stats_key', None) != real_stats_key):
+                    from metric.val_metrics import (
+                        calculate_activation_statistics, InceptionV3,
+                    )
+                    self.print("Precalculating validation set statistics...")
+                    block_idx = InceptionV3.BLOCK_INDEX_BY_DIM[2048]
+                    if self.inception_model is None:
+                        self.inception_model = InceptionV3(
+                            [block_idx]
+                        ).to(self.device).eval()
+                    self.valid_real_stats = calculate_activation_statistics(
+                        eval_dloader, len(eval_dloader), self.inception_model,
+                        self.opt.valid.dims, self.device,
+                        crop=not test_stage, eval_is=validate_is_enabled,
+                    )
+                    self._valid_real_stats_key = real_stats_key
+
+                if test_stage:
+                    res = calculate_fid_kid_is(
+                        self.opt.valid, eval_dloader,
+                        get_cached_generator(), n_rand_repeat, self.device,
+                        real_stats=self.valid_real_stats,
+                        inceptionV3_model=self.inception_model,
+                    )
+                else:
+                    res = calculate_fid_kid_is(
+                        self.opt.valid, eval_dloader,
+                        get_cached_generator(), n_rand_repeat, self.device,
+                        crop=True, real_stats=self.valid_real_stats,
+                        inceptionV3_model=self.inception_model,
+                    )
+
             from metric.val_metrics import calculate_hwd_score
 
-            if test_stage:
-                res = calculate_fid_kid_is(self.opt.valid, eval_dloader, get_cached_generator(), n_rand_repeat, 
-                                         self.device, real_stats=self.valid_real_stats, inceptionV3_model=self.inception_model)
-            else:
-                res = calculate_fid_kid_is(self.opt.valid, eval_dloader, get_cached_generator(), n_rand_repeat, 
-                                         self.device, crop=True, real_stats=self.valid_real_stats, inceptionV3_model=self.inception_model)
-
-            if test_stage:
-                if not self.opt.valid.use_rand_corpus:
-                    psnr_mssim = calculate_mssim_psnr(eval_dloader, get_cached_generator())
+            if ((validate_psnr_enabled or validate_mssim_enabled)
+                    and not self.opt.valid.use_rand_corpus):
+                psnr_mssim = calculate_mssim_psnr(
+                    eval_dloader, get_cached_generator()
+                )
+                if validate_psnr_enabled:
                     res['psnr'] = psnr_mssim['psnr']
+                if validate_mssim_enabled:
                     res['mssim'] = psnr_mssim['mssim']
-                if style_guided:
-                    wier = self.validate_wid(get_cached_generator(), real_dloader=eval_dloader, split=self.opt.valid.dset_split)
-                    res['wier'] = wier
 
-            if getattr(self.opt.valid, 'validate_ocr', True):
-                res['cer'], res['wer'] = self.validate_ocr(get_cached_generator(), n_iters=len(eval_dloader) * n_rand_repeat)
+            if validate_wier_enabled and style_guided:
+                res['wier'] = self.validate_wid(
+                    get_cached_generator(), real_dloader=eval_dloader,
+                    split=self.opt.valid.dset_split,
+                )
 
-            if getattr(self.opt.valid, 'validate_hwd', True):
+            if validate_cer_enabled or validate_wer_enabled:
+                cer, wer = self.validate_ocr(
+                    get_cached_generator(),
+                    n_iters=len(eval_dloader) * n_rand_repeat,
+                )
+                if validate_cer_enabled:
+                    res['cer'] = cer
+                if validate_wer_enabled:
+                    res['wer'] = wer
+
+            if getattr(self.opt.valid, 'validate_hwd', False):
+                hwd_batch_size = int(getattr(
+                    self.opt.valid, 'hwd_batch_size', 32
+                ))
+                if hwd_batch_size < 1:
+                    raise ValueError('valid.hwd_batch_size must be positive')
                 # OPTIMIZATION: Cache real HWD features to avoid reprocessing real images every epoch.
                 if not hasattr(self, 'valid_real_hwd_features') or self.valid_real_hwd_features is None:
                     if not hasattr(self, 'valid_real_hwd_dataset') or self.valid_real_hwd_dataset is None:
@@ -744,24 +1350,28 @@ class AdversarialModel(BaseModel):
                             for i in range(imgs.size(0)):
                                 real_authors_list.append(str(wids[i].item()))
                         self.valid_real_hwd_dataset = ImageListDataset(real_imgs_list, real_authors_list)
-                    
+
                     from metric.val_metrics import HWDScore
-                    hwd_scorer = HWDScore(batchsize=64).to(self.device)
+                    hwd_scorer = HWDScore(batchsize=hwd_batch_size).to(self.device)
                     self.valid_real_hwd_features = hwd_scorer.digest(self.valid_real_hwd_dataset)
                     self.valid_real_hwd_dataset = None
                     import gc
                     gc.collect()
 
-                hwd_val = calculate_hwd_score(eval_dloader, get_cached_generator(), n_rand_repeat, self.device, real_features=self.valid_real_hwd_features)
+                hwd_val = calculate_hwd_score(
+                    eval_dloader, get_cached_generator(), n_rand_repeat,
+                    self.device, real_features=self.valid_real_hwd_features,
+                    batchsize=hwd_batch_size,
+                )
                 res['hwd'] = hwd_val
 
-            if getattr(self.opt.valid, 'validate_cmmd', True):
+            if getattr(self.opt.valid, 'validate_cmmd', False):
                 current_epoch = kwargs.get('current_epoch', None)
                 every_n = getattr(self.opt.valid, 'validate_cmmd_every_n_epochs', 3)
                 should_run_cmmd = test_stage or (current_epoch is None)
                 if not should_run_cmmd:
                     should_run_cmmd = (current_epoch % every_n == 0)
-                    
+
                 if should_run_cmmd:
                     from metric.val_metrics import calculate_cmmd_score, compute_real_embeddings
                     if not hasattr(self, 'cmmd_embedding_model') or self.cmmd_embedding_model is None:
@@ -788,9 +1398,9 @@ class AdversarialModel(BaseModel):
                             except Exception as e:
                                 self.print(f"Could not save real CMMD embeddings cache: {e}")
                     cmmd_val = calculate_cmmd_score(
-                        eval_dloader, 
-                        get_cached_generator(), 
-                        n_rand_repeat, 
+                        eval_dloader,
+                        get_cached_generator(),
+                        n_rand_repeat,
                         self.device,
                         real_embeddings=self.real_cmmd_embeddings,
                         embedding_model=self.cmmd_embedding_model
@@ -799,12 +1409,12 @@ class AdversarialModel(BaseModel):
 
             import gc
             gc.collect()
-            torch.cuda.empty_cache()
+            # Retain reusable allocator blocks between validation and training.
         finally:
             if use_ema:
                 self.models.G = active_G
                 self.models.E = active_E
-                self.models.B = active_B
+            self.restore_process_rng_state(training_rng_state)
 
         return res
 
@@ -813,7 +1423,7 @@ class AdversarialModel(BaseModel):
         # Use the already loaded recognizer from self.models instead of creating a new one
         # to avoid redundant memory allocation and potential OOM.
         recognizer = self.unwrap_model(self.models.R)
-        
+
         ctc_len_scale = recognizer.len_scale
         char_trans = 0
         total_chars = 0
@@ -822,13 +1432,15 @@ class AdversarialModel(BaseModel):
 
         with torch.no_grad():
             for i, batch in tqdm(enumerate(dloader), total=n_iters):
-                real_imgs, real_img_lens = batch['style_imgs'].to(self.device, non_blocking=True), batch['style_img_lens'].to(self.device, non_blocking=True)
+                imgs = batch.get('style_imgs', batch.get('org_imgs'))
+                img_lens = batch.get('style_img_lens', batch.get('org_img_lens'))
+                real_imgs, real_img_lens = imgs.to(self.device, non_blocking=True), img_lens.to(self.device, non_blocking=True)
                 logits = recognizer(real_imgs, real_img_lens)
                 logits = torch.nn.functional.softmax(logits, dim=2).detach()
 
                 logits = logits.cpu().numpy()
                 word_preds = []
-                for logit, img_len in zip(logits, batch['style_img_lens'].cpu().numpy()):
+                for logit, img_len in zip(logits, img_lens.cpu().numpy()):
                     label = ctc_greedy_decoder(logit[:img_len // ctc_len_scale])
                     word_preds.append(self.label_converter.decode(label))
                 word_reals = self.label_converter.decode(batch['lbs'], batch['lb_lens'])
@@ -850,9 +1462,9 @@ class AdversarialModel(BaseModel):
             assert os.path.exists(self.opt.valid.pretrained_test_w)
             w_dict = torch.load(self.opt.valid.pretrained_test_w, map_location=self.device, weights_only=False)
             test_writer = WriterIdentifier(**self.opt.valid.test_wid_model).to(self.device)
-            test_writer.load_state_dict(w_dict['WriterIdentifier'], strict=False)
-            test_writer_backbone = StyleBackbone(**self.opt.StyBackbone).to(self.device)
-            test_writer_backbone.load_state_dict(w_dict['StyleBackbone'], strict=False)
+            test_writer.load_state_dict(w_dict.get('WriterIdentifier', w_dict.get('W')), strict=False)
+            test_writer_backbone = StyleBackbone(**self.opt.StyBackbone, img_height=getattr(self.opt, 'img_height', 64)).to(self.device)
+            test_writer_backbone.load_state_dict(w_dict.get('StyleBackbone', w_dict.get('B')), strict=False)
             self.print(f'load pretrained test_writer_identifier: {self.opt.valid.pretrained_test_w}')
             writer_identifier = test_writer
             writer_backbone = test_writer_backbone
@@ -905,7 +1517,7 @@ class AdversarialModel(BaseModel):
                 fake_lbs = torch.LongTensor(fake_lbs).unsqueeze(0)
                 fake_lb_lens = torch.IntTensor([len(text)])
 
-                num_tokens = getattr(self.opt.EncModel, 'num_style_tokens', 32)
+                num_tokens = getattr(self.opt.EncModel, 'num_style_tokens', 8)
                 style_dim = getattr(self.opt.EncModel, 'style_dim', 32)
                 style0 = torch.randn((1, num_tokens, style_dim))
                 style1 = torch.randn(style0.size())
@@ -946,11 +1558,11 @@ class AdversarialModel(BaseModel):
                 ncol = len(texts)
                 batch = next(iter(tst_loader))
                 imgs, img_lens, lbs, lb_lens = \
-                    batch['style_imgs'], batch['style_img_lens'], batch['lbs'], batch['lb_lens']
+                    batch['org_imgs'], batch['org_img_lens'], batch['lbs'], batch['lb_lens']
                 real_imgs, real_img_lens = imgs.to(self.device), img_lens.to(self.device)
                 fake_lbs, fake_lb_lens = self.label_converter.encode(texts)
 
-                nrow = batch['style_imgs'].size(0)
+                nrow = batch['org_imgs'].size(0)
                 fake_lbs = fake_lbs.repeat(nrow, 1).to(self.device)
                 fake_lb_lens = fake_lb_lens.repeat(nrow,).to(self.device)
                 enc_styles = self.models.E(real_imgs, real_img_lens, self.models.B)
@@ -987,7 +1599,7 @@ class AdversarialModel(BaseModel):
 
         with torch.no_grad():
             nrow, ncol = self.opt.test.nrow, 2
-            rand_z = prepare_z_dist(nrow, self.opt.EncModel.style_dim, self.device, num_tokens=self.opt.EncModel.style_dim)
+            rand_z = prepare_z_dist(nrow, self.opt.EncModel.style_dim, self.device, num_tokens=getattr(self.opt.EncModel, 'num_style_tokens', 8))
             while True:
                 text = input('input text: ')
                 if len(text) == 0:
@@ -1039,7 +1651,7 @@ class AdversarialModel(BaseModel):
                     break
 
                 batch = next(iter(tst_loader))
-                real_imgs, real_img_lens = batch['style_imgs'].to(self.device), batch['style_img_lens'].to(self.device)
+                real_imgs, real_img_lens = batch['org_imgs'].to(self.device), batch['org_img_lens'].to(self.device)
                 fake_lbs = self.label_converter.encode(text)
                 fake_lbs = torch.LongTensor(fake_lbs)
                 fake_lb_lens = torch.IntTensor([len(text)])
@@ -1078,12 +1690,15 @@ class GlobalLocalAdversarialModel(AdversarialModel):
         device = self.device
 
         generator = Generator(**opt.GenModel).to(device)
-        style_backbone = StyleBackbone(**opt.StyBackbone).to(device)
+        style_backbone = StyleBackbone(**opt.StyBackbone, img_height=getattr(opt, 'img_height', 64)).to(device)
         style_encoder = StyleEncoder(**opt.EncModel).to(device)
+        # All random-style paths must use the encoder's effective token count,
+        # including configurations that specify only num_local_queries.
+        opt.EncModel.num_style_tokens = style_encoder.num_style_tokens
         writer_identifier = WriterIdentifier(**opt.WidModel).to(device)
         discriminator = Discriminator(**opt.DiscModel).to(device)
         patch_discriminator = PatchDiscriminator(**opt.PatchDiscModel).to(device)
-        recognizer = Recognizer(**opt.OcrModel).to(device)
+        recognizer = Recognizer(**opt.OcrModel, img_height=getattr(opt, 'img_height', 64)).to(device)
 
         self.models = Munch(
             G=generator,
@@ -1098,132 +1713,121 @@ class GlobalLocalAdversarialModel(AdversarialModel):
         self.ctc_loss = CTCLoss(zero_infinity=True, reduction='mean')
         self.classify_loss = CrossEntropyLoss()
         self.contextual_loss = CXLoss()
-        from networks.loss import GramStyleLoss
-        self.gram_loss = GramStyleLoss()
 
     def train(self):
+        _is_master = self.local_rank < 1
         self.info()
 
-        # ── WandB init (master process only) ──────────────────────────────
-        _is_master = self.local_rank < 1
-        if _is_master and not getattr(self.opt, 'no_wandb', False):
-            try:
-                import wandb as _wandb
-                # Get branchname and dates dynamically
-                import subprocess
-                from datetime import datetime
-                branchname = None
-                try:
-                    branchname = subprocess.check_output(['git', 'rev-parse', '--abbrev-ref', 'HEAD'], stderr=subprocess.DEVNULL, timeout=2).decode().strip()
-                except Exception:
-                    pass
-                if not branchname or branchname == 'HEAD':
-                    try:
-                        curr_dir = os.path.abspath(os.getcwd())
-                        for _ in range(5):
-                            head_path = os.path.join(curr_dir, '.git', 'HEAD')
-                            if os.path.exists(head_path):
-                                with open(head_path, 'r') as f:
-                                    content = f.read().strip()
-                                if content.startswith('ref:'):
-                                    branchname = content.split('/')[-1]
-                                else:
-                                    branchname = content[:7]
-                                break
-                            curr_dir = os.path.dirname(curr_dir)
-                    except Exception:
-                        pass
-                folder_branch = None
-                try:
-                    parts = os.path.abspath(__file__).split(os.sep)
-                    if len(parts) >= 3:
-                        folder_branch = parts[-3]
-                except Exception:
-                    pass
-                if branchname in [None, 'main', 'master', 'HEAD']:
-                    if folder_branch in ['main', 'dev', 'random_crop_recog', 'classic_optimized', 'HiGANplus', 'higanplus']:
-                        branchname = folder_branch
-                if not branchname:
-                    branchname = 'random_crop_recog'
-                
-                run_name = f"{branchname}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-
-                wandb_key = os.environ.get('WANDB_API_KEY')
-                if not wandb_key:
-                    for path_candidate in [
-                        '/home/quq/machineLearning/HTG/wandb_key.txt',
-                        '/kaggle/working/wandb_key.txt',
-                        '../../wandb_key.txt',
-                        '../wandb_key.txt',
-                        './wandb_key.txt'
-                    ]:
-                        if os.path.exists(path_candidate):
-                            try:
-                                with open(path_candidate, 'r') as f:
-                                    wandb_key = f.read().strip()
-                                if wandb_key:
-                                    break
-                            except Exception:
-                                pass
-                if wandb_key:
-                    _wandb.login(key=wandb_key)
-                else:
-                    _wandb.login()
-                _wandb.init(
-                    project='HiGANplus',
-                    name=run_name,
-                    config=vars(self.opt) if hasattr(self.opt, '__dict__') else dict(self.opt),
-                    resume='allow',
-                )
-            except Exception as e:
-                self.print(f"WandB initialization skipped or failed: {e}")
+        # W&B is initialized in train.py before this object is constructed so
+        # this summary and all subsequent checkpoint messages reach Logs.
 
         opt = self.opt
-        self.z = prepare_z_dist(opt.training.batch_size, opt.EncModel.style_dim, self.device,
-                                seed=self.opt.seed, num_tokens=opt.EncModel.style_dim)
+        num_style_tokens = getattr(opt.EncModel, 'num_style_tokens', 8)
+        self.z = prepare_z_dist(
+            opt.training.batch_size, opt.EncModel.style_dim, self.device,
+            seed=self.opt.seed, num_tokens=num_style_tokens,
+        )
         self.y = prepare_y_dist(opt.training.batch_size, len(self.lexicon), self.device, seed=self.opt.seed)
 
-        self.eval_z = prepare_z_dist(opt.training.eval_batch_size, opt.EncModel.style_dim, self.device,
-                                     seed=self.opt.seed, num_tokens=opt.EncModel.style_dim)
+        self.eval_z = prepare_z_dist(
+            opt.training.eval_batch_size, opt.EncModel.style_dim, self.device,
+            seed=self.opt.seed, num_tokens=num_style_tokens,
+        )
         self.eval_y = prepare_y_dist(opt.training.eval_batch_size, len(self.lexicon), self.device,
                                      seed=self.opt.seed)
 
+        d_lr = float(getattr(opt.training, 'd_lr', opt.training.lr))
+        patch_d_lr = float(getattr(opt.training, 'patch_d_lr', d_lr))
+        if d_lr <= 0 or patch_d_lr <= 0:
+            raise ValueError('d_lr and patch_d_lr must be positive')
         self.optimizers = Munch(
-            G=torch.optim.Adam(chain(self.models.G.parameters(), self.models.E.parameters()),
-                               lr=opt.training.lr, betas=(opt.training.adam_b1, opt.training.adam_b2)),
-            D=torch.optim.Adam(chain(self.models.D.parameters(), self.models.P.parameters()),
-                               lr=opt.training.lr,
-                               betas=(opt.training.adam_b1, opt.training.adam_b2)),
+            G=torch.optim.Adam(
+                chain(self.models.G.parameters(), self.models.E.parameters()),
+                lr=opt.training.lr,
+                betas=(opt.training.adam_b1, opt.training.adam_b2),
+            ),
+            D=torch.optim.Adam(
+                self.models.D.parameters(), lr=d_lr,
+                betas=(opt.training.adam_b1, opt.training.adam_b2),
+            ),
+            P=torch.optim.Adam(
+                self.models.P.parameters(), lr=patch_d_lr,
+                betas=(opt.training.adam_b1, opt.training.adam_b2),
+            ),
         )
 
-        # Initialize EMA models
+        # EMA only trainable generation modules. The frozen pretrained backbone
+        # remains the single source of style features.
         self.use_ema = getattr(opt.training, 'update_ema', False)
         if self.use_ema:
             import copy
             self.ema_beta = getattr(opt.training, 'ema_beta', 0.999)
             self.print(f"EMA is enabled with beta={self.ema_beta}. Initializing EMA models...")
-            self.models_ema.G = copy.deepcopy(self.models.G)
-            self.models_ema.E = copy.deepcopy(self.models.E)
-            self.models_ema.B = copy.deepcopy(self.models.B)
-            self.models_ema.G.requires_grad_(False)
-            self.models_ema.E.requires_grad_(False)
-            self.models_ema.B.requires_grad_(False)
+            self.models_ema.G = copy.deepcopy(self.models.G).requires_grad_(False)
+            self.models_ema.E = copy.deepcopy(self.models.E).requires_grad_(False)
+            self.models_ema.G.eval()
+            self.models_ema.E.eval()
             self.ema_tracker = EMA(self.ema_beta)
 
         epoch_done = 1
-        resume_path = getattr(self.opt.training, 'resume', None)
-        if not resume_path or not os.path.exists(resume_path):
-            resume_path = getattr(self.opt.training, 'pretrained_ckpt', None)
+        requested_resume = getattr(self.opt.training, 'resume', None)
+        resume_path = self.resolve_resume_path(requested_resume)
+        if requested_resume and resume_path is None:
+            self.print(f'Could not resolve requested resume target: {requested_resume}')
+        if resume_path is None:
+            resume_path = self.resolve_resume_path(
+                getattr(self.opt.training, 'pretrained_ckpt', None)
+            )
 
-        is_resuming = resume_path is not None and os.path.exists(resume_path)
+        is_resuming = resume_path is not None
         if is_resuming:
+            self.print(f'Resuming from resolved checkpoint: {resume_path}')
             epoch_done = self.load(resume_path, self.device)
             torch.cuda.empty_cache()
         else:
+            writer_loss_weight = float(getattr(self.opt.training, "lambda_wid", 0.0))
+            writer_path = os.fspath(getattr(self.opt.training, "pretrained_w", "") or "")
+            train_wids = np.asarray(self.train_loader.dataset.wids)
+            train_writer_count = int(np.unique(train_wids).size)
+            model_writer_count = self.unwrap_model(self.models.W).linear_wid[-1].out_features
+            expected_train_writers = int(getattr(self.opt, "expected_train_writers", train_writer_count))
+            expected_width_multiple = int(getattr(self.opt, "expected_width_multiple", 1))
+            train_widths = np.asarray(self.train_loader.dataset.img_lens)
+            if train_writer_count != expected_train_writers:
+                raise RuntimeError(
+                    f"Active train HDF5 has {train_writer_count} writers; expected "
+                    f"{expected_train_writers} for {getattr(self.opt, 'data_profile', 'this configuration')}."
+                )
+            if expected_width_multiple > 1 and np.any(train_widths % expected_width_multiple):
+                raise RuntimeError(
+                    f"Active train HDF5 widths are not bucketed to {expected_width_multiple} pixels; "
+                    "the configured IAM-64 dataset file is not selected."
+                )
+            if writer_loss_weight > 0.0:
+                if train_writer_count != model_writer_count:
+                    raise RuntimeError(
+                        f"Writer teacher/model has {model_writer_count} classes, but the active "
+                        f"train HDF5 has {train_writer_count} writers. Use a matching data profile."
+                    )
+                if not writer_path or not os.path.isfile(writer_path):
+                    raise FileNotFoundError(
+                        "lambda_wid is enabled but no writer teacher was found at "
+                        f"{writer_path!r}. Train configs/wid_iam.yml first."
+                    )
+                writer_ckpt = torch.load(writer_path, map_location="cpu", weights_only=False)
+                writer_state = writer_ckpt.get("WriterIdentifier", writer_ckpt.get("W"))
+                if writer_state is None or "linear_wid.2.weight" not in writer_state:
+                    raise KeyError(f"{writer_path} does not contain a compatible WriterIdentifier state")
+                checkpoint_writer_count = writer_state["linear_wid.2.weight"].shape[0]
+                if checkpoint_writer_count != model_writer_count:
+                    raise RuntimeError(
+                        f"Writer teacher has {checkpoint_writer_count} classes, expected "
+                        f"{model_writer_count}; do not reuse the old IAM teacher across splits."
+                    )
             if os.path.exists(self.opt.training.pretrained_w):
                 w_dict = torch.load(self.opt.training.pretrained_w, map_location='cpu', weights_only=False)
-                self.models.W.load_state_dict(w_dict['WriterIdentifier'], strict=False)
-                self.models.B.load_state_dict(w_dict['StyleBackbone'], strict=False)
+                self.models.W.load_state_dict(w_dict.get('WriterIdentifier', w_dict.get('W')), strict=False)
+                self.models.B.load_state_dict(w_dict.get('StyleBackbone', w_dict.get('B')), strict=True)
                 self.print(f'load pretrained writer_identifier: {self.opt.training.pretrained_w}')
                 # self.validate_wid()
             if os.path.exists(self.opt.training.pretrained_r):
@@ -1237,14 +1841,14 @@ class GlobalLocalAdversarialModel(AdversarialModel):
         restored_ema_step = restored_meta.get('ema_step', None)
 
         if restored_iter is not None:
-            iter_count = restored_iter + 1
+            start_epoch, skip_batches, iter_count = self.resume_position(
+                epoch_done, restored_iter, len(self.train_loader)
+            )
             self.print(f"Resumed exact iter_count={iter_count} from checkpoint")
-            start_epoch = iter_count // len(self.train_loader) + 1
-            skip_batches = iter_count % len(self.train_loader)
         elif is_resuming:
-            start_epoch = epoch_done + 1
-            skip_batches = 0
-            iter_count = epoch_done * len(self.train_loader)
+            start_epoch, skip_batches, iter_count = self.resume_position(
+                epoch_done, None, len(self.train_loader)
+            )
             self.print(f"Calculated iter_count={iter_count} based on epoch_done={epoch_done}")
         else:
             start_epoch = 1
@@ -1253,23 +1857,41 @@ class GlobalLocalAdversarialModel(AdversarialModel):
 
         self.epoch_start = start_epoch
 
+        scheduler_base_lrs = {
+            'G': float(opt.training.lr),
+            'D': d_lr,
+            'P': patch_d_lr,
+        }
         self.lr_schedulers = Munch(
-            G=get_scheduler(self.optimizers.G, opt.training, last_epoch=start_epoch - 2 if is_resuming else -1),
-            D=get_scheduler(self.optimizers.D, opt.training, last_epoch=start_epoch - 2 if is_resuming else -1)
+            G=get_scheduler(
+                self.optimizers.G, opt.training,
+                base_lr=scheduler_base_lrs['G'],
+            ),
+            D=get_scheduler(
+                self.optimizers.D, opt.training,
+                base_lr=scheduler_base_lrs['D'],
+            ),
+            P=get_scheduler(
+                self.optimizers.P, opt.training,
+                base_lr=scheduler_base_lrs['P'],
+            ),
         )
-        if hasattr(self, '_ckpt_sched_data') and self._ckpt_sched_data:
+        if is_resuming:
+            scheduler_states = getattr(self, '_ckpt_sched_data', {})
             for key in self.lr_schedulers.keys():
                 sched_key = 'SCHED.' + key
-                if sched_key in self._ckpt_sched_data:
-                    try:
-                        self.lr_schedulers[key].load_state_dict(self._ckpt_sched_data[sched_key])
-                        if hasattr(self.lr_schedulers[key], 'get_last_lr') and key in self.optimizers:
-                            lrs = self.lr_schedulers[key].get_last_lr()
-                            for param_group, lr in zip(self.optimizers[key].param_groups, lrs):
-                                param_group['lr'] = lr
-                        self.print(f'Loaded restored scheduler state for {key}')
-                    except Exception as e:
-                        self.print(f'Failed to restore scheduler state for {key}: {e}')
+                try:
+                    restore_scheduler_state(
+                        self.lr_schedulers[key], self.optimizers[key],
+                        scheduler_states.get(sched_key), scheduler_base_lrs[key],
+                        completed_epochs=start_epoch - 1,
+                    )
+                    self.print(
+                        f'Restored scheduler {key} at epoch {start_epoch - 1} '
+                        f'with lr={self.optimizers[key].param_groups[0]["lr"]:.6g}'
+                    )
+                except Exception as e:
+                    self.print(f'Failed to restore scheduler state for {key}: {e}')
 
         # multi-gpu
         if self.local_rank > -1:
@@ -1281,34 +1903,178 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                     broadcast_buffers=False
                 )
 
-        self.averager_meters = AverageMeterManager(['adv_loss', 'fake_disc_loss',
-                                                    'real_disc_loss', 'adv_loss_patch',
-                                                    'fake_disc_loss_patch',
-                                                    'real_disc_loss_patch', 'recn_loss',
-                                                    'fake_ctc_loss', 'info_loss',
-                                                    'style_contrastive_loss',
-                                                    'fake_wid_loss', 'ctx_loss',
-                                                    'kl_loss', 'gram_loss', 'gp_ctc', 'gp_info',
-                                                    'gp_wid', 'gp_recn'])
+        self.averager_meters = AverageMeterManager([
+            'g_total', 'd_total', 'g_adv', 'g_ctc', 'g_writer',
+            'g_recn', 'g_style', 'g_context', 'g_kl',
+            'r1_loss', 'fusion_strength', 'fusion_gate_min', 'fusion_gate_max',
+            'd_real', 'd_fake', 'd_real_patch', 'd_fake_patch',
+            'g_adv_global', 'g_adv_patch', 'g_ctc_rand', 'g_ctc_style',
+            'g_info', 'g_style_cycle', 'g_content_adv',
+        ])
         device = self.device
 
         ctc_len_scale = self.unwrap_model(self.models.R).len_scale
+        patch_size = int(getattr(self.opt.training, 'patch_size', 32))
+        min_patch_crops = int(getattr(self.opt.training, 'min_patch_crops', 4))
+        max_patch_crops = int(getattr(self.opt.training, 'max_patch_crops', 8))
+        patch_char_jitter = int(getattr(
+            self.opt.training, 'patch_char_jitter', 4
+        ))
+        use_d_diffaug = bool(getattr(
+            self.opt.training, 'd_diffaug', False
+        ))
+        d_aug_translate = int(getattr(
+            self.opt.training, 'd_aug_translate', 4
+        ))
+        d_aug_width_scale = float(getattr(
+            self.opt.training, 'd_aug_width_scale', 0.05
+        ))
+        patch_adv_weight = float(
+            getattr(self.opt.training, 'lambda_patch_adv', 0.5)
+        )
+        patch_char_conditioning = bool(getattr(
+            self.opt.training, 'patch_char_conditioning', True
+        ))
+        patch_char_min_confidence = float(getattr(
+            self.opt.training, 'patch_char_min_confidence', 0.0
+        ))
+        rare_word_ratio = float(getattr(
+            self.opt.training, 'rare_word_ratio', 0.15
+        ))
+        masking_mode = getattr(self.opt.training, 'masking_mode', 'none')
+        num_critic_train = int(self.opt.training.num_critic_train)
+        r1_interval = int(getattr(self.opt.training, 'r1_interval', 16))
+        if num_critic_train < 1:
+            raise ValueError('num_critic_train must be at least 1')
+        if r1_interval < 1:
+            raise ValueError('r1_interval must be at least 1')
+        if patch_size < 1:
+            raise ValueError('patch_size must be at least 1')
+        if min_patch_crops < 1 or max_patch_crops < min_patch_crops:
+            raise ValueError(
+                'patch crop bounds must satisfy 1 <= min_patch_crops '
+                '<= max_patch_crops'
+            )
+        if patch_char_jitter < 0:
+            raise ValueError('patch_char_jitter must be non-negative')
+        if d_aug_translate < 0 or not 0.0 <= d_aug_width_scale < 1.0:
+            raise ValueError('invalid discriminator augmentation configuration')
+        if patch_adv_weight < 0:
+            raise ValueError('lambda_patch_adv must be non-negative')
+        if not 0.0 <= patch_char_min_confidence <= 1.0:
+            raise ValueError('patch_char_min_confidence must be in [0, 1]')
+        if not 0.0 <= rare_word_ratio <= 1.0:
+            raise ValueError('rare_word_ratio must be in [0, 1]')
+
+        loader_length = len(self.train_loader)
+        eval_epoch_interval = float(
+            getattr(self.opt.training, 'eval_epoch_val', 1.0)
+        )
+        save_epoch_interval = float(
+            getattr(self.opt.training, 'save_epoch_val', 1.0)
+        )
+        if eval_epoch_interval <= 0 or save_epoch_interval <= 0:
+            raise ValueError('evaluation/save epoch intervals must be positive')
+        eval_interval_iters = max(
+            1, int(round(eval_epoch_interval * loader_length))
+        )
+        save_interval_iters = max(
+            1, int(round(save_epoch_interval * loader_length))
+        )
+        start_save_epoch = float(getattr(
+            self.opt.training, 'start_save_epoch_val', 0
+        ))
+        start_eval_epoch = float(getattr(
+            self.opt.training, 'start_eval_epoch_val', start_save_epoch
+        ))
+
+        self.print(
+            f'GAN schedule: G/D/P lr={opt.training.lr:.6g}/'
+            f'{d_lr:.6g}/{patch_d_lr:.6g}, '
+            f'full LR through epoch {opt.training.start_decay_epoch}, '
+            f'floor={getattr(opt.training, "min_lr_ratio", 0.001):.3f}x; '
+            f'D/P:G={num_critic_train}:1; '
+            f'patch G weight={patch_adv_weight:.3g}; '
+            f'DiffAug={"on" if use_d_diffaug else "off"}'
+        )
+
+        def prepare_stroke_patches(
+            images, image_lens, labels, label_lens
+        ):
+            # The fourth return value is a soft geometry/ink confidence.  It
+            # prevents approximate word-box alignment from turning StrokePatchD
+            # into a noisy character classifier while retaining the local GAN
+            # signal for every crop.
+            patches, _, character_ids, patch_confidence = (
+                sample_character_patches(
+                    images,
+                    image_lens,
+                    labels,
+                    label_lens,
+                    patch_size=patch_size,
+                    min_crops=min_patch_crops,
+                    max_crops=max_patch_crops,
+                    horizontal_jitter=patch_char_jitter,
+                    return_confidence=True,
+                )
+            )
+            if masking_mode != 'none':
+                patches = apply_light_mixed_patch_mask(patches)
+            if patch_char_min_confidence:
+                patch_confidence = torch.where(
+                    patch_confidence >= patch_char_min_confidence,
+                    patch_confidence,
+                    torch.zeros_like(patch_confidence),
+                )
+            if not patch_char_conditioning:
+                character_ids = None
+                patch_confidence = None
+            return patches, character_ids, patch_confidence
+
+        def run_patch_discriminator(groups):
+            patches = torch.cat([group[0] for group in groups], dim=0)
+            char_ids = None
+            char_confidence = None
+            if patch_char_conditioning:
+                char_ids = torch.cat([group[1] for group in groups], dim=0)
+                char_confidence = torch.cat(
+                    [group[2] for group in groups], dim=0
+                )
+            return self.models.P(
+                patches, char_ids, char_confidence=char_confidence
+            )
+
+        def prepare_global_discriminator_input(images, image_lens):
+            if not use_d_diffaug:
+                return images, image_lens
+            return augment_word_batch(
+                images,
+                image_lens,
+                max_translation=d_aug_translate,
+                width_scale=d_aug_width_scale,
+            )
 
         best_fid = restored_meta.get('best_fid', None)
         if best_fid is None:
             best_fid = np.inf
         else:
-            self.print(f"Resumed best_fid={best_fid:.4f} from checkpoint")
-
+            try:
+                best_fid = float(best_fid)
+            except (TypeError, ValueError):
+                best_fid = np.inf
+            if np.isfinite(best_fid):
+                self.print(f"Resumed best_fid={best_fid:.4f} from checkpoint")
         if self.use_ema:
             if restored_ema_step is not None:
                 self.ema_tracker.step = restored_ema_step
                 self.print(f"Restored EMA tracker step={self.ema_tracker.step} from checkpoint")
             else:
-                self.ema_tracker.step = iter_count // opt.training.num_critic_train
+                self.ema_tracker.step = iter_count // num_critic_train
                 self.print(f"Set EMA tracker step to {self.ema_tracker.step} based on iter_count={iter_count}")
         is_best = False
         best_scores = None
+        self.completed_epoch = max(0, start_epoch - 1)
+        self.last_eval_scores = {}
 
         _should_restore_rng = is_resuming and skip_batches > 0
         for epoch in range(start_epoch, self.opt.training.epochs + 1):
@@ -1317,7 +2083,7 @@ class GlobalLocalAdversarialModel(AdversarialModel):
             for i, batch in enumerate(self.train_loader):
                 if epoch == start_epoch and i < skip_batches:
                     continue
-                
+
                 if _should_restore_rng:
                     self.restore_rng_state()
                     _should_restore_rng = False
@@ -1325,17 +2091,20 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                 # Prepare inputs & Network Forward
                 #############################
                 self.set_mode('train')
-                real_imgs, real_img_lens, real_wids = batch['style_imgs'].to(device, non_blocking=True), \
-                                                      batch['style_img_lens'].to(device, non_blocking=True), \
-                                                      batch['wids'].to(device, non_blocking=True)
-                real_aug_imgs, real_aug_img_lens = batch['aug_imgs'].to(device, non_blocking=True), batch['aug_img_lens'].to(device, non_blocking=True)
-                real_lbs, real_lb_lens = batch['lbs'].to(device, non_blocking=True), batch['lb_lens'].to(device, non_blocking=True)
+                real_imgs = batch['style_imgs'].to(device, non_blocking=True)
+                real_img_lens = batch['style_img_lens'].to(device, non_blocking=True)
+                style_refs = batch['org_imgs'].to(device, non_blocking=True)
+                style_ref_lens = batch['org_img_lens'].to(device, non_blocking=True)
+                real_wids = batch['wids'].to(device, non_blocking=True)
+                real_lbs = batch['lbs'].to(device, non_blocking=True)
+                real_lb_lens = batch['lb_lens'].to(device, non_blocking=True)
                 max_label_len = real_lbs.size(-1)
 
                 #############################
                 # Optimizing Discriminator
                 #############################
                 self.optimizers.D.zero_grad(set_to_none=True)
+                self.optimizers.P.zero_grad(set_to_none=True)
                 set_requires_grad([self.models.G, self.models.E, self.models.R, self.models.W, self.models.B], False)
                 set_requires_grad([self.models.D, self.models.P], True)
                 # self.models.B.frozen_bn()
@@ -1344,17 +2113,29 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                     self.y.sample_()
                     sampled_words = idx_to_words(self.y, self.lexicon, max_label_len,
                                                  self.opt.training.capitalize_ratio,
-                                                 self.opt.training.blank_ratio)
+                                                 self.opt.training.blank_ratio,
+                                                 rare_ratio=rare_word_ratio,
+                                                 rare_lexicon=self.rare_lexicon)
                     fake_lbs, fake_lb_lens = self.label_converter.encode(sampled_words, max_label_len)
                     fake_lbs, fake_lb_lens = fake_lbs.to(device).detach(), fake_lb_lens.to(device).detach()
 
                     self.z.sample_()
                     z_in = self.z
 
+                    # B is frozen and in eval mode. Cache only its real-image
+                    # features for this batch; E must run again with gradients
+                    # during the G update.
+                    reference_features = self.models.B(style_refs, ret_feats=True)
                     if self.vae_mode:
-                        enc_z, _, _ = self.models.E(real_imgs, real_img_lens, self.models.B, vae_mode=True)
+                        enc_z, _, _ = self.models.E(
+                            style_refs, style_ref_lens, self.models.B, vae_mode=True,
+                            backbone_features=reference_features,
+                        )
                     else:
-                        enc_z = self.models.E(real_imgs, real_img_lens, self.models.B, vae_mode=False)
+                        enc_z = self.models.E(
+                            style_refs, style_ref_lens, self.models.B, vae_mode=False,
+                            backbone_features=reference_features,
+                        )
 
                     # Batch forward all fake/generated types to avoid multiple GPU kernel launches
                     cat_z = torch.cat([z_in, enc_z, enc_z], dim=0)
@@ -1369,60 +2150,106 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                 fake_img_lens = fake_lb_lens * self.opt.char_width
                 style_img_lens = fake_lb_lens * self.opt.char_width
                 recn_img_lens = real_lb_lens * self.opt.char_width
-                
-                # Batch forward all generated types through D to avoid multiple GPU kernel launches
-                d_fake_all = self.models.D(cat_fake_imgs.detach(), cat_fake_img_lens, cat_fake_lb_lens)
+
+                # DiffAug is applied to both sides of D, including the G path,
+                # so D cannot identify the augmentation itself as real or fake.
+                fake_disc_input, fake_disc_lens = prepare_global_discriminator_input(
+                    cat_fake_imgs.detach(), cat_fake_img_lens
+                )
+                d_fake_all = self.models.D(
+                    fake_disc_input, fake_disc_lens, cat_fake_lb_lens
+                )
                 d_fake, d_style, d_recn = torch.chunk(d_fake_all, 3, dim=0)
-                fake_disc_loss = (torch.mean(F.relu(1.0 + d_fake)) + 
-                                  torch.mean(F.relu(1.0 + d_style)) + 
+                fake_disc_loss = (torch.mean(F.relu(1.0 + d_fake)) +
+                                  torch.mean(F.relu(1.0 + d_style)) +
                                   torch.mean(F.relu(1.0 + d_recn))) / 3
 
-                # Patch Discriminator forwards
-                n_patch_row = (cat_fake_imgs.size(-2) - 32) // 8 + 1
-                n_fake = int(torch.sum(torch.div(fake_img_lens - 32, 8, rounding_mode='trunc') + 1).item()) * n_patch_row
-                n_style = int(torch.sum(torch.div(style_img_lens - 32, 8, rounding_mode='trunc') + 1).item()) * n_patch_row
-                n_recn = int(torch.sum(torch.div(recn_img_lens - 32, 8, rounding_mode='trunc') + 1).item()) * n_patch_row
+                # Matched adaptive crop policy for every generated path.
+                fake_patch_groups = [
+                    prepare_stroke_patches(
+                        fake_imgs.detach(), fake_img_lens, fake_lbs, fake_lb_lens
+                    ),
+                    prepare_stroke_patches(
+                        style_imgs.detach(), style_img_lens, fake_lbs, fake_lb_lens
+                    ),
+                    prepare_stroke_patches(
+                        recn_imgs.detach(), recn_img_lens, real_lbs, real_lb_lens
+                    ),
+                ]
+                fake_patch_sizes = [group[0].size(0) for group in fake_patch_groups]
+                p_all = run_patch_discriminator(fake_patch_groups)
+                p_fake, p_style, p_recn = torch.split(
+                    p_all, fake_patch_sizes, dim=0
+                )
+                fake_disc_loss_patch = (
+                    torch.mean(F.relu(1.0 + p_fake))
+                    + torch.mean(F.relu(1.0 + p_style))
+                    + torch.mean(F.relu(1.0 + p_recn))
+                ) / 3
 
-                p_all_patches = extract_all_patches(cat_fake_imgs.detach(), cat_fake_img_lens)
-                masking_mode = getattr(self.opt.training, 'masking_mode', 'none')
-                if masking_mode != 'none':
-                    p_all_patches = apply_light_mixed_patch_mask(p_all_patches)
+                # Random crops are local views, not complete word samples. Feeding
+                # them to the global discriminator taught D that truncated words
+                # were real; keep them exclusively for the patch discriminator.
+                apply_r1 = iter_count % r1_interval == 0
+                real_for_disc = real_imgs.detach().requires_grad_(apply_r1)
+                real_disc_input, real_disc_lens = prepare_global_discriminator_input(
+                    real_for_disc, real_img_lens
+                )
+                real_disc = self.models.D(
+                    real_disc_input, real_disc_lens, real_lb_lens
+                )
+                real_disc_loss = torch.mean(F.relu(1.0 - real_disc))
+                if apply_r1:
+                    r1_loss = (
+                        getattr(self.opt.training, 'lambda_r1', 0.01)
+                        * r1_interval * r1_reg(real_disc, real_for_disc)
+                    )
+                else:
+                    r1_loss = real_disc_loss.new_zeros(())
 
-                # Batch forward all patches through P to avoid multiple GPU kernel launches
-                p_all = self.models.P(p_all_patches)
-                p_fake, p_style, p_recn = torch.split(p_all, [n_fake, n_style, n_recn], dim=0)
-                fake_disc_loss_patch = (torch.mean(F.relu(1.0 + p_fake)) + 
-                                        torch.mean(F.relu(1.0 + p_style)) + 
-                                        torch.mean(F.relu(1.0 + p_recn))) / 3
+                real_patch_groups = [
+                    prepare_stroke_patches(
+                        real_imgs, real_img_lens, real_lbs, real_lb_lens
+                    ),
+                    prepare_stroke_patches(
+                        real_disc_input.detach(), real_disc_lens,
+                        real_lbs, real_lb_lens,
+                    ),
+                ]
+                real_patch_sizes = [group[0].size(0) for group in real_patch_groups]
+                real_patch_logits = run_patch_discriminator(real_patch_groups)
+                real_patch_logits, real_aug_patch_logits = torch.split(
+                    real_patch_logits, real_patch_sizes, dim=0
+                )
+                real_disc_loss_patch = (
+                    torch.mean(F.relu(1.0 - real_patch_logits))
+                    + torch.mean(F.relu(1.0 - real_aug_patch_logits))
+                ) / 2
 
-                # real_imgs.requires_grad_()
-                real_disc = self.models.D(real_imgs, real_img_lens, real_lb_lens)
-                real_aug_lb_lens = real_lb_lens * (real_aug_img_lens.float() / torch.clamp(real_img_lens.float(), min=1.0))
-                real_disc_aug = self.models.D(real_aug_imgs, real_aug_img_lens, real_aug_lb_lens)
-                real_disc_loss = (torch.mean(F.relu(1.0 - real_disc)) +
-                                  torch.mean(F.relu(1.0 - real_disc_aug))) / 2
-
-                real_img_patches = extract_all_patches(real_imgs, real_img_lens, plot=False)
-                real_aug_imgs_patches = extract_all_patches(real_aug_imgs, real_aug_img_lens)
-                real_patches_cat = torch.cat([real_img_patches, real_aug_imgs_patches], dim=0)
-                if masking_mode != 'none':
-                    real_patches_cat = apply_light_mixed_patch_mask(real_patches_cat)
-                real_disc_patches = self.models.P(real_patches_cat)
-                real_disc_loss_patch = torch.mean(F.relu(1.0 - real_disc_patches))
-
-                disc_loss = real_disc_loss + fake_disc_loss + real_disc_loss_patch + fake_disc_loss_patch
-                self.averager_meters.update('real_disc_loss', real_disc_loss.item())
-                self.averager_meters.update('fake_disc_loss', fake_disc_loss.item())
-                self.averager_meters.update('real_disc_loss_patch', real_disc_loss_patch.item())
-                self.averager_meters.update('fake_disc_loss_patch', fake_disc_loss_patch.item())
-
+                disc_loss = (
+                    real_disc_loss + fake_disc_loss
+                    + (real_disc_loss_patch + fake_disc_loss_patch)
+                    + r1_loss
+                )
                 disc_loss.backward()
                 self.optimizers.D.step()
+                self.optimizers.P.step()
+                self.averager_meters.update_many({
+                    'd_total': disc_loss,
+                    'd_real': real_disc_loss,
+                    'd_fake': fake_disc_loss,
+                    'd_real_patch': real_disc_loss_patch,
+                    'd_fake_patch': fake_disc_loss_patch,
+                    'r1_loss': r1_loss,
+                })
+                # D/P gradients are no longer needed during the G phase.
+                self.optimizers.D.zero_grad(set_to_none=True)
+                self.optimizers.P.zero_grad(set_to_none=True)
 
                 #############################
                 # Optimizing Generator
                 #############################
-                if iter_count % self.opt.training.num_critic_train == 0:
+                if iter_count % num_critic_train == 0:
                     self.optimizers.G.zero_grad(set_to_none=True)
                     set_requires_grad([self.models.D, self.models.P, self.models.R, self.models.W, self.models.B], False)
                     set_requires_grad([self.models.G, self.models.E], True)
@@ -1435,7 +2262,9 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                     sampled_words = idx_to_words(self.y, self.lexicon, max_label_len,
                                                  self.opt.training.capitalize_ratio,
                                                  self.opt.training.blank_ratio,
-                                                 sort=True)
+                                                 sort=True,
+                                                 rare_ratio=rare_word_ratio,
+                                                 rare_lexicon=self.rare_lexicon)
 
                     fake_lbs, fake_lb_lens = self.label_converter.encode(sampled_words, max_label_len)
                     fake_lbs, fake_lb_lens = fake_lbs.to(device).detach(), fake_lb_lens.to(device).detach()
@@ -1443,14 +2272,19 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                     self.z.sample_()
                     z_in = self.z
 
-                    # Keep style encoder inputs clean as masking is applied strictly to local patches
-                    masking_mode = getattr(self.opt.training, 'masking_mode', 'none')
+                    # Keep style encoder inputs clean; masking is local-critic only.
                     if self.vae_mode:
-                        (enc_z, mu, logvar), real_img_feats = self.models.E(real_imgs, real_img_lens, self.models.B,
-                                                                            ret_feats=True, vae_mode=True)
+                        (enc_z, mu, logvar), real_img_feats = self.models.E(
+                            style_refs, style_ref_lens, self.models.B,
+                            ret_feats=True, vae_mode=True,
+                            backbone_features=reference_features,
+                        )
                     else:
-                        enc_z, real_img_feats = self.models.E(real_imgs, real_img_lens, self.models.B,
-                                                              ret_feats=True, vae_mode=False)
+                        enc_z, real_img_feats = self.models.E(
+                            style_refs, style_ref_lens, self.models.B,
+                            ret_feats=True, vae_mode=False,
+                            backbone_features=reference_features,
+                        )
 
                     # Batch forward all fake/generated types through G to avoid multiple GPU kernel launches
                     cat_z = torch.cat([z_in, enc_z, enc_z], dim=0)
@@ -1470,24 +2304,38 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                     recn_img_lens = real_lb_lens * self.opt.char_width
 
                     cat_fake_img_lens = cat_fake_lb_lens * self.opt.char_width
-                    # Batch forward all generated types through D to avoid multiple GPU kernel launches
-                    d_fake_all = self.models.D(cat_fake_imgs, cat_fake_img_lens, cat_fake_lb_lens)
+                    fake_disc_input, fake_disc_lens = prepare_global_discriminator_input(
+                        cat_fake_imgs, cat_fake_img_lens
+                    )
+                    d_fake_all = self.models.D(
+                        fake_disc_input, fake_disc_lens, cat_fake_lb_lens
+                    )
                     d_fake, d_style, d_recn = torch.chunk(d_fake_all, 3, dim=0)
                     adv_loss = -(torch.mean(d_fake) + torch.mean(d_style) + torch.mean(d_recn)) / 3
 
-                    n_patch_row = (cat_fake_imgs.size(-2) - 32) // 8 + 1
-                    n_fake = int(torch.sum(torch.div(fake_img_lens - 32, 8, rounding_mode='trunc') + 1).item()) * n_patch_row
-                    n_style = int(torch.sum(torch.div(style_img_lens - 32, 8, rounding_mode='trunc') + 1).item()) * n_patch_row
-                    n_recn = int(torch.sum(torch.div(recn_img_lens - 32, 8, rounding_mode='trunc') + 1).item()) * n_patch_row
-
-                    p_all_patches = extract_all_patches(cat_fake_imgs, cat_fake_img_lens)
-                    if masking_mode != 'none':
-                        p_all_patches = apply_light_mixed_patch_mask(p_all_patches)
-
-                    # Batch forward all patches through P to avoid multiple GPU kernel launches
-                    p_all = self.models.P(p_all_patches)
-                    p_fake, p_style, p_recn = torch.split(p_all, [n_fake, n_style, n_recn], dim=0)
-                    adv_loss_patch = -(torch.mean(p_fake) + torch.mean(p_style) + torch.mean(p_recn)) / 3
+                    fake_patch_groups = [
+                        prepare_stroke_patches(
+                            fake_imgs, fake_img_lens, fake_lbs, fake_lb_lens
+                        ),
+                        prepare_stroke_patches(
+                            style_imgs, style_img_lens, fake_lbs, fake_lb_lens
+                        ),
+                        prepare_stroke_patches(
+                            recn_imgs, recn_img_lens, real_lbs, real_lb_lens
+                        ),
+                    ]
+                    fake_patch_sizes = [
+                        group[0].size(0) for group in fake_patch_groups
+                    ]
+                    p_all = run_patch_discriminator(fake_patch_groups)
+                    p_fake, p_style, p_recn = torch.split(
+                        p_all, fake_patch_sizes, dim=0
+                    )
+                    adv_loss_patch = -(
+                        torch.mean(p_fake)
+                        + torch.mean(p_style)
+                        + torch.mean(p_recn)
+                    ) / 3
 
                     ### CTC Auxiliary loss ###
                     # self.models.R.frozen_bn()
@@ -1495,9 +2343,17 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                     style_img_lens = fake_lb_lens * self.opt.char_width
                     recn_img_lens = real_lb_lens * self.opt.char_width
 
-                    # Batch forward all generated types through R to avoid multiple GPU kernel launches
-                    cat_fake_ctc = self.models.R(cat_fake_imgs, cat_fake_img_lens)
-                    fake_ctc_rand, fake_ctc_style, fake_ctc_recn = torch.chunk(cat_fake_ctc, 3, dim=1)
+                    # Reconstruction already has an exact pixel target; reserve
+                    # OCR supervision for random generation and style transfer.
+                    # R was pretrained on this exact normalized polarity: pass
+                    # generated tensors directly.  Do not apply ``1 - image``
+                    # or sign inversion here; those are display-only elsewhere.
+                    ctc_imgs = torch.cat([fake_imgs, style_imgs], dim=0)
+                    ctc_img_lens = torch.cat([fake_img_lens, style_img_lens], dim=0)
+                    ctc_log_probs = self.models.R(
+                        ctc_imgs, ctc_img_lens, return_log_probs=True
+                    )
+                    fake_ctc_rand, fake_ctc_style = torch.chunk(ctc_log_probs, 2, dim=1)
 
                     fake_ctc_loss_rand = self.ctc_loss(fake_ctc_rand, fake_lbs,
                                                        torch.div(fake_img_lens, ctc_len_scale, rounding_mode='trunc'),
@@ -1506,128 +2362,282 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                     fake_ctc_loss_style = self.ctc_loss(fake_ctc_style, fake_lbs,
                                                         torch.div(style_img_lens, ctc_len_scale, rounding_mode='trunc'),
                                                         fake_lb_lens)
+                    fake_ctc_loss = fake_ctc_loss_rand + fake_ctc_loss_style
 
-                    fake_ctc_loss_recn = self.ctc_loss(fake_ctc_recn, real_lbs,
-                                                       torch.div(recn_img_lens, ctc_len_scale, rounding_mode='trunc'),
-                                                       real_lb_lens)
 
-                    fake_ctc_loss = fake_ctc_loss_rand + fake_ctc_loss_recn + fake_ctc_loss_style
-
-                    ### Style Reconstruction & Contrastive Loss ###
-                    styles = self.models.E(fake_imgs, fake_lb_lens * self.opt.char_width, self.models.B)
+                    ### Style Reconstruction, Transfer Cycle, and Disentanglement ###
+                    styles = self.models.E(
+                        fake_imgs, fake_lb_lens * self.opt.char_width, self.models.B
+                    )
+                    transferred_styles, style_img_feats, style_backbone_feat = (
+                        self.models.E(
+                            style_imgs,
+                            style_img_lens,
+                            self.models.B,
+                            ret_feats=True,
+                            ret_backbone_feat=True,
+                        )
+                    )
                     info_loss = torch.mean(torch.abs(styles - z_in.detach()))
-                    style_contrastive_loss = contrastive_style_loss(styles, z_in.detach())
+                    real_style_for_loss = mu if self.vae_mode else enc_z
+                    style_cycle_loss = F.l1_loss(
+                        transferred_styles, real_style_for_loss.detach()
+                    )
+
+                    encoder = self.unwrap_model(self.models.E)
+                    content_code = mu if self.vae_mode else enc_z
+                    content_logits = encoder.predict_content(content_code, reverse=True)
+                    content_targets = torch.zeros_like(content_logits)
+                    content_indices = real_lbs[:, None, :].expand(
+                        -1, content_logits.size(1), -1
+                    )
+                    content_indices = content_indices.clamp(0, content_logits.size(2) - 1)
+                    content_targets.scatter_(2, content_indices, 1.0)
+                    content_targets[..., 0] = 0.0
+                    positive_fraction = content_targets.mean().detach().clamp(1e-4, 0.5)
+                    content_pos_weight = ((1.0 - positive_fraction) / positive_fraction).clamp(max=10.0)
+                    content_adv_loss = F.binary_cross_entropy_with_logits(
+                        content_logits, content_targets, pos_weight=content_pos_weight
+                    )
 
                     ### Content Restruction ###
                     recn_loss = recn_l1_loss(recn_imgs, real_imgs, real_img_lens)
 
-                    ### Writer Identify Loss ###
-                    cat_style_imgs = torch.cat([style_imgs, recn_imgs], dim=0)
-                    cat_style_img_lens = torch.cat([fake_lb_lens, real_lb_lens], dim=0) * self.opt.char_width
-                    recn_wid_logits, fake_imgs_feats = self.models.W(cat_style_imgs,
-                                                                     cat_style_img_lens,
-                                                                     self.models.B,
-                                                                     ret_feats=True)
-                    fake_wid_loss = self.classify_loss(recn_wid_logits, real_wids.repeat(2))
+                    ### Writer identity and non-aligned style supervision ###
+                    writer = self.unwrap_model(self.models.W)
+                    style_wid_logits = writer.forward_from_feat(
+                        style_backbone_feat, style_img_lens, self.models.B
+                    )
+                    fake_imgs_feats = style_img_feats
+                    fake_wid_loss = self.classify_loss(style_wid_logits, real_wids)
 
-                    ###  Contextual Loss and Gram Loss for non-aligned data  ###
                     ctx_loss = torch.tensor(0.0, device=self.device)
-                    gram_loss = torch.tensor(0.0, device=self.device)
-                    for real_img_feat, fake_img_feat \
-                            in zip(real_img_feats, fake_imgs_feats):
-                        fake_feat = fake_img_feat.chunk(2, dim=0)
-                        # ctx_loss for style_imgs
-                        ctx_loss += self.contextual_loss(real_img_feat, fake_feat[0])
-                        # ctx_loss for recn_imgs
-                        ctx_loss += self.contextual_loss(real_img_feat, fake_feat[1])
-
-                        # gram_loss
-                        gram_loss += self.gram_loss(fake_feat[0], real_img_feat)
-                        gram_loss += self.gram_loss(fake_feat[1], real_img_feat)
+                    for real_img_feat, fake_img_feat in zip(real_img_feats, fake_imgs_feats):
+                        real_feat_lens = torch.ceil(
+                            style_ref_lens.float()
+                            * (real_img_feat.size(-1) / float(style_refs.size(-1)))
+                        ).long().clamp_(1, real_img_feat.size(-1))
+                        fake_feat_lens = torch.ceil(
+                            style_img_lens.float()
+                            * (fake_img_feat.size(-1) / float(style_imgs.size(-1)))
+                        ).long().clamp_(1, fake_img_feat.size(-1))
+                        ctx_loss += self.contextual_loss(
+                            real_img_feat, fake_img_feat,
+                            target_lengths=real_feat_lens,
+                            input_lengths=fake_feat_lens,
+                        )
 
                     kl_loss = KLloss(mu, logvar) if self.vae_mode else torch.tensor(0.0, device=self.device)
 
-                    grad_cat_fake_adv = torch.autograd.grad(adv_loss, cat_fake_imgs, create_graph=False, retain_graph=True)[0]
-                    grad_fake_adv = torch.chunk(grad_cat_fake_adv, 3, dim=0)[0]
-                    grad_fake_OCR = torch.autograd.grad(fake_ctc_loss_rand, fake_ctc_rand, create_graph=False, retain_graph=True)[0]
-                    grad_fake_info = torch.autograd.grad(info_loss, fake_imgs, create_graph=False, retain_graph=True)[0]
-                    grad_fake_wid = torch.autograd.grad(fake_wid_loss, recn_wid_logits, create_graph=False, retain_graph=True)[0]
-                    grad_fake_recn = torch.autograd.grad(recn_loss, enc_z, create_graph=False, retain_graph=True)[0]
+                    # Random generations must remain readable.  Style-transfer
+                    # generations use the same text target, but their valid
+                    # allographs/ligatures are closer to the OCR decision
+                    # boundary.  Decay that branch faster so a strong frozen
+                    # recognizer cannot erase authentic writer variation late
+                    # in training.
+                    lambda_ctc_rand = linear_epoch_weight(
+                        getattr(
+                            self.opt.training, 'lambda_ctc_rand',
+                            getattr(self.opt.training, 'lambda_ctc', 1.0),
+                        ),
+                        getattr(
+                            self.opt.training, 'lambda_ctc_rand_final',
+                            getattr(
+                                self.opt.training, 'lambda_ctc_final',
+                                getattr(self.opt.training, 'lambda_ctc', 1.0),
+                            ),
+                        ),
+                        epoch,
+                        getattr(
+                            self.opt.training, 'ctc_rand_decay_start_epoch',
+                            getattr(self.opt.training, 'ctc_decay_start_epoch', epoch),
+                        ),
+                        getattr(
+                            self.opt.training, 'ctc_rand_decay_end_epoch',
+                            getattr(self.opt.training, 'ctc_decay_end_epoch', epoch),
+                        ),
+                    )
+                    lambda_ctc_style = linear_epoch_weight(
+                        getattr(
+                            self.opt.training, 'lambda_ctc_style',
+                            getattr(self.opt.training, 'lambda_ctc', 1.0),
+                        ),
+                        getattr(
+                            self.opt.training, 'lambda_ctc_style_final',
+                            getattr(
+                                self.opt.training, 'lambda_ctc_final',
+                                getattr(self.opt.training, 'lambda_ctc', 1.0),
+                            ),
+                        ),
+                        epoch,
+                        getattr(
+                            self.opt.training, 'ctc_style_decay_start_epoch',
+                            getattr(self.opt.training, 'ctc_decay_start_epoch', epoch),
+                        ),
+                        getattr(
+                            self.opt.training, 'ctc_style_decay_end_epoch',
+                            getattr(self.opt.training, 'ctc_decay_end_epoch', epoch),
+                        ),
+                    )
+                    lambda_info = float(getattr(self.opt.training, 'lambda_info', 1.0))
+                    # Optional late taper: retain identity supervision while
+                    # reducing its pressure during visual refinement. Missing
+                    # schedule fields preserve the original constant weight.
+                    lambda_wid = linear_epoch_weight(
+                        getattr(self.opt.training, 'lambda_wid', 1.0),
+                        getattr(
+                            self.opt.training, 'lambda_wid_final',
+                            getattr(self.opt.training, 'lambda_wid', 1.0),
+                        ),
+                        epoch,
+                        getattr(self.opt.training, 'wid_decay_start_epoch', epoch),
+                        getattr(self.opt.training, 'wid_decay_end_epoch', epoch),
+                    )
+                    # Reconstruction establishes alignment early, then yields
+                    # capacity to adversarial refinement instead of enforcing an
+                    # L1-smoothed solution for the entire run.
+                    lambda_recn = linear_epoch_weight(
+                        getattr(self.opt.training, 'lambda_recn', 10.0),
+                        getattr(
+                            self.opt.training, 'lambda_recn_final',
+                            getattr(self.opt.training, 'lambda_recn', 10.0),
+                        ),
+                        epoch,
+                        getattr(self.opt.training, 'recn_decay_start_epoch', epoch),
+                        getattr(self.opt.training, 'recn_decay_end_epoch', epoch),
+                    )
 
-                    std_grad_adv = torch.std(grad_fake_adv)
-                    gp_ctc = torch.div(std_grad_adv, torch.std(grad_fake_OCR) + 1e-8).detach() + 1
-                    gp_ctc.clamp_max_(100)
-                    gp_ctc = gp_ctc * getattr(self.opt.training, 'lambda_ctc', 1.0)
-                    gp_info = torch.div(std_grad_adv, torch.std(grad_fake_info) + 1e-8).detach() + 1
-                    gp_wid = torch.div(std_grad_adv, torch.std(grad_fake_wid) + 1e-8).detach() + 1
-                    gp_wid.clamp_max_(10)
-                    gp_recn = torch.div(std_grad_adv, torch.std(grad_fake_recn) + 1e-8).detach() + 1
+                    # Optimize and log weighted contributions. Raw loss values
+                    # alone are misleading when their scales differ this much.
+                    weighted_adv_loss_patch = patch_adv_weight * adv_loss_patch
+                    g_adv = adv_loss + weighted_adv_loss_patch
+                    g_ctc = (
+                        lambda_ctc_rand * fake_ctc_loss_rand
+                        + lambda_ctc_style * fake_ctc_loss_style
+                    )
+                    g_writer = lambda_wid * fake_wid_loss
+                    g_recn = lambda_recn * recn_loss
+                    g_style = (
+                        lambda_info * info_loss
+                        + getattr(self.opt.training, 'lambda_style_cycle', 1.0)
+                          * style_cycle_loss
+                        + getattr(self.opt.training, 'lambda_content_adv', 0.02)
+                          * content_adv_loss
+                    )
+                    g_context = (
+                        float(getattr(self.opt.training, 'lambda_ctx', 0.1)) * ctx_loss
+                    )
+                    g_kl = float(getattr(self.opt.training, 'lambda_kl', 0.1)) * kl_loss
+                    g_loss = (
+                        g_adv + g_ctc + g_writer + g_recn
+                        + g_style + g_context + g_kl
+                    )
 
-                    self.averager_meters.update('gp_ctc', gp_ctc.item())
-                    self.averager_meters.update('gp_info', gp_info.item())
-                    self.averager_meters.update('gp_wid', gp_wid.item())
-                    self.averager_meters.update('gp_recn', gp_recn.item())
-
-                    g_loss = adv_loss + adv_loss_patch +\
-                             gp_ctc * fake_ctc_loss + \
-                             gp_info * (info_loss + style_contrastive_loss) + \
-                             gp_wid * fake_wid_loss + \
-                             gp_recn * recn_loss + \
-                             self.opt.training.lambda_ctx * ctx_loss + \
-                             self.opt.training.lambda_gram * gram_loss + \
-                             self.opt.training.lambda_kl * kl_loss
-                    
                     g_loss.backward()
-                    self.averager_meters.update('adv_loss', adv_loss.item())
-                    self.averager_meters.update('adv_loss_patch', adv_loss_patch.item())
-                    self.averager_meters.update('fake_ctc_loss', fake_ctc_loss.item())
-                    self.averager_meters.update('info_loss', info_loss.item())
-                    self.averager_meters.update('style_contrastive_loss', style_contrastive_loss.item())
-                    self.averager_meters.update('fake_wid_loss', fake_wid_loss.item())
-                    self.averager_meters.update('recn_loss', recn_loss.item())
-                    self.averager_meters.update('ctx_loss', ctx_loss.item())
-                    self.averager_meters.update('gram_loss', gram_loss.item())
-                    self.averager_meters.update('kl_loss', kl_loss.item())
+                    torch.nn.utils.clip_grad_norm_(
+                        chain(self.models.G.parameters(), self.models.E.parameters()),
+                        getattr(self.opt.training, 'grad_clip', 5.0),
+                    )
+                    generator = self.unwrap_model(self.models.G)
+                    fusion_gate = torch.sigmoid(generator.fusion_gate_logits).detach()
+                    self.averager_meters.update_many({
+                        'g_total': g_loss,
+                        'g_adv': g_adv,
+                        'g_adv_global': adv_loss,
+                        'g_adv_patch': weighted_adv_loss_patch,
+                        'g_ctc': g_ctc,
+                        'g_ctc_rand': fake_ctc_loss_rand,
+                        'g_ctc_style': fake_ctc_loss_style,
+                        'g_writer': g_writer,
+                        'g_recn': g_recn,
+                        'g_style': g_style,
+                        'g_info': info_loss,
+                        'g_style_cycle': style_cycle_loss,
+                        'g_content_adv': content_adv_loss,
+                        'g_context': g_context,
+                        'g_kl': g_kl,
+                        'fusion_strength': fusion_gate.mean(),
+                        'fusion_gate_min': fusion_gate.min(),
+                        'fusion_gate_max': fusion_gate.max(),
+                    })
                     self.optimizers.G.step()
                     if self.use_ema:
                         self.ema_tracker.step_ema(self.models_ema.G, self.models.G)
                         self.ema_tracker.step_ema(self.models_ema.E, self.models.E)
-                        self.ema_tracker.step_ema(self.models_ema.B, self.models.B)
                         self.ema_tracker.step += 1
+                    self.optimizers.G.zero_grad(set_to_none=True)
 
                 if iter_count % self.opt.training.print_iter_val == 0:
                     meter_vals = self.averager_meters.eval_all()
                     self.averager_meters.reset_all()
-                    info = "[%3d|%3d]-[%4d|%4d] G:%.4f G-p:%.4f D-fake:%.4f D-real:%.4f " \
-                           "D-fake-p:%.4f D-real-p:%.4f CTC-fake:%.4f Wid-fake:%.4f " \
-                           "Recn-z:%.4f Cont-z:%.4f Recn-c:%.4f Ctx:%.4f Gram:%.4f Kl:%.4f" \
-                           % (epoch, self.opt.training.epochs,
-                              iter_count % len(self.train_loader), len(self.train_loader),
-                              meter_vals['adv_loss'], meter_vals['adv_loss_patch'],
-                              meter_vals['fake_disc_loss'], meter_vals['real_disc_loss'],
-                              meter_vals['fake_disc_loss_patch'], meter_vals['real_disc_loss_patch'],
-                              meter_vals['fake_ctc_loss'], meter_vals['fake_wid_loss'], meter_vals['info_loss'],
-                              meter_vals['style_contrastive_loss'], meter_vals['recn_loss'], meter_vals['ctx_loss'],
-                              meter_vals['gram_loss'], meter_vals['kl_loss'])
+
+                    lr_g = self.optimizers.G.param_groups[0]['lr']
+                    lr_d = self.optimizers.D.param_groups[0]['lr']
+                    lr_p = self.optimizers.P.param_groups[0]['lr']
+
+                    info = (
+                        f"[{epoch:3d}|{self.opt.training.epochs:3d}]-"
+                        f"[{iter_count % len(self.train_loader):4d}|{len(self.train_loader):4d}] "
+                        f"G:{meter_vals['g_total']:.3f} D:{meter_vals['d_total']:.3f} | "
+                        f"Adv:{meter_vals['g_adv']:.3f} CTC:{meter_vals['g_ctc']:.3f} Recn:{meter_vals['g_recn']:.3f} "
+                        f"Style:{meter_vals['g_style']:.3f} Wid:{meter_vals['g_writer']:.3f} Ctx:{meter_vals['g_context']:.3f} KL:{meter_vals['g_kl']:.3f} | "
+                        f"R1:{meter_vals['r1_loss']:.3f} Fuse:{meter_vals['fusion_strength']:.3f}"
+                        f"[{meter_vals['fusion_gate_min']:.3f},{meter_vals['fusion_gate_max']:.3f}] "
+                        f"Lr: G={lr_g:.6g}/D={lr_d:.6g}/P={lr_p:.6g}"
+                    )
                     self.print(info) if self.local_rank < 1 else None
 
                     if _is_master:
+                        wandb_log = {
+                            # ── Train Category (Schedules, LRs, and Training State) ──
+                            'train/lr_g': lr_g,
+                            'train/lr_d': lr_d,
+                            'train/lr_p': lr_p,
+                            'train/epoch': epoch,
+                            'train/fusion_strength': meter_vals['fusion_strength'],
+                            'train/fusion_gate_min': meter_vals['fusion_gate_min'],
+                            'train/fusion_gate_max': meter_vals['fusion_gate_max'],
 
+                            # ── Loss Category: Overall Totals ──
+                            'loss/g_total': meter_vals['g_total'],
+                            'loss/d_total': meter_vals['d_total'],
 
-                        # WandB losses
-                        wandb_log = {('loss/' + k): v for k, v in meter_vals.items()}
-                        wandb_log['train/iter'] = iter_count + 1
+                            # ── Loss Category: Generator Losses & Sub-Loss Breakdown ──
+                            # 1. Adversarial Loss
+                            'loss/g_adversarial': meter_vals['g_adv'],
+                            'loss/g_adv_global': meter_vals['g_adv_global'],
+                            'loss/g_adv_patch': meter_vals['g_adv_patch'],
 
-                        try:
-                            lr = self.lr_schedulers.G.get_last_lr()[0]
-                        except Exception:
-                            lr = self.lr_schedulers.G.get_lr()[0]
-                        wandb_log['loss/lr'] = lr
+                            # 2. Content / Recognition CTC Loss
+                            'loss/g_ctc_content': meter_vals['g_ctc'],
+                            'loss/g_ctc_rand': meter_vals['g_ctc_rand'],
+                            'loss/g_ctc_style': meter_vals['g_ctc_style'],
 
-                        G_unwrapped = getattr(self.models.G, 'module', self.models.G)
-                        info_attns = G_unwrapped._info_attention()
-                        for i_, attn_info in enumerate(info_attns):
-                            wandb_log['loss/gamma%d' % i_] = attn_info['gamma']
+                            # 3. Image Reconstruction Loss
+                            'loss/g_reconstruction': meter_vals['g_recn'],
+
+                            # 4. Style & Disentanglement Loss
+                            'loss/g_style': meter_vals['g_style'],
+                            'loss/g_info': meter_vals['g_info'],
+                            'loss/g_style_cycle': meter_vals['g_style_cycle'],
+                            'loss/g_content_adv': meter_vals['g_content_adv'],
+
+                            # 5. Writer Identification Loss
+                            'loss/g_writer_id': meter_vals['g_writer'],
+
+                            # 6. Contextual Feature Matching Loss
+                            'loss/g_contextual': meter_vals['g_context'],
+
+                            # 7. VAE KL Divergence Loss
+                            'loss/g_kl': meter_vals['g_kl'],
+
+                            # ── Loss Category: Discriminator Losses & Sub-Loss Breakdown ──
+                            'loss/d_r1': meter_vals['r1_loss'],
+                            'loss/d_real': meter_vals['d_real'],
+                            'loss/d_fake': meter_vals['d_fake'],
+                            'loss/d_real_patch': meter_vals['d_real_patch'],
+                            'loss/d_fake_patch': meter_vals['d_fake_patch'],
+                        }
 
                         import wandb as _wandb
                         if _wandb.run:
@@ -1642,44 +2652,79 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                         os.makedirs(sample_root) if self.local_rank < 1 else None
                     self.sample_images(iter_count + 1) if self.local_rank < 1 else None
 
-                eval_epoch_val = self.opt.training.get('eval_epoch_val', 0.5)
-                save_epoch_val = self.opt.training.get('save_epoch_val', 1.0)
-                
-                eval_interval_iters = max(1, int(eval_epoch_val * len(self.train_loader)))
-                save_interval_iters = max(1, int(save_epoch_val * len(self.train_loader)))
-                
-                global_iter = (epoch - 1) * len(self.train_loader) + (i + 1)
-                is_eval = global_iter % eval_interval_iters == 0
-                is_save = global_iter % save_interval_iters == 0
-                
+                global_iter = (epoch - 1) * loader_length + (i + 1)
+                eval_epoch = global_iter / float(loader_length)
+                is_eval = (
+                    eval_epoch >= start_eval_epoch
+                    and global_iter % eval_interval_iters == 0
+                )
+                is_save = (
+                    eval_epoch >= start_save_epoch
+                    and global_iter % save_interval_iters == 0
+                )
+
                 if getattr(self, 'is_resumed_start', False):
                     is_eval = False
                     self.is_resumed_start = False
 
                 if is_eval:
-                    self.print('Calculate FID_KID (iter {})'.format(iter_count + 1)) if self.local_rank < 1 else None
+                    self.print('Calculate FID_KID (epoch {:.2f})'.format(eval_epoch)) if self.local_rank < 1 else None
                     scores = self.validate(current_epoch=epoch)
+                    self.last_eval_scores = dict(scores)
                     if 'fid' in scores:
                         self.last_eval_fid = float(scores['fid'])
+                    if 'kid' in scores:
+                        self.last_eval_kid = float(scores['kid'])
                     if _is_master:
+                        self.record_eval_metrics(eval_epoch, scores)
                         score_str = ", ".join([f"{k}: {v:.4f}" if isinstance(v, float) else f"{k}: {v}" for k, v in scores.items()])
-                        self.print(f"Validation metrics at iter {iter_count + 1}: {score_str}")
+                        self.print(f"Validation metrics at epoch {eval_epoch:.2f}: {score_str}")
                         import wandb as _wandb
                         if _wandb.run:
-                            _wandb.log({'valid/' + k: v for k, v in scores.items()}, step=iter_count + 1)
+                            valid_log = {'valid/epoch': eval_epoch}
+                            valid_log.update(
+                                {'valid/' + k: v for k, v in scores.items()}
+                            )
+                            _wandb.log(valid_log, step=iter_count + 1)
 
-                    if 'fid' in scores and scores['fid'] < best_fid:
+                    fid_improved = (
+                        'fid' in scores and scores['fid'] < best_fid
+                    )
+                    if fid_improved:
                         best_fid = scores['fid']
                         best_scores = scores
-                        if _is_master:
-                            self.save('best', epoch, iter_count=iter_count, best_fid=best_fid, **(best_scores or {}))
-
+                        # When eval and regular saving coincide, save('last')
+                        # publishes both last and best atomically. Avoid serializing
+                        # the same large checkpoint twice at every best epoch.
+                        if _is_master and not is_save:
+                            self.save(
+                                'best', epoch, iter_count=iter_count,
+                                best_fid=best_fid, **(best_scores or {})
+                            )
                 if is_save:
                     if _is_master:
-                        current_eval_fid = float(scores['fid']) if (is_eval and 'scores' in locals() and isinstance(scores, dict) and 'fid' in scores) else getattr(self, 'last_eval_fid', None)
-                        if current_eval_fid is None and hasattr(self, 'restored_metadata'):
-                            current_eval_fid = self.restored_metadata.get('last_eval_fid', self.restored_metadata.get('best_fid', None))
-                        self.save('last', epoch, iter_count=iter_count, best_fid=best_fid, fid=current_eval_fid)
+                        current_scores = (
+                            dict(scores)
+                            if is_eval and isinstance(scores, dict) else {}
+                        )
+                        current_eval_fid = current_scores.get(
+                            'fid', getattr(self, 'last_eval_fid', None)
+                        )
+                        if (current_eval_fid is None
+                                and hasattr(self, 'restored_metadata')):
+                            current_eval_fid = self.restored_metadata.get(
+                                'last_eval_fid',
+                                self.restored_metadata.get('best_fid', None),
+                            )
+                        current_scores['fid'] = current_eval_fid
+                        current_scores['kid'] = current_scores.get(
+                            'kid', getattr(self, 'last_eval_kid', None)
+                        )
+                        self.save(
+                            'last', epoch, iter_count=iter_count,
+                            best_fid=best_fid,
+                            **current_scores
+                        )
 
                 iter_count += 1
                 if getattr(self, 'is_resumed_start', False):
@@ -1691,10 +2736,10 @@ class GlobalLocalAdversarialModel(AdversarialModel):
 
             for scheduler in self.lr_schedulers.values():
                 scheduler.step()
+            self.completed_epoch = epoch
 
-        if _is_master:
-            import wandb as _wandb
-            _wandb.finish()
+        self.best_fid = best_fid if np.isfinite(best_fid) else None
+        # train.py prints RESULTS and closes W&B after this method returns.
 
 
 class RecognizeModel(BaseModel):
@@ -1703,7 +2748,7 @@ class RecognizeModel(BaseModel):
 
         device = self.device
         self.collect_fn = get_collect_fn(sort_input=opt.training.sort_input, sort_style=False)
-        recognizer = Recognizer(**opt.OcrModel).to(device)
+        recognizer = Recognizer(**opt.OcrModel, img_height=getattr(opt, 'img_height', 64)).to(device)
         if os.path.exists(opt.training.pretrained_backbone):
             ckpt = torch.load(opt.training.pretrained_backbone, device, weights_only=False)['Recognizer']
             new_ckpt = {}
@@ -1714,6 +2759,13 @@ class RecognizeModel(BaseModel):
             self.print(f'load pretrained backbone from {opt.training.pretrained_backbone}')
 
         self.models = Munch(R=recognizer)
+        self.use_teacher_ema = bool(getattr(opt.training, 'teacher_ema', True))
+        if self.use_teacher_ema:
+            import copy
+            self.teacher_ema_beta = float(getattr(opt.training, 'teacher_ema_beta', 0.999))
+            self.models_ema.R = copy.deepcopy(recognizer).requires_grad_(False)
+            self.models_ema.R.eval()
+            self.ema_tracker = EMA(self.teacher_ema_beta)
 
         self.tst_loader = DataLoader(
             get_dataset(self.opt.valid.dset_name, self.opt.valid.dset_split, process_style=True),
@@ -1768,26 +2820,29 @@ class RecognizeModel(BaseModel):
         restored_meta = getattr(self, 'restored_metadata', {})
         restored_iter = restored_meta.get('iter_count', None)
         if restored_iter is not None:
-            iter_count = restored_iter + 1
-            start_epoch = iter_count // len(self.train_loader) + 1
-            skip_batches = iter_count % len(self.train_loader)
+            start_epoch, skip_batches, iter_count = self.resume_position(
+                epoch_done, restored_iter, len(self.train_loader)
+            )
         elif is_resuming:
-            start_epoch = epoch_done + 1
-            skip_batches = 0
-            iter_count = epoch_done * len(self.train_loader)
+            start_epoch, skip_batches, iter_count = self.resume_position(
+                epoch_done, None, len(self.train_loader)
+            )
         else:
             start_epoch = 1
             skip_batches = 0
             iter_count = 0
 
-        self.lr_schedulers = Munch(R=get_scheduler(self.optimizers.R, self.opt.training, last_epoch=start_epoch - 2 if is_resuming else -1))
-        if hasattr(self, '_ckpt_sched_data') and self._ckpt_sched_data and 'SCHED.R' in self._ckpt_sched_data:
+        base_lr = float(self.opt.training.lr)
+        self.lr_schedulers = Munch(R=get_scheduler(
+            self.optimizers.R, self.opt.training, base_lr=base_lr
+        ))
+        if is_resuming:
             try:
-                self.lr_schedulers.R.load_state_dict(self._ckpt_sched_data['SCHED.R'])
-                if hasattr(self.lr_schedulers.R, 'get_last_lr') and 'R' in self.optimizers:
-                    lrs = self.lr_schedulers.R.get_last_lr()
-                    for param_group, lr in zip(self.optimizers.R.param_groups, lrs):
-                        param_group['lr'] = lr
+                restore_scheduler_state(
+                    self.lr_schedulers.R, self.optimizers.R,
+                    getattr(self, '_ckpt_sched_data', {}).get('SCHED.R'),
+                    base_lr, start_epoch - 1,
+                )
             except Exception:
                 pass
 
@@ -1795,7 +2850,16 @@ class RecognizeModel(BaseModel):
         ctc_loss_meter = AverageMeter()
         recognizer_unwrapped = self.unwrap_model(self.models.R)
         ctc_len_scale = recognizer_unwrapped.len_scale
-        best_cer = np.inf
+        try:
+            best_cer = float(restored_meta.get('best_cer', np.inf))
+        except (TypeError, ValueError):
+            best_cer = np.inf
+        if not np.isfinite(best_cer):
+            best_cer = np.inf
+        eval_every = max(1, int(getattr(self.opt.training, 'eval_epoch_val', 10)))
+        self.completed_epoch = max(0, start_epoch - 1)
+        self.last_eval_scores = {}
+        self.best_cer = best_cer
 
         for epoch in range(start_epoch, self.opt.training.epochs + 1):
             if getattr(self, 'train_sampler', None) is not None:
@@ -1821,6 +2885,9 @@ class RecognizeModel(BaseModel):
                 ctc_loss_meter.update(real_ctc_loss.item())
                 real_ctc_loss.backward()
                 self.optimizers.R.step()
+                if self.use_teacher_ema:
+                    self.ema_tracker.step_ema(self.models_ema.R, self.models.R)
+                    self.ema_tracker.step += 1
 
                 if iter_count % self.opt.training.print_iter_val == 0:
                     if epoch > 1 and not self.logger:
@@ -1837,6 +2904,12 @@ class RecognizeModel(BaseModel):
                            % (epoch, self.opt.training.epochs, iter_count % len(self.train_loader),
                               len(self.train_loader), ctc_loss_avg, lr)
                     self.print(info)
+                    if self.local_rank < 1 and wandb.run is not None:
+                        wandb.log({
+                            'pretrain/ocr_ctc': ctc_loss_avg,
+                            'pretrain/ocr_lr': lr,
+                            'pretrain/epoch': epoch,
+                        }, step=iter_count)
 
                 iter_count += 1
 
@@ -1845,17 +2918,67 @@ class RecognizeModel(BaseModel):
                 if not os.path.exists(ckpt_root):
                     os.makedirs(ckpt_root) if self.local_rank < 1 else None
 
-                self.save('last', epoch, iter_count=iter_count)
+                eval_due = (epoch % eval_every == 0 or epoch == self.opt.training.epochs)
+                eval_scores = None
+                if self.local_rank < 1 and eval_due:
+                    eval_scores = self.validate(use_ema=self.use_teacher_ema)
+                    self.last_eval_scores = dict(eval_scores)
+                    source = 'EMA' if self.use_teacher_ema else 'online'
+                    self.print(
+                        'OCR {} eval @ epoch {}: CER={:.5f} WER={:.5f}'.format(
+                            source, epoch, eval_scores['CER'], eval_scores['WER']
+                        )
+                    )
+                    if wandb.run is not None:
+                        wandb.log({
+                            'pretrain/ocr_cer': eval_scores['CER'],
+                            'pretrain/ocr_wer': eval_scores['WER'],
+                            'pretrain/epoch': epoch,
+                        }, step=iter_count)
+                    if eval_scores['CER'] < best_cer:
+                        best_cer = eval_scores['CER']
+                        export_path = getattr(self.opt.training, 'export_recognizer', '')
+                        if export_path:
+                            export_path = os.fspath(export_path)
+                            os.makedirs(os.path.dirname(export_path) or '.', exist_ok=True)
+                            staged_export = export_path + '.tmp'
+                            teacher = self.models_ema.R if self.use_teacher_ema else self.models.R
+                            torch.save({
+                                'Recognizer': self.unwrap_model(teacher).state_dict(),
+                                'Epoch': epoch,
+                                'CER': eval_scores['CER'],
+                                'WER': eval_scores['WER'],
+                                'teacher_source': source.lower(),
+                                'dataset': self.opt.dataset,
+                                'split': self.opt.training.dset_split,
+                            }, staged_export)
+                            os.replace(staged_export, export_path)
+                            self.print(
+                                f'Exported best {source} recognizer (CER={best_cer:.5f}): {export_path}'
+                            )
+                    self.best_cer = best_cer
+
+                if self.local_rank < 1:
+                    self.save(
+                        'last', epoch, iter_count=iter_count,
+                        best_cer=best_cer,
+                        cer=(eval_scores or {}).get('CER'),
+                        wer=(eval_scores or {}).get('WER'),
+                    )
                 if self.local_rank > -1:
                     dist.barrier()
 
 
             for scheduler in self.lr_schedulers.values():
                 scheduler.step()
+            self.completed_epoch = epoch
 
-    def validate(self, *args, **kwargs):
+        self.best_cer = best_cer
+
+    def validate(self, use_ema=True, *args, **kwargs):
         self.set_mode('eval')
-        ctc_len_scale = self.unwrap_model(self.models.R).len_scale
+        recognizer = self.models_ema.R if use_ema and self.models_ema else self.models.R
+        ctc_len_scale = self.unwrap_model(recognizer).len_scale
         char_trans = 0
         total_chars = 0
         word_trans = 0
@@ -1864,7 +2987,10 @@ class RecognizeModel(BaseModel):
         with torch.no_grad():
             for i, batch in tqdm(enumerate(self.tst_loader), total=len(self.tst_loader)):
                 real_imgs, real_img_lens = batch['style_imgs'].to(self.device), batch['style_img_lens'].to(self.device)
-                logits = self.models.R(real_imgs, real_img_lens)
+                logits = recognizer(real_imgs, real_img_lens)
+                # In eval mode the recognizer returns raw logits as
+                # [batch, time, classes]; only training/explicit CTC mode uses
+                # the [time, batch, classes] log-probability layout.
                 logits = torch.nn.functional.softmax(logits, dim=2).detach()
 
                 logits = logits.cpu().numpy()
@@ -1883,8 +3009,7 @@ class RecognizeModel(BaseModel):
                     if char_tran > 0:
                         word_trans += 1
 
-        for model in self.models.values():
-            model.train()
+        self.set_mode('train')
 
         cer = char_trans * 1.0 / max(total_chars, 1)
         wer = word_trans * 1.0 / max(total_words, 1)
@@ -1897,7 +3022,7 @@ class WriterIdentifyModel(BaseModel):
 
         device = self.device
 
-        style_backbone = StyleBackbone(**opt.StyBackbone).to(device)
+        style_backbone = StyleBackbone(**opt.StyBackbone, img_height=getattr(opt, 'img_height', 64)).to(device)
         if os.path.exists(opt.training.pretrained_backbone):
             ckpt = torch.load(opt.training.pretrained_backbone, device, weights_only=False)
 
@@ -1913,9 +3038,24 @@ class WriterIdentifyModel(BaseModel):
                 style_backbone.load_state_dict(ckpt)
 
             self.print(f'Load style_backbone from {opt.training.pretrained_backbone}')
+        elif getattr(opt.training, 'pretrained_backbone', ''):
+            self.print(
+                'WARNING: OCR teacher was not found; W+B will start from a '
+                'random backbone. For the intended FID/KID improvement, finish '
+                'OCR pretraining before starting W+B.'
+            )
 
         identifier = WriterIdentifier(**opt.WidModel).to(device)
         self.models = Munch(W=identifier, B=style_backbone)
+        self.use_teacher_ema = bool(getattr(opt.training, 'teacher_ema', True))
+        if self.use_teacher_ema:
+            import copy
+            self.teacher_ema_beta = float(getattr(opt.training, 'teacher_ema_beta', 0.999))
+            self.models_ema.W = copy.deepcopy(identifier).requires_grad_(False)
+            self.models_ema.B = copy.deepcopy(style_backbone).requires_grad_(False)
+            self.models_ema.W.eval()
+            self.models_ema.B.eval()
+            self.ema_tracker = EMA(self.teacher_ema_beta)
 
         self.tst_loader = DataLoader(
             get_dataset(opt.dataset, opt.valid.dset_split),
@@ -1926,6 +3066,48 @@ class WriterIdentifyModel(BaseModel):
 
         self.wid_loss = CrossEntropyLoss()
 
+    @staticmethod
+    def _select_writer_inputs(batch, policy='augmented', raw_probability=0.5):
+        """Select W+B inputs while keeping each sample's valid width intact.
+
+        Writer supervision is ultimately used on both raw style references and
+        canonical-width generated words. ``mixed`` exposes the shared
+        StyleBackbone to both domains in one normal batch, rather than adding a
+        second forward pass or another loss.
+        """
+        policy = str(policy).strip().lower()
+        raw_probability = float(raw_probability)
+        if not 0.0 <= raw_probability <= 1.0:
+            raise ValueError('writer_raw_probability must be in [0, 1]')
+
+        if policy in ('augmented', 'canonical'):
+            if 'aug_imgs' not in batch:
+                raise RuntimeError('Writer augmented inputs require random_clip: true')
+            return batch['aug_imgs'], batch['aug_img_lens'], 0.0
+        if policy == 'raw':
+            return batch['org_imgs'], batch['org_img_lens'], 1.0
+        if policy != 'mixed':
+            raise ValueError(
+                'writer_input_policy must be one of: augmented, raw, mixed'
+            )
+        if 'aug_imgs' not in batch:
+            raise RuntimeError('Writer mixed inputs require random_clip: true')
+
+        raw_imgs, raw_lens = batch['org_imgs'], batch['org_img_lens']
+        aug_imgs, aug_lens = batch['aug_imgs'], batch['aug_img_lens']
+        if raw_imgs.size(0) != aug_imgs.size(0):
+            raise RuntimeError('Raw and augmented writer batches must have equal size')
+
+        # Both collated tensors carry -1 padding. Pad them to a common width,
+        # then select whole samples so no right-padding becomes image content.
+        common_width = max(raw_imgs.size(-1), aug_imgs.size(-1))
+        raw_imgs = F.pad(raw_imgs, (0, common_width - raw_imgs.size(-1)), value=-1.0)
+        aug_imgs = F.pad(aug_imgs, (0, common_width - aug_imgs.size(-1)), value=-1.0)
+        use_raw = torch.rand(raw_imgs.size(0)) < raw_probability
+        images = torch.where(use_raw[:, None, None, None], raw_imgs, aug_imgs)
+        lengths = torch.where(use_raw, raw_lens, aug_lens)
+        return images, lengths, float(use_raw.float().mean().item())
+
     def train(self):
         self.info()
 
@@ -1935,13 +3117,63 @@ class WriterIdentifyModel(BaseModel):
                          False, self.opt.training.process_style)
         self.print('Trainset: {} [{}]'.format(*trainset_info))
         trainset = get_dataset(*trainset_info)
+        writer_count = int(np.unique(np.asarray(trainset.wids)).size)
+        model_writer_count = self.unwrap_model(self.models.W).linear_wid[-1].out_features
+        if writer_count != model_writer_count:
+            raise RuntimeError(
+                f"Writer pretraining model has {model_writer_count} classes, but "
+                f"{trainset.file_path} contains {writer_count} writers."
+            )
+        self.print(f"Writer pretraining uses {writer_count} writers from {trainset.file_path}")
+        input_policy = str(getattr(self.opt.training, 'writer_input_policy', 'augmented')).lower()
+        raw_probability = float(getattr(self.opt.training, 'writer_raw_probability', 0.0))
+        if input_policy not in ('augmented', 'canonical', 'raw', 'mixed'):
+            raise ValueError(
+                'training.writer_input_policy must be augmented, canonical, raw, or mixed'
+            )
+        if not 0.0 <= raw_probability <= 1.0:
+            raise ValueError('training.writer_raw_probability must be in [0, 1]')
+
+        balance_power = float(getattr(self.opt.training, 'writer_balance_power', 0.0))
+        balance_max_weight = float(getattr(self.opt.training, 'writer_balance_max_weight', 0.0))
+        if balance_power < 0.0:
+            raise ValueError('training.writer_balance_power must be non-negative')
+        if balance_max_weight < 0.0:
+            raise ValueError('training.writer_balance_max_weight must be non-negative')
         if self.local_rank > -1:
             from torch.utils.data.distributed import DistributedSampler
             self.train_sampler = DistributedSampler(trainset, num_replicas=None, rank=self.local_rank, shuffle=True)
             shuffle = False
+            if balance_power > 0.0:
+                self.print('Writer-balanced sampling is disabled under DDP; using DistributedSampler.')
         else:
             self.train_sampler = None
             shuffle = True
+            if balance_power > 0.0:
+                all_wids = np.asarray(trainset.wids, dtype=np.int64)
+                writer_sizes = np.bincount(all_wids, minlength=writer_count).astype(np.float64)
+                sample_weights = np.power(writer_sizes[all_wids], -balance_power)
+                sample_weights /= max(float(sample_weights.mean()), np.finfo(np.float64).eps)
+                if balance_max_weight > 0.0:
+                    sample_weights = np.minimum(sample_weights, balance_max_weight)
+                self.train_sampler = WeightedRandomSampler(
+                    torch.as_tensor(sample_weights, dtype=torch.double),
+                    num_samples=len(trainset), replacement=True,
+                )
+                shuffle = False
+                self.print(
+                    'Writer-balanced sampling: power={:.3f}, max_weight={:.3f}, '
+                    'writer samples min/median/max={}/{:.0f}/{}'.format(
+                        balance_power, balance_max_weight,
+                        int(writer_sizes.min()), float(np.median(writer_sizes)),
+                        int(writer_sizes.max()),
+                    )
+                )
+        self.print(
+            'Writer input policy: {} (raw probability {:.2f})'.format(
+                input_policy, raw_probability,
+            )
+        )
 
         self.train_loader = DataLoader(
             trainset,
@@ -1980,31 +3212,48 @@ class WriterIdentifyModel(BaseModel):
         restored_meta = getattr(self, 'restored_metadata', {})
         restored_iter = restored_meta.get('iter_count', None)
         if restored_iter is not None:
-            iter_count = restored_iter + 1
-            start_epoch = iter_count // len(self.train_loader) + 1
-            skip_batches = iter_count % len(self.train_loader)
+            start_epoch, skip_batches, iter_count = self.resume_position(
+                epoch_done, restored_iter, len(self.train_loader)
+            )
         elif is_resuming:
-            start_epoch = epoch_done + 1
-            skip_batches = 0
-            iter_count = epoch_done * len(self.train_loader)
+            start_epoch, skip_batches, iter_count = self.resume_position(
+                epoch_done, None, len(self.train_loader)
+            )
         else:
             start_epoch = 1
             skip_batches = 0
             iter_count = 0
 
-        self.lr_schedulers = Munch(W=get_scheduler(self.optimizers.W, self.opt.training, last_epoch=start_epoch - 2 if is_resuming else -1))
-        if hasattr(self, '_ckpt_sched_data') and self._ckpt_sched_data and 'SCHED.W' in self._ckpt_sched_data:
+        base_lr = float(self.opt.training.lr)
+        self.lr_schedulers = Munch(W=get_scheduler(
+            self.optimizers.W, self.opt.training, base_lr=base_lr
+        ))
+        if is_resuming:
             try:
-                self.lr_schedulers.W.load_state_dict(self._ckpt_sched_data['SCHED.W'])
+                restore_scheduler_state(
+                    self.lr_schedulers.W, self.optimizers.W,
+                    getattr(self, '_ckpt_sched_data', {}).get('SCHED.W'),
+                    base_lr, start_epoch - 1,
+                )
             except Exception:
                 pass
 
         device = self.device
         wid_loss_meter = AverageMeter()
-        best_wrr = 0
+        raw_input_meter = AverageMeter()
+        try:
+            best_wier = float(restored_meta.get('best_wier', np.inf))
+        except (TypeError, ValueError):
+            best_wier = np.inf
+        if not np.isfinite(best_wier):
+            best_wier = np.inf
+        eval_every = max(1, int(getattr(self.opt.training, 'eval_epoch_val', 10)))
+        self.completed_epoch = max(0, start_epoch - 1)
+        self.last_eval_scores = {}
+        self.best_wier = best_wier
 
         for epoch in range(start_epoch, self.opt.training.epochs + 1):
-            if getattr(self, 'train_sampler', None) is not None:
+            if hasattr(getattr(self, 'train_sampler', None), 'set_epoch'):
                 self.train_sampler.set_epoch(epoch)
             for i, batch in enumerate(self.train_loader):
                 if epoch == start_epoch and i < skip_batches:
@@ -2013,9 +3262,13 @@ class WriterIdentifyModel(BaseModel):
                 # Prepare inputs
                 #############################
                 self.set_mode('train')
-                real_imgs, real_img_lens, real_wids = batch['aug_imgs'].to(device), \
-                                                      batch['aug_img_lens'].to(device), \
+                real_imgs, real_img_lens, raw_fraction = self._select_writer_inputs(
+                    batch, input_policy, raw_probability
+                )
+                real_imgs, real_img_lens, real_wids = real_imgs.to(device), \
+                                                      real_img_lens.to(device), \
                                                       batch['wids'].to(device)
+                raw_input_meter.update(raw_fraction)
 
                 if self.opt.training.frozen_backbone:
                     b_module = self.unwrap_model(self.models.B)
@@ -2031,6 +3284,10 @@ class WriterIdentifyModel(BaseModel):
                 wid_loss_meter.update(wid_loss.item())
                 wid_loss.backward()
                 self.optimizers.W.step()
+                if self.use_teacher_ema:
+                    self.ema_tracker.step_ema(self.models_ema.W, self.models.W)
+                    self.ema_tracker.step_ema(self.models_ema.B, self.models.B)
+                    self.ema_tracker.step += 1
 
                 if iter_count % self.opt.training.print_iter_val == 0:
                     if epoch > 1 and not self.logger:
@@ -2043,10 +3300,19 @@ class WriterIdentifyModel(BaseModel):
 
                     wid_loss_avg = wid_loss_meter.eval()
                     wid_loss_meter.reset()
-                    info = "[%3d|%3d]-[%4d|%4d] WID: %.5f  Lr: %.6f" \
+                    raw_input_avg = raw_input_meter.eval()
+                    raw_input_meter.reset()
+                    info = "[%3d|%3d]-[%4d|%4d] WID: %.5f Raw: %.2f Lr: %.6f" \
                            % (epoch, self.opt.training.epochs, iter_count % len(self.train_loader),
-                              len(self.train_loader), wid_loss_avg, lr)
+                              len(self.train_loader), wid_loss_avg, raw_input_avg, lr)
                     self.print(info)
+                    if self.local_rank < 1 and wandb.run is not None:
+                        wandb.log({
+                            'pretrain/wid_loss': wid_loss_avg,
+                            'pretrain/wid_raw_fraction': raw_input_avg,
+                            'pretrain/wid_lr': lr,
+                            'pretrain/epoch': epoch,
+                        }, step=iter_count)
 
                 iter_count += 1
 
@@ -2055,34 +3321,84 @@ class WriterIdentifyModel(BaseModel):
                 if not os.path.exists(ckpt_root):
                     os.makedirs(ckpt_root) if self.local_rank < 1 else None
 
-                self.save('last', epoch, iter_count=iter_count)
+                eval_due = (epoch % eval_every == 0 or epoch == self.opt.training.epochs)
+                eval_scores = None
+                if self.local_rank < 1 and eval_due:
+                    eval_scores = self.validate(use_ema=self.use_teacher_ema)
+                    self.last_eval_scores = dict(eval_scores)
+                    source = 'EMA' if self.use_teacher_ema else 'online'
+                    self.print(
+                        'Writer {} eval @ epoch {}: WRR={:.3f} WIER={:.5f}'.format(
+                            source, epoch, eval_scores['WRR'], eval_scores['WIER']
+                        )
+                    )
+                    if wandb.run is not None:
+                        wandb.log({
+                            'pretrain/wid_wrr': eval_scores['WRR'],
+                            'pretrain/wid_wier': eval_scores['WIER'],
+                            'pretrain/epoch': epoch,
+                        }, step=iter_count)
+                    if eval_scores['WIER'] < best_wier:
+                        best_wier = eval_scores['WIER']
+                        export_path = getattr(self.opt.training, 'export_writer_teacher', '')
+                        if export_path:
+                            export_path = os.fspath(export_path)
+                            os.makedirs(os.path.dirname(export_path) or '.', exist_ok=True)
+                            teacher_w = self.models_ema.W if self.use_teacher_ema else self.models.W
+                            teacher_b = self.models_ema.B if self.use_teacher_ema else self.models.B
+                            export_ckpt = {
+                                'WriterIdentifier': self.unwrap_model(teacher_w).state_dict(),
+                                'StyleBackbone': self.unwrap_model(teacher_b).state_dict(),
+                                'Epoch': epoch,
+                                'WRR': eval_scores['WRR'],
+                                'WIER': eval_scores['WIER'],
+                                'teacher_source': source.lower(),
+                                'writer_count': self.unwrap_model(teacher_w).linear_wid[-1].out_features,
+                                'dataset': self.opt.dataset,
+                                'split': self.opt.training.dset_split,
+                            }
+                            staged_export = export_path + '.tmp'
+                            torch.save(export_ckpt, staged_export)
+                            os.replace(staged_export, export_path)
+                            self.print(
+                                f'Exported best {source} writer teacher (WIER={best_wier:.5f}): {export_path}'
+                            )
+                    self.best_wier = best_wier
+
+                if self.local_rank < 1:
+                    self.save(
+                        'last', epoch, iter_count=iter_count,
+                        best_wier=best_wier,
+                        wier=(eval_scores or {}).get('WIER'),
+                    )
                 if self.local_rank > -1:
                     dist.barrier()
 
 
             for scheduler in self.lr_schedulers.values():
                 scheduler.step()
+            self.completed_epoch = epoch
 
-    def validate(self, *args, **kwargs):
+        self.best_wier = best_wier
+
+    def validate(self, use_ema=True, *args, **kwargs):
         self.set_mode('eval')
+        writer = self.models_ema.W if use_ema and self.models_ema else self.models.W
+        backbone = self.models_ema.B if use_ema and self.models_ema else self.models.B
 
         with torch.no_grad():
             acc_counts = 0.
             total_counts = 0.
             for i, batch in tqdm(enumerate(self.tst_loader), total=len(self.tst_loader)):
-                wid_logits = self.models.W(batch['style_imgs'].to(self.device),
-                                           batch['style_img_lens'].to(self.device),
-                                           self.models.B)
+                wid_logits = writer(batch['style_imgs'].to(self.device),
+                                    batch['style_img_lens'].to(self.device), backbone)
                 _, preds = torch.max(wid_logits.data, dim=1)
 
                 acc_counts += preds.eq(batch['wids'].to(self.device)).sum().item()
                 total_counts += wid_logits.size(0)
 
-            wrr = acc_counts * 100. / total_counts
-            wier = 1 - acc_counts * 1. / total_counts
-            self.print(f'wier: {wier}')
+            wrr = acc_counts * 100. / max(total_counts, 1.0)
+            wier = 1 - acc_counts * 1. / max(total_counts, 1.0)
 
-        for model in self.models.values():
-            model.train()
-
-        return wrr
+        self.set_mode('train')
+        return {'WRR': wrr, 'WIER': wier}

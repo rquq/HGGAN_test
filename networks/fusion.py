@@ -1,288 +1,445 @@
+import math
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from .mamba import MambaBlock, RMSNorm, StyleCrossMambaBlock
+
 from .utils import ensure_dim3
 
-class StyleContentCrossAttention(nn.Module):
-    """
-    Direct Query-Key-Value Cross-Attention using pure, compatible PyTorch.
-    Ensures complete T4 compatibility without requiring PyTorch 2.0+ SDPA.
-    Allows content character tokens to directly query and align with style sequence features.
-    Updated with learned dynamic allograph routing prior.
-    """
-    def __init__(self, d_model, nhead=4, dropout=0.1, routing_dim=16, vocab_size=256):
+
+def _logit(probability):
+    return math.log(probability / (1.0 - probability))
+
+
+class StyleConditionedSelfAttention(nn.Module):
+    """Word-level content context, conditioned only by the global style token."""
+
+    def __init__(self, d_model, style_dim, nhead=4, attn_dim=128,
+                 ffn_dim=None, max_seq_len=32, residual_init=0.25,
+                 conditioning_limit=0.5):
         super().__init__()
+        if attn_dim % nhead:
+            raise ValueError('attn_dim must be divisible by nhead')
+        if not 0.0 < residual_init < 1.0:
+            raise ValueError('residual_init must be strictly between 0 and 1')
+
         self.d_model = d_model
         self.nhead = nhead
-        self.head_dim = d_model // nhead
-        self.vocab_size = vocab_size
-        self.warned_out_of_vocab = False
-        
-        self.q_proj = nn.Linear(d_model, d_model)
-        self.k_proj = nn.Linear(d_model, d_model)
-        self.v_proj = nn.Linear(d_model, d_model)
-        self.out_proj = nn.Linear(d_model, d_model)
-        
-        self.dropout = nn.Dropout(dropout)
-        self.norm1 = nn.LayerNorm(d_model)
-        self.ffn = nn.Sequential(
-            nn.Linear(d_model, d_model * 2),
-            nn.SiLU(),
-            nn.Linear(d_model * 2, d_model)
-        )
-        self.norm2 = nn.LayerNorm(d_model)
-        
-        # Learned character-to-style token routing layers
-        self.char_routing_emb = nn.Embedding(vocab_size, routing_dim)
-        self.context_routing_proj = nn.Linear(d_model, routing_dim)
-        self.style_routing_proj = nn.Linear(d_model, routing_dim)
+        self.head_dim = attn_dim // nhead
+        self.max_seq_len = max_seq_len
+        self.residual_init = residual_init
+        self.conditioning_limit = float(conditioning_limit)
+        ffn_dim = ffn_dim or d_model * 2
 
-    def forward(self, content_seq, style_seq, char_ids=None, mask=None):
-        """
-        Args:
-            content_seq: (B, L, D) sequence of content embeddings
-            style_seq: (B, S_len, D) sequence of style embeddings
-            char_ids: (B, L) raw character labels to guide vertical styling
-            mask: (B, L) sequence mask for content tokens
-        """
-        style_seq = ensure_dim3(style_seq)
-        B, L, D = content_seq.shape
-        S = style_seq.shape[1]
-        
-        # Project and reshape for Multi-Head: (B, nh, SeqLen, head_dim)
-        q = self.q_proj(content_seq).view(B, L, self.nhead, self.head_dim).transpose(1, 2)
-        k = self.k_proj(style_seq).view(B, S, self.nhead, self.head_dim).transpose(1, 2)
-        v = self.v_proj(style_seq).view(B, S, self.nhead, self.head_dim).transpose(1, 2)
-        
-        # Pure, version-friendly scaled dot-product attention
-        scale = 1.0 / (self.head_dim ** 0.5)
-        scores = torch.matmul(q * scale, k.transpose(-2, -1)) # (B, nh, L, S)
-        
-        # Add character-conditioned learned prior to guide attention mapping
-        if char_ids is not None:
-            if not self.warned_out_of_vocab and (char_ids >= self.vocab_size).any():
-                self.warned_out_of_vocab = True
-                print(f"[Warning] Found character IDs exceeding vocab_size ({self.vocab_size}) in StyleContentCrossAttention. "
-                      f"Max ID found: {char_ids.max().item()}. Clamping to range [0, {self.vocab_size - 1}].")
-            char_ids_clipped = torch.clamp(char_ids, 0, self.vocab_size - 1)
-            # Combine static character routing with dynamic sequence context
-            char_q_static = self.char_routing_emb(char_ids_clipped)
-            char_q_context = self.context_routing_proj(content_seq)
-            char_q = char_q_static + char_q_context
-            
-            # Project style_seq to routing dimension: (B, S, routing_dim)
-            style_routing = self.style_routing_proj(style_seq)
-            # Compute learned compatibility score with style routing keys: (B, L, S)
-            routing_prior = torch.matmul(char_q, style_routing.transpose(-2, -1))
-            # Add routing bias to attention weights
-            scores = scores + routing_prior.unsqueeze(1)
-            
-        attn_weights = torch.softmax(scores, dim=-1)
-        attn_weights = self.dropout(attn_weights)
-        attn_out = torch.matmul(attn_weights, v) # (B, nh, L, head_dim)
-        
-        # Reshape back to (B, L, D) and project
-        attn_out = attn_out.transpose(1, 2).contiguous().view(B, L, D)
-        attn_out = self.out_proj(attn_out)
-        
-        x = self.norm1(content_seq + attn_out)
-        ffn_out = self.ffn(x)
-        out = self.norm2(x + ffn_out)
+        self.attn_norm = nn.LayerNorm(d_model, elementwise_affine=False)
+        self.ffn_norm = nn.LayerNorm(d_model, elementwise_affine=False)
+        self.ffn_residual_norm = nn.LayerNorm(d_model, elementwise_affine=False)
+        self.qkv = nn.Linear(d_model, attn_dim * 3, bias=False)
+        self.attn_out = nn.Linear(attn_dim, d_model, bias=False)
+        self.ffn_in = nn.Linear(d_model, ffn_dim * 2)
+        self.ffn_out = nn.Linear(ffn_dim, d_model)
+
+        # Global style controls both normalized branches and their residual strength.
+        # It never provides attention keys/values, leaving local style routing to allograph.
+        self.style_mod = nn.Linear(style_dim, d_model * 4 + 2)
+        self.relative_position_bias = nn.Parameter(
+            torch.zeros(nhead, max_seq_len * 2 - 1)
+        )
+        self.reset_stability_parameters()
+
+    def reset_stability_parameters(self):
+        nn.init.normal_(self.style_mod.weight, 0.0, 0.01)
+        nn.init.zeros_(self.style_mod.bias)
+        with torch.no_grad():
+            self.style_mod.bias[-2:].fill_(_logit(self.residual_init))
+        nn.init.zeros_(self.relative_position_bias)
+
+    @staticmethod
+    def _condition(x, shift, scale):
+        return x * (1.0 + scale.unsqueeze(1)) + shift.unsqueeze(1)
+
+    def _attention_bias(self, length, batch_size, mask, dtype, device):
+        positions = torch.arange(length, device=device)
+        relative = positions[:, None] - positions[None, :]
+        relative = relative.clamp(
+            -self.max_seq_len + 1, self.max_seq_len - 1
+        ) + self.max_seq_len - 1
+        bias = self.relative_position_bias[:, relative].unsqueeze(0).to(dtype=dtype)
+        if mask is None:
+            return bias
+        bias = bias.expand(batch_size, -1, -1, -1).clone()
+        return bias.masked_fill(
+            ~mask[:, None, None, :], torch.finfo(dtype).min
+        )
+
+    def forward(self, content_seq, global_style, mask=None):
+        batch_size, length, _ = content_seq.shape
+        modulation = self.style_mod(global_style)
+        (
+            shift_attn,
+            scale_attn,
+            shift_ffn,
+            scale_ffn,
+            gate_attn,
+            gate_ffn,
+        ) = torch.split(
+            modulation,
+            [self.d_model, self.d_model, self.d_model, self.d_model, 1, 1],
+            dim=-1,
+        )
+        shift_attn = self.conditioning_limit * torch.tanh(shift_attn)
+        scale_attn = self.conditioning_limit * torch.tanh(scale_attn)
+        shift_ffn = self.conditioning_limit * torch.tanh(shift_ffn)
+        scale_ffn = self.conditioning_limit * torch.tanh(scale_ffn)
+
+        attn_input = self._condition(
+            self.attn_norm(content_seq), shift_attn, scale_attn
+        )
+        qkv = self.qkv(attn_input).view(
+            batch_size, length, 3, self.nhead, self.head_dim
+        ).permute(2, 0, 3, 1, 4)
+        query, key, value = qkv.unbind(0)
+        attention_bias = self._attention_bias(
+            length, batch_size, mask, query.dtype, query.device
+        )
+        attended = F.scaled_dot_product_attention(
+            query, key, value, attn_mask=attention_bias,
+            dropout_p=0.0, is_causal=False,
+        )
+        attended = attended.transpose(1, 2).reshape(batch_size, length, -1)
+        content_seq = (
+            content_seq
+            + torch.sigmoid(gate_attn).unsqueeze(1) * self.attn_out(attended)
+        )
         if mask is not None:
-            out = out * mask.to(out.dtype).unsqueeze(-1)
-        return out
- 
- 
+            content_seq = content_seq * mask.unsqueeze(-1).to(content_seq.dtype)
+
+        ffn_input = self._condition(
+            self.ffn_norm(content_seq), shift_ffn, scale_ffn
+        )
+        value_branch, gate_branch = self.ffn_in(ffn_input).chunk(2, dim=-1)
+        ffn_output = self.ffn_out(value_branch * F.silu(gate_branch))
+        ffn_output = self.ffn_residual_norm(ffn_output)
+        content_seq = content_seq + torch.sigmoid(gate_ffn).unsqueeze(1) * ffn_output
+        if mask is not None:
+            content_seq = content_seq * mask.unsqueeze(-1).to(content_seq.dtype)
+        return content_seq
+
+
 class AllographicModulation(nn.Module):
-    """
-    Dynamic character-conditioned allograph modulation (AdaIN style).
-    Allows each content character token to dynamically pool style tokens that best match
-    its spatial/glyph properties, predicting character-specific scale and shift.
-    Updated with learned character-to-style token routing.
-    """
-    def __init__(self, d_model, routing_dim=16, vocab_size=256):
+    """Route distinct local style slots to characters with bounded residual detail."""
+
+    def __init__(self, d_model, routing_dim=16, vocab_size=256,
+                 modulation_limit=0.3, character_gain_limit=0.25,
+                 routing_temperature=0.7, modulation_residual_init=0.5,
+                 modulation_rms_cap=1.0, routing_center_init=0.5,
+                 routing_scale_max=2.0, routing_uniform_mix=0.05):
         super().__init__()
+        if routing_temperature <= 0:
+            raise ValueError('routing_temperature must be positive')
+        if not 0.0 < modulation_residual_init < 1.0:
+            raise ValueError(
+                'modulation_residual_init must be strictly between 0 and 1'
+            )
+        if modulation_rms_cap <= 0:
+            raise ValueError('modulation_rms_cap must be positive')
+        if not 0.0 < routing_center_init < 1.0:
+            raise ValueError(
+                'routing_center_init must be strictly between 0 and 1'
+            )
+        initial_routing_scale = 1.0 / float(routing_temperature)
+        if routing_scale_max <= initial_routing_scale:
+            raise ValueError(
+                'routing_scale_max must exceed the initial inverse temperature'
+            )
+        if not 0.0 <= routing_uniform_mix < 1.0:
+            raise ValueError('routing_uniform_mix must be in [0, 1)')
         self.vocab_size = vocab_size
+        self.modulation_limit = float(modulation_limit)
+        self.character_gain_limit = float(character_gain_limit)
+        self.routing_temperature = float(routing_temperature)
+        self.modulation_residual_init = float(modulation_residual_init)
+        self.modulation_rms_cap = float(modulation_rms_cap)
+        self.routing_center_init = float(routing_center_init)
+        self.routing_scale_max = float(routing_scale_max)
+        self.routing_uniform_mix = float(routing_uniform_mix)
         self.warned_out_of_vocab = False
-        self.q_proj = nn.Linear(d_model, d_model)
-        self.k_proj = nn.Linear(d_model, d_model)
-        self.v_proj = nn.Linear(d_model, d_model)
-        
+        self.checked_char_range = False
+
+        # Bias-free projections cannot inject a common vector into every slot.
+        self.q_proj = nn.Linear(d_model, d_model, bias=False)
+        self.k_proj = nn.Linear(d_model, d_model, bias=False)
+        self.v_proj = nn.Linear(d_model, d_model, bias=False)
+        self.routing_logit_scale = nn.Parameter(torch.tensor(
+            _logit(initial_routing_scale / self.routing_scale_max)
+        ))
+        self.char_routing_logit_scale = nn.Parameter(torch.tensor(
+            _logit(initial_routing_scale / self.routing_scale_max)
+        ))
+        self.routing_center_logit = nn.Parameter(torch.tensor(
+            _logit(self.routing_center_init)
+        ))
+
         self.mod_proj = nn.Sequential(
             nn.Linear(d_model, d_model),
             nn.SiLU(),
-            nn.Linear(d_model, d_model * 2)
+            nn.Linear(d_model, d_model * 2),
         )
-        # Learned character-to-style token routing layers
+        self.character_style_norm = nn.LayerNorm(
+            d_model, elementwise_affine=False
+        )
+        self.modulation_gate_logits = nn.Parameter(torch.full(
+            (d_model,), _logit(self.modulation_residual_init)
+        ))
+
         self.char_routing_emb = nn.Embedding(vocab_size, routing_dim)
-        self.context_routing_proj = nn.Linear(d_model, routing_dim)
-        self.style_routing_proj = nn.Linear(d_model, routing_dim)
-        
-    def forward(self, content_seq, style_seq, char_ids=None, mask=None):
-        """
-        Args:
-            content_seq: (B, L, D) refined content sequence
-            style_seq: (B, S, D) style sequence features
-            char_ids: (B, L) raw character labels to guide vertical styling
-            mask: (B, L) sequence mask for content tokens
-        """
-        style_seq = ensure_dim3(style_seq)
-        B, L, D = content_seq.shape
-        S = style_seq.shape[1]
-        
-        # Compute dynamic character-conditioned query-key alignment weights
-        q = self.q_proj(content_seq) # (B, L, D)
-        k = self.k_proj(style_seq)   # (B, S, D)
-        v = self.v_proj(style_seq)   # (B, S, D)
-        
-        # Scaled dot-product attention
-        scores = torch.matmul(q, k.transpose(-2, -1)) / (D ** 0.5) # (B, L, S)
-        
-        # Add character-conditioned learned routing prior
+        self.context_routing_proj = nn.Linear(
+            d_model, routing_dim, bias=False
+        )
+        self.style_routing_proj = nn.Linear(
+            d_model, routing_dim, bias=False
+        )
+        # Decode identical writer evidence differently for each character.
+        # Zero initialization starts the character gain as an identity mapping.
+        self.char_query_norm = nn.LayerNorm(
+            routing_dim, elementwise_affine=False
+        )
+        self.char_style_gate = nn.Linear(routing_dim, d_model, bias=False)
+        self.reset_stability_parameters()
+
+    def reset_stability_parameters(self):
+        # Small, nonzero modulation learns immediately but cannot begin saturated.
+        nn.init.normal_(self.mod_proj[-1].weight, 0.0, 0.01)
+        nn.init.zeros_(self.mod_proj[-1].bias)
+        nn.init.zeros_(self.char_style_gate.weight)
+        with torch.no_grad():
+            bounded_scale_logit = _logit(
+                (1.0 / self.routing_temperature)
+                / self.routing_scale_max
+            )
+            self.routing_logit_scale.fill_(bounded_scale_logit)
+            self.char_routing_logit_scale.fill_(bounded_scale_logit)
+            self.routing_center_logit.fill_(
+                _logit(self.routing_center_init)
+            )
+            self.modulation_gate_logits.fill_(
+                _logit(self.modulation_residual_init)
+            )
+
+    def _cap_modulation_rms(self, value):
+        # Do not amplify well-scaled predictions. Only compress a channel
+        # vector after its RMS exceeds the configured safe operating range.
+        rms = value.float().square().mean(dim=-1, keepdim=True).sqrt()
+        divisor = (rms / self.modulation_rms_cap).clamp_min(1.0)
+        return value / divisor.to(dtype=value.dtype)
+
+    def _bounded_routing_scale(self, parameter):
+        # A smooth bound keeps gradients alive near the maximum, unlike clamp.
+        return self.routing_scale_max * torch.sigmoid(parameter)
+
+    def forward(self, content_seq, local_style_seq, char_ids=None, mask=None):
+        local_style_seq = ensure_dim3(local_style_seq)
+
+        # Blend absolute writer evidence with slot-relative allographic
+        # detail. Full centering discarded useful writer structure, whereas no
+        # centering let a common component dominate every routing key.
+        center_strength = torch.sigmoid(self.routing_center_logit)
+        routing_style = (
+            local_style_seq
+            - center_strength * local_style_seq.mean(dim=1, keepdim=True)
+        )
+
+        # Cosine logits make routing depend on slot direction instead of vector
+        # magnitude, with a learned but bounded sharpness.
+        query = F.normalize(self.q_proj(content_seq), dim=-1, eps=1e-6)
+        key = F.normalize(self.k_proj(routing_style), dim=-1, eps=1e-6)
+        value = self.v_proj(local_style_seq)
+        routing_scale = self._bounded_routing_scale(
+            self.routing_logit_scale
+        )
+        scores = routing_scale * torch.matmul(
+            query, key.transpose(-2, -1)
+        )
+
+        char_query = None
         if char_ids is not None:
-            if not self.warned_out_of_vocab and (char_ids >= self.vocab_size).any():
-                self.warned_out_of_vocab = True
-                print(f"[Warning] Found character IDs exceeding vocab_size ({self.vocab_size}) in AllographicModulation. "
-                      f"Max ID found: {char_ids.max().item()}. Clamping to range [0, {self.vocab_size - 1}].")
-            char_ids_clipped = torch.clamp(char_ids, 0, self.vocab_size - 1)
-            char_q_static = self.char_routing_emb(char_ids_clipped) # (B, L, routing_dim)
-            char_q_context = self.context_routing_proj(content_seq) # (B, L, routing_dim)
-            char_q = char_q_static + char_q_context
-            
-            style_routing = self.style_routing_proj(style_seq) # (B, S, routing_dim)
-            routing_prior = torch.matmul(char_q, style_routing.transpose(-2, -1)) # (B, L, S)
-            scores = scores + routing_prior
-            
-        attn_weights = torch.softmax(scores, dim=-1) # (B, L, S)
-        
-        # Character-specific style features: (B, L, S) * (B, S, D) -> (B, L, D)
-        style_char = torch.matmul(attn_weights, v) 
-        
-        # Dynamic AdaIN scale & shift parameters per character
-        mod_params = self.mod_proj(style_char) # (B, L, D*2)
-        scale, shift = mod_params.chunk(2, dim=-1)
-        
-        out = content_seq * (1 + scale) + shift
+            # Configuration guarantees the range in normal training. Check once
+            # for diagnostics instead of synchronizing GPU -> CPU every G pass.
+            if not self.checked_char_range:
+                min_char = int(char_ids.detach().min().item())
+                max_char = int(char_ids.detach().max().item())
+                self.checked_char_range = True
+                if min_char < 0 or max_char >= self.vocab_size:
+                    self.warned_out_of_vocab = True
+                    print(
+                        f'[Warning] Character ID range [{min_char}, {max_char}] '
+                        f'exceeds vocab_size={self.vocab_size}; clamping.'
+                    )
+            char_ids = char_ids.clamp(0, self.vocab_size - 1)
+            char_query = (
+                self.char_routing_emb(char_ids)
+                + self.context_routing_proj(content_seq)
+            )
+            normalized_char_query = F.normalize(
+                char_query, dim=-1, eps=1e-6
+            )
+            style_routing = F.normalize(
+                self.style_routing_proj(routing_style), dim=-1, eps=1e-6
+            )
+            char_scale = self._bounded_routing_scale(
+                self.char_routing_logit_scale
+            )
+            scores = scores + char_scale * torch.matmul(
+                normalized_char_query, style_routing.transpose(-2, -1)
+            )
+
+        attention = torch.softmax(scores, dim=-1)
+        if self.routing_uniform_mix:
+            # Preserve a small gradient path to every local slot so rare
+            # allographs do not starve the slots they have not selected yet.
+            attention = (
+                (1.0 - self.routing_uniform_mix) * attention
+                + self.routing_uniform_mix / attention.size(-1)
+            )
+        character_style = self.character_style_norm(
+            torch.matmul(attention, value)
+        )
+        if char_query is not None:
+            character_gain = self.character_gain_limit * torch.tanh(
+                self.char_style_gate(self.char_query_norm(char_query))
+            )
+            character_style = character_style * (1.0 + character_gain)
+
+        scale, shift = self.mod_proj(character_style).chunk(2, dim=-1)
+        scale = self._cap_modulation_rms(scale)
+        shift = self._cap_modulation_rms(shift)
+        scale = self.modulation_limit * torch.tanh(scale)
+        shift = self.modulation_limit * torch.tanh(shift)
+        modulation_strength = torch.sigmoid(
+            self.modulation_gate_logits
+        ).view(1, 1, -1)
+        output = content_seq + modulation_strength * (
+            content_seq * scale + shift
+        )
         if mask is not None:
-            out = out * mask.to(out.dtype).unsqueeze(-1)
-        return out
+            output = output * mask.unsqueeze(-1).to(output.dtype)
+        return output
 
 
-class StyleContentMamba(nn.Module):
-    """
-    Improved 1D Prefix-Context Mamba Fusion with Dynamic Allograph Cross-Attention
-    and Character-Conditioned Allographic Modulation.
-    Uses StyleCrossMambaBlock to perform sequence scans directly on the content characters
-    while querying style features via cross-attention gating, followed by fine-grained allograph
-    cross-attention and modulation.
-    """
-    def __init__(self, d_model, style_dim, d_state=16, d_conv=4, expand=2, vocab_size=256):
+class StyleContentAttentionFusion(nn.Module):
+    """Coarse-to-fine content/style fusion with one unambiguous job per stage."""
+
+    def __init__(self, d_model, style_dim, nhead=4, attn_dim=128,
+                 ffn_dim=None, max_seq_len=32, vocab_size=256,
+                 local_projection_residual_init=0.1,
+                 routing_temperature=0.7, modulation_limit=0.3,
+                 modulation_residual_init=0.5,
+                 modulation_rms_cap=1.0, routing_center_init=0.5,
+                 routing_scale_max=2.0, routing_uniform_mix=0.05):
         super().__init__()
+        if not 0.0 < local_projection_residual_init < 1.0:
+            raise ValueError(
+                'local_projection_residual_init must be strictly between 0 and 1'
+            )
         self.d_model = d_model
-        
-        # 1. Feature Projections
-        self.style_proj = nn.Sequential(
-            nn.Linear(style_dim, d_model),
+        self.local_projection_residual_init = float(
+            local_projection_residual_init
+        )
+        self.local_style_proj = nn.Sequential(
+            nn.Linear(style_dim, d_model, bias=False),
             nn.SiLU(),
-            nn.Linear(d_model, d_model)
+            nn.Linear(d_model, d_model, bias=False),
         )
-        self.content_proj = nn.Linear(d_model, d_model)
-        
-        # 2. Sequential 1D Style-Cross Mamba Engine
-        self.mamba = StyleCrossMambaBlock(d_model, style_dim=style_dim, d_state=d_state, d_conv=d_conv, expand=expand, bidirectional=True)
-        
-        # 3. Local Stroke Boundary 1D CNN Gate (smooths scan noise and preserves boundaries)
-        self.local_cnn = nn.Sequential(
-            nn.Conv1d(d_model, d_model, kernel_size=5, padding=2, groups=d_model),
-            nn.GroupNorm(8, d_model),
-            nn.SiLU(),
-            nn.Conv1d(d_model, d_model, kernel_size=1)
+        self.local_projection_gate_logits = nn.Parameter(torch.full(
+            (d_model,), _logit(self.local_projection_residual_init)
+        ))
+        self.local_style_input_norm = nn.LayerNorm(style_dim, elementwise_affine=False)
+        self.local_style_output_norm = nn.LayerNorm(d_model, elementwise_affine=False)
+        self.content_context = StyleConditionedSelfAttention(
+            d_model=d_model, style_dim=style_dim, nhead=nhead,
+            attn_dim=attn_dim, ffn_dim=ffn_dim, max_seq_len=max_seq_len,
         )
-        self.local_gate = nn.Sequential(
-            nn.Conv1d(d_model, d_model, kernel_size=1),
-            nn.Sigmoid()
+        self.local_depthwise = nn.Conv1d(
+            d_model, d_model, kernel_size=5, padding=2, groups=d_model
         )
-        
-        # 4. Dynamic Cross-Attention for Allograph Learning
-        self.cross_attn = StyleContentCrossAttention(d_model, nhead=4, vocab_size=vocab_size)
-        
-        # 5. Normalization and Stability
-        self.norm = RMSNorm(d_model)
-        
-        # 6. Character-Conditioned Allographic Modulation
-        self.allograph_mod = AllographicModulation(d_model, vocab_size=vocab_size)
-        
-        # 7. Global Style Modulation (maintained as a residual global bias)
-        self.global_style_mod = nn.Sequential(
-            nn.Linear(style_dim, d_model),
-            nn.SiLU(),
-            nn.Linear(d_model, d_model * 2)
+        self.local_pointwise = nn.Linear(d_model, d_model)
+        self.local_selector = nn.Sequential(
+            nn.Linear(d_model, d_model),
+            nn.Sigmoid(),
         )
+        self.local_residual_gate_logits = nn.Parameter(
+            torch.full((d_model,), _logit(0.25))
+        )
+        self.allograph_mod = AllographicModulation(
+            d_model, vocab_size=vocab_size,
+            routing_temperature=routing_temperature,
+            modulation_limit=modulation_limit,
+            modulation_residual_init=modulation_residual_init,
+            modulation_rms_cap=modulation_rms_cap,
+            routing_center_init=routing_center_init,
+            routing_scale_max=routing_scale_max,
+            routing_uniform_mix=routing_uniform_mix,
+        )
+        self.reset_stability_parameters()
+
+    def reset_stability_parameters(self):
+        self.content_context.reset_stability_parameters()
+        self.allograph_mod.reset_stability_parameters()
+        # The tall bias-free base projection preserves angles in style space;
+        # the learned MLP is only a small residual refinement.
+        nn.init.orthogonal_(self.local_style_proj[0].weight)
+        nn.init.normal_(self.local_style_proj[2].weight, 0.0, 0.01)
+        with torch.no_grad():
+            self.local_projection_gate_logits.fill_(
+                _logit(self.local_projection_residual_init)
+            )
+            self.local_residual_gate_logits.fill_(_logit(0.25))
 
     def forward(self, content_seq, style_seq, char_ids=None, y_lens=None):
-        """
-        Args:
-            content_seq: (B, L, D) sequence of content embeddings
-            style_seq: (B, 32, style_dim) sequence of style tokens
-            char_ids: (B, L) raw character labels
-            y_lens: (B,) sequence lengths of content characters
-        """
         style_seq = ensure_dim3(style_seq)
-        B, L, D = content_seq.shape
-        
-        # Construct sequence mask
+        if style_seq.size(1) < 2:
+            raise ValueError(
+                'fusion requires token 0 as global style and at least one local style token'
+            )
+
+        _, max_length, _ = content_seq.shape
         mask = None
         if y_lens is not None:
-            range_tensor = torch.arange(L, device=content_seq.device).unsqueeze(0)
-            mask = (range_tensor < y_lens.unsqueeze(1)) # (B, L)
-            
-        # --- STAGE 1: Sequence Preparation ---
-        s_feat = self.style_proj(style_seq) # (B, S_len, D)
-        c_feat = self.content_proj(content_seq) # (B, L, D)
-        if mask is not None:
-            c_feat = c_feat * mask.to(c_feat.dtype).unsqueeze(-1)
-            
-        # --- STAGE 2: 1D Bidirectional Style-Cross Mamba Scan ---
-        # performs sequence scans on content while drawing keys/values from the style sequence
-        fused = self.mamba(c_feat, style_seq, mask=mask)
-        content_fused = self.norm(fused + content_seq)
-        if mask is not None:
-            content_fused = content_fused * mask.to(content_fused.dtype).unsqueeze(-1)
-            
-        # --- STAGE 3: Local Stroke Boundary Smoothing (CNN Gate) ---
-        c_trans = content_fused.transpose(1, 2)
-        local_feat = self.local_cnn(c_trans)
-        gate_val = self.local_gate(c_trans)
-        content_local = content_fused + (local_feat * gate_val).transpose(1, 2)
-        if mask is not None:
-            content_local = content_local * mask.to(content_local.dtype).unsqueeze(-1)
-            
-        # --- STAGE 4: Allograph Refinement via Dynamic Cross-Attention ---
-        content_final = self.cross_attn(content_local, s_feat, char_ids=char_ids, mask=mask)
-        if mask is not None:
-            content_final = content_final * mask.to(content_final.dtype).unsqueeze(-1)
-            
-        # --- STAGE 5: Allographic Modulation (Dynamic Character-Conditioned) ---
-        content_modulated = self.allograph_mod(content_final, s_feat, char_ids=char_ids, mask=mask)
-        if mask is not None:
-            content_modulated = content_modulated * mask.to(content_modulated.dtype).unsqueeze(-1)
-            
-        # --- STAGE 6: Global Style Modulation Residual ---
-        style_vec = style_seq.sum(dim=1) / style_seq.size(1) # (B, style_dim)
-        mod_params = self.global_style_mod(style_vec).unsqueeze(1) # (B, 1, D*2)
-        scale, shift = mod_params.chunk(2, dim=-1)
-        
-        out = content_modulated * (1 + scale) + shift
-        if mask is not None:
-            out = out * mask.to(out.dtype).unsqueeze(-1)
-        return out
+            valid_lengths = y_lens.to(content_seq.device).long().clamp(1, max_length)
+            positions = torch.arange(max_length, device=content_seq.device).unsqueeze(0)
+            mask = positions < valid_lengths.unsqueeze(1)
+            content_seq = content_seq * mask.unsqueeze(-1).to(content_seq.dtype)
 
+        global_style = style_seq[:, 0]
+        # Keep local-token identity through the 32→d_model handoff. The old
+        # two-layer projection mapped distinct tokens back to one nearly
+        # identical vector while these existing weights can form a good residual.
+        local_style_input = self.local_style_input_norm(style_seq[:, 1:])
+        local_style_hidden = self.local_style_proj[0](local_style_input)
+        projection_strength = torch.sigmoid(
+            self.local_projection_gate_logits
+        ).view(1, 1, -1)
+        local_style = self.local_style_output_norm(
+            local_style_hidden
+            + projection_strength * self.local_style_proj[2](
+                F.silu(local_style_hidden)
+            )
+        )
 
-class MixMamba(nn.Module):
-    def __init__(self, d_model, style_dim, vocab_size=256):
-        super().__init__()
-        self.fusion = StyleContentMamba(d_model, style_dim, vocab_size=vocab_size)
-        
-    def forward(self, content_seq, style_seq, char_ids=None, y_lens=None):
-        return self.fusion(content_seq, style_seq, char_ids=char_ids, y_lens=y_lens)
+        # Stage 1: global style changes word-level content relationships, not glyph routing.
+        content_context = self.content_context(content_seq, global_style, mask=mask)
+
+        # Stage 2: local character continuity with a small, learnable residual handoff.
+        context_channels = content_context.transpose(1, 2)
+        local_delta = self.local_depthwise(context_channels).transpose(1, 2)
+        local_delta = self.local_pointwise(F.silu(local_delta))
+        local_delta = local_delta * self.local_selector(content_context)
+        local_strength = torch.sigmoid(self.local_residual_gate_logits).view(1, 1, -1)
+        content_local = content_context + local_strength * local_delta
+        if mask is not None:
+            content_local = content_local * mask.unsqueeze(-1).to(content_local.dtype)
+
+        # Stage 3: the only content-to-style attention; local tokens supply allographs.
+        return self.allograph_mod(
+            content_local, local_style, char_ids=char_ids, mask=mask
+        )

@@ -1,3 +1,4 @@
+import math
 import torch
 import numpy as np
 from copy import deepcopy
@@ -27,7 +28,9 @@ class Distribution(torch.Tensor):
             self.generator = None
             self.np_rng = None
         if self.dist_type == 'normal':
-            self.mean, self.var = kwargs['mean'], kwargs['var']
+            self.mean = kwargs.get('mean', 0.0)
+            self.var = kwargs.get('var', 1.0)
+            self.std = kwargs.get('std', math.sqrt(self.var) if self.var > 0 else 1.0)
         elif self.dist_type == 'uniform':
             self.low, self.high = kwargs['low'], kwargs['high']
         elif self.dist_type == 'categorical':
@@ -39,13 +42,7 @@ class Distribution(torch.Tensor):
 
     def sample_(self):
         if self.dist_type == 'normal':
-            if self.dim() == 3:
-                B, T, D = self.size()
-                temp = torch.empty((B, 1, D), device=self.device, dtype=self.dtype)
-                temp.normal_(self.mean, self.var, generator=self.generator)
-                self.data.copy_(temp.repeat(1, T, 1))
-            else:
-                self.normal_(self.mean, self.var, generator=self.generator)
+            self.normal_(self.mean, self.std, generator=self.generator)
         elif self.dist_type == 'uniform':
             self.uniform_(self.low, self.high, generator=self.generator)
         elif self.dist_type == 'categorical':
@@ -87,6 +84,11 @@ class Distribution(torch.Tensor):
 
     # Overwrite to() method to preserve distribution attributes and Generator device state
     def to(self, *args, **kwargs):
+        # Tensor operations propagate the subclass without sampler metadata.
+        # Such results are ordinary tensors; Tensor.var/mean are methods, not
+        # the numeric distribution attributes expected below.
+        if 'dist_type' not in self.__dict__:
+            return self.as_subclass(torch.Tensor).to(*args, **kwargs)
         device_tensor = super().to(*args, **kwargs)
         new_obj = device_tensor.as_subclass(Distribution)
         dist_type = getattr(self, 'dist_type', 'normal')
@@ -110,6 +112,7 @@ class Distribution(torch.Tensor):
         if dist_type == 'normal':
             new_obj.mean = getattr(self, 'mean', 0)
             new_obj.var = getattr(self, 'var', 1.0)
+            new_obj.std = getattr(self, 'std', math.sqrt(new_obj.var) if new_obj.var > 0 else 1.0)
         elif dist_type == 'uniform':
             new_obj.low = getattr(self, 'low', 0)
             new_obj.high = getattr(self, 'high', 1)

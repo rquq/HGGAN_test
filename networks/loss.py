@@ -28,10 +28,6 @@ def r1_reg(d_out, x_in):
     return reg
 
 
-def tv_loss(img, img_lens):
-    loss = (recn_l1_loss(img[:, :, 1:, :], img[:, :, :-1, :], img_lens) +
-            recn_l1_loss(img[:, :, :, 1:], img[:, :, :, :-1], img_lens - 1)) / 2
-    return loss
 
 
 def recn_l1_loss(img1, img2, img_lens):
@@ -41,29 +37,13 @@ def recn_l1_loss(img1, img2, img_lens):
     return loss
 
 
-def calc_loss_perceptual(hout, hgt, img_lens):
-    loss = 0
-    for j in range(3):
-        scale = 2 ** (3 - j)
-        loss += recn_l1_loss(hout[j], hgt[j], img_lens // scale) / scale
-    return loss
-
-
-def gram_matrix(feat):
-    # https://github.com/pytorch/examples/blob/master/fast_neural_style/neural_style/utils.py
-    (b, ch, h, w) = feat.size()
-    feat = feat.view(b, ch, h * w)
-    feat_t = feat.transpose(1, 2)
-    gram = torch.bmm(feat, feat_t) / (ch * h * w)
-    return gram
 
 
 def KLloss(mu, logvar):
-    # Handle both 2D [B, D] and 3D [B, L, D] cases
+    # Mean, rather than sum, makes this weight independent of token count and
+    # style dimension and prevents KL from abruptly dominating the generator.
     loss = -0.5 * (1 + logvar - mu ** 2 - logvar.exp())
-    # Sum over all dimensions except batch, then mean over batch
-    loss = loss.view(loss.size(0), -1).sum(dim=1)
-    return torch.mean(loss)
+    return loss.flatten(1).mean(dim=1).mean()
 
 
 ##############################################################################
@@ -77,8 +57,8 @@ class CXLoss(nn.Module):
         self.b = b
 
     def center_by_T(self, featureI, featureT):
-        # Calculate mean channel vector for feature map.
-        meanT = featureT.mean(dim=(0, 2, 3), keepdim=True)
+        # Center each sample independently; a batch-wide mean couples writers.
+        meanT = featureT.mean(dim=(2, 3), keepdim=True)
         return featureI - meanT, featureT - meanT
 
     def l2_normalize_channelwise(self, features):
@@ -99,7 +79,7 @@ class CXLoss(nn.Module):
         W_sum = W.sum(dim=axis, keepdim=True)
         return W.div(W_sum)
 
-    def forward(self, featureT, featureI):
+    def _forward_impl(self, featureT, featureI):
         '''
         :param featureT: target
         :param featureI: inference
@@ -114,23 +94,49 @@ class CXLoss(nn.Module):
         N, C, H_T, W_T = featureT.shape
         _, _, H_I, W_I = featureI.shape
 
-        featI_flat = featureI.view(N, C, H_I * W_I)
-        featT_flat = featureT.view(N, C, H_T * W_T)
+        featI_flat = featureI.reshape(N, C, H_I * W_I)
+        featT_flat = featureT.reshape(N, C, H_T * W_T)
 
         # batched matrix multiplication: (N, P_T, C) x (N, C, P_I) -> (N, P_T, P_I)
-        dist = torch.bmm(featT_flat.transpose(1, 2), featI_flat)
+        dist = torch.bmm(featT_flat.transpose(1, 2), featI_flat).clamp(-1.0, 1.0)
 
         raw_dist = (1. - dist) / 2.
 
         relative_dist = self.calc_relative_distances(raw_dist, axis=1)
 
         CX = self.calc_CX(relative_dist, axis=1)
-        
+
         # Take max over spatial dimensions of Inference feature map (dim=2, which is P_I)
         CX_max = CX.max(dim=2)[0]
         CX_mean = torch.mean(CX_max, dim=1)
         CX_loss = torch.mean(-torch.log(CX_mean + 1e-5))
         return CX_loss
+
+    def forward(self, featureT, featureI, target_lengths=None, input_lengths=None):
+        if target_lengths is None and input_lengths is None:
+            return self._forward_impl(featureT, featureI)
+        if target_lengths is None or input_lengths is None:
+            raise ValueError('target_lengths and input_lengths must be supplied together')
+        if len(target_lengths) != featureT.size(0) or len(input_lengths) != featureI.size(0):
+            raise ValueError('contextual-loss lengths must match their batch sizes')
+
+        losses = []
+        target_widths = target_lengths.detach().clamp(
+            1, featureT.size(-1)
+        ).tolist()
+        input_widths = input_lengths.detach().clamp(
+            1, featureI.size(-1)
+        ).tolist()
+        for index, (target_width, input_width) in enumerate(zip(
+            target_widths, input_widths
+        )):
+            target_width = int(target_width)
+            input_width = int(input_width)
+            losses.append(self._forward_impl(
+                featureT[index:index + 1, :, :, :target_width],
+                featureI[index:index + 1, :, :, :input_width],
+            ))
+        return torch.stack(losses).mean()
 
 
 
@@ -141,19 +147,34 @@ class GramStyleLoss(nn.Module):
     def __init__(self):
         super(GramStyleLoss, self).__init__()
         self.gram = GramMatrix()
-        self.criterion = nn.MSELoss()
 
     def __call__(self, input_feat, target_feat, feat_len=None):
         input_gram = self.gram(input_feat, feat_len)
         target_gram = self.gram(target_feat, feat_len)
-        loss = self.criterion(input_gram, target_gram)
-        return loss
+        # A raw Gram MSE scales with feature energy and channel count, so its
+        # magnitude can vary by orders of magnitude between backbone stages.
+        # Normalize by the detached energy of both Gram matrices to make the
+        # loss dimensionless while preserving gradients through input_gram.
+        error = (input_gram - target_gram).square().mean(dim=(1, 2))
+        energy = 0.5 * (
+            input_gram.square().mean(dim=(1, 2))
+            + target_gram.square().mean(dim=(1, 2))
+        )
+        return (error / energy.detach().clamp_min(1e-6)).mean()
 
 
 class GramMatrix(nn.Module):
     def forward(self, input, feat_len=None):
-        device_type = input.device.type
-        with torch.amp.autocast(device_type, enabled=False):
+        autocast_ctx = (
+            torch.cuda.amp.autocast(enabled=False)
+            if input.device.type == 'cuda'
+            else (
+                torch.amp.autocast(input.device.type, enabled=False)
+                if hasattr(torch, 'amp') and hasattr(torch.amp, 'autocast')
+                else torch.autograd.set_grad_enabled(torch.is_grad_enabled())
+            )
+        )
+        with autocast_ctx:
             input = input.float()
             a, b, c, d = input.size()
 
@@ -171,17 +192,32 @@ class GramMatrix(nn.Module):
             return G / denom
 
 
-def contrastive_style_loss(fake_styles, real_styles, temperature=0.07):
-    """
-    Enforces stroke and texture consistency at the latent feature level.
-    fake_styles: (B, 32, style_dim) or (B, style_dim)
-    real_styles: (B, 32, style_dim) or (B, style_dim)
-    """
-    _pool = lambda s: s if s.dim() == 2 else s.mean(dim=1)
-    f_s, r_s = F.normalize(_pool(fake_styles), dim=-1), F.normalize(_pool(real_styles), dim=-1)
-    
-    logits = torch.matmul(f_s, r_s.t()) / temperature
-    labels = torch.arange(f_s.size(0), device=fake_styles.device)
-    return F.cross_entropy(logits, labels)
+def _global_style(style):
+    return style if style.dim() == 2 else style[:, 0]
 
 
+
+
+def supervised_contrastive_style_loss(styles, writer_ids, temperature=0.1):
+    """Pull same-writer global style tokens together and repel other writers."""
+    features = F.normalize(_global_style(styles), dim=-1)
+    writer_ids = writer_ids.view(-1)
+    count = features.size(0)
+    if count < 2:
+        return features.sum() * 0.0
+
+    self_mask = torch.eye(count, dtype=torch.bool, device=features.device)
+    positive_mask = writer_ids[:, None].eq(writer_ids[None, :]) & ~self_mask
+    valid_anchors = positive_mask.any(dim=1)
+    if not valid_anchors.any():
+        return features.sum() * 0.0
+
+    logits = torch.matmul(features, features.t()) / temperature
+    logits = logits - logits.max(dim=1, keepdim=True).values.detach()
+    exp_logits = torch.exp(logits).masked_fill(self_mask, 0.0)
+    log_prob = logits - torch.log(exp_logits.sum(dim=1, keepdim=True).clamp_min(1e-8))
+    mean_positive_log_prob = (
+        (log_prob * positive_mask.to(log_prob.dtype)).sum(dim=1)
+        / positive_mask.sum(dim=1).clamp_min(1)
+    )
+    return -mean_positive_log_prob[valid_anchors].mean()

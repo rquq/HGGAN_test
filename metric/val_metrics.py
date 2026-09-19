@@ -19,12 +19,12 @@ from metric.cmmd import calculate_cmmd_score, compute_real_embeddings, ClipEmbed
 from metric.mssim_psnr import calculate_mssim_psnr
 from networks.utils import pad_image_lengths
 
-# We need to wrap or subclass InceptionV3 to support masking and returning logits for HGGAN.
+# We need to wrap or subclass InceptionV3 to support masking and returning logits.
 class HGGANInceptionV3(ReferenceInceptionV3):
     def __init__(self, output_blocks=[3], resize_input=True, normalize_input=True, requires_grad=False, use_fid_inception=True):
         self.hggan_resize_input = resize_input
         super().__init__(output_blocks, resize_input=False, normalize_input=normalize_input, requires_grad=requires_grad, use_fid_inception=use_fid_inception)
-        
+
         # We need self.last_fc for Inception Score calculation
         if use_fid_inception:
             inception_full = fid_inception_v3()
@@ -53,7 +53,7 @@ class HGGANInceptionV3(ReferenceInceptionV3):
         x = inp
         if self.hggan_resize_input:
             x = F.interpolate(x, scale_factor=299 / x.size(2), mode='bilinear', align_corners=True)
-        
+
         if self.normalize_input:
             x = 2 * x - 1
 
@@ -79,7 +79,7 @@ class HGGANInceptionV3(ReferenceInceptionV3):
         logits = self.last_fc(pooled_feat.view(pooled_feat.size(0), -1)).softmax(dim=-1)
         return pooled_feat, logits
 
-# Export HGGANInceptionV3 as InceptionV3
+# Export CustomInceptionV3 as InceptionV3
 InceptionV3 = HGGANInceptionV3
 
 class ImageListDataset(Dataset):
@@ -88,10 +88,10 @@ class ImageListDataset(Dataset):
         self.authors = authors
         self.transform = None
         self.path = ''
-        
+
     def __len__(self):
         return len(self.imgs)
-    
+
     def __getitem__(self, idx):
         img = self.imgs[idx]
         author = self.authors[idx]
@@ -142,7 +142,7 @@ def get_activations(data_source, n_batches, model, dims, device, crop=False, eva
             imgs, org_img_lens = imgs.to(device, non_blocking=True), org_img_lens.to(device, non_blocking=True)
 
         # ----------------------------------------------------
-        # 1. SpiS-GAN Preprocessing for FID/KID Activations
+        # 1. FID/KID preprocessing
         # ----------------------------------------------------
         if eval_is:
             imgs_is = imgs.clone()
@@ -156,7 +156,7 @@ def get_activations(data_source, n_batches, model, dims, device, crop=False, eva
         is_neg_one = (imgs_fid == -1)
         all_neg_one_in_padding = (is_neg_one | ~padding_mask).flatten(1).all(dim=1)
         replace_mask = padding_mask & all_neg_one_in_padding.view(batch_size, 1, 1, 1)
-        imgs_fid = torch.where(replace_mask, torch.tensor(1.0, device=device), imgs_fid)
+        imgs_fid.masked_fill_(replace_mask, 1.0)
 
 
         # Normalize to [0, 1]
@@ -175,7 +175,7 @@ def get_activations(data_source, n_batches, model, dims, device, crop=False, eva
             elif width > target_width:
                 imgs_fid = imgs_fid[:, :, :, :target_width]
 
-        # Resize to (299, 299) and normalize to [-1, 1] (matching SpiS-GAN)
+        # Resize to (299, 299) and normalize to [-1, 1]
         imgs_fid = torch.nn.functional.interpolate(
             imgs_fid, size=(299, 299), mode='bilinear', align_corners=False
         )
@@ -199,7 +199,7 @@ def get_activations(data_source, n_batches, model, dims, device, crop=False, eva
         pred_arr.append(pred.cpu().data.numpy().reshape(pred.size(0), -1))
 
         # ----------------------------------------------------
-        # 2. Original HiGAN+ Preprocessing for IS Logits
+        # 2. Original Baseline Preprocessing for IS Logits
         # ----------------------------------------------------
         if eval_is:
             img_lens_is = pad_image_lengths(org_img_lens_is, scale=height)
@@ -261,7 +261,8 @@ def calculate_activation_statistics(*args, **kwargs):
     return act, mu, sigma, logits
 
 def polynomial_mmd_averages(codes_g, codes_r, n_subsets=50, subset_size=1000,
-                            ret_var=True, output=sys.stdout, **kernel_args):
+                            ret_var=True, output=sys.stdout, device=None,
+                            **kernel_args):
     m = min(codes_g.shape[0], codes_r.shape[0])
     mmds = np.zeros(n_subsets)
     if ret_var:
@@ -277,7 +278,10 @@ def polynomial_mmd_averages(codes_g, codes_r, n_subsets=50, subset_size=1000,
         for i in bar:
             g = codes_g[choice(len(codes_g), subset_size, replace=False)]
             r = codes_r[choice(len(codes_r), subset_size, replace=False)]
-            o = polynomial_mmd(g, r, **kernel_args, var_at_m=m, ret_var=ret_var)
+            o = polynomial_mmd(
+                g, r, **kernel_args, var_at_m=m, ret_var=ret_var,
+                device=device,
+            )
             if ret_var:
                 mmds[i], vars[i] = o
             else:
@@ -286,19 +290,20 @@ def polynomial_mmd_averages(codes_g, codes_r, n_subsets=50, subset_size=1000,
     return (mmds, vars) if ret_var else mmds
 
 def polynomial_mmd(codes_g, codes_r, degree=3, gamma=None, coef0=1,
-                   var_at_m=None, ret_var=True):
-    if torch.cuda.is_available():
-        device = 'cuda'
+                   var_at_m=None, ret_var=True, device=None):
+    if device is None:
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    if torch.cuda.is_available() and str(device).startswith('cuda'):
         X_t = torch.from_numpy(codes_g).to(device)
         Y_t = torch.from_numpy(codes_r).to(device)
-        
+
         if gamma is None:
             gamma = 1.0 / X_t.shape[1]
-            
+
         K_XX = (gamma * torch.matmul(X_t, X_t.T) + coef0) ** degree
         K_YY = (gamma * torch.matmul(Y_t, Y_t.T) + coef0) ** degree
         K_XY = (gamma * torch.matmul(X_t, Y_t.T) + coef0) ** degree
-        
+
         K_XX_np = K_XX.cpu().numpy()
         K_YY_np = K_YY.cpu().numpy()
         K_XY_np = K_XY.cpu().numpy()
@@ -307,7 +312,7 @@ def polynomial_mmd(codes_g, codes_r, degree=3, gamma=None, coef0=1,
         K_XX_np = polynomial_kernel(codes_g, degree=degree, gamma=gamma, coef0=coef0)
         K_YY_np = polynomial_kernel(codes_r, degree=degree, gamma=gamma, coef0=coef0)
         K_XY_np = polynomial_kernel(codes_g, codes_r, degree=degree, gamma=gamma, coef0=coef0)
-        
+
     return _mmd2_and_variance(K_XX_np, K_XY_np, K_YY_np, var_at_m=var_at_m, ret_var=ret_var)
 
 def _sqn(arr):
@@ -408,10 +413,17 @@ def calculate_inception_score(logits, splits=1):
     return np.mean(split_scores)
 
 def calculate_fid_kid_is(cfg, data_loader, generator, n_rand_repeat, device, crop=False, real_stats=None, n_batches=None, inceptionV3_model=None):
-    eval_fid = getattr(cfg, 'validate_fid', True)
-    eval_kid = getattr(cfg, 'validate_kid', True)
-    eval_is = getattr(cfg, 'validate_is', True)
-    
+    eval_fid = bool(getattr(cfg, 'validate_fid', False))
+    eval_kid = bool(getattr(cfg, 'validate_kid', False))
+    legacy_is = getattr(cfg, 'validate_is', None)
+    eval_is_gen = bool(getattr(
+        cfg, 'validate_is_gen', legacy_is if legacy_is is not None else False
+    ))
+    eval_is_org = bool(getattr(
+        cfg, 'validate_is_org', legacy_is if legacy_is is not None else False
+    ))
+    eval_is = eval_is_gen or eval_is_org
+
     res = {}
     if not (eval_fid or eval_kid or eval_is):
         return res
@@ -423,7 +435,7 @@ def calculate_fid_kid_is(cfg, data_loader, generator, n_rand_repeat, device, cro
 
     if n_batches is None:
         n_batches = len(data_loader)
-    
+
     with torch.no_grad():
         act2, m2, s2, logits2 = calculate_activation_statistics(generator, n_batches * n_rand_repeat, inceptionV3_model,
                                                                 cfg.dims, device, crop, eval_is=eval_is)
@@ -437,17 +449,17 @@ def calculate_fid_kid_is(cfg, data_loader, generator, n_rand_repeat, device, cro
         fid_value = calculate_frechet_distance(m1, s1, m2, s2)
         res['fid'] = fid_value
 
-    if eval_is:
-        is_org = calculate_inception_score(logits1)
-        is_gen = calculate_inception_score(logits2)
-        res['is_org'] = is_org
-        res['is_gen'] = is_gen
+    if eval_is_gen:
+        res['is_gen'] = calculate_inception_score(logits2)
+    if eval_is_org:
+        res['is_org'] = calculate_inception_score(logits1)
 
     if eval_kid:
         ret = polynomial_mmd_averages(
                 act1, act2, degree=cfg.mmd_degree, gamma=cfg.mmd_gamma,
                 coef0=cfg.mmd_coef0, ret_var=cfg.mmd_var,
-                n_subsets=cfg.mmd_subsets, subset_size=cfg.mmd_subset_size)
+                n_subsets=cfg.mmd_subsets, subset_size=cfg.mmd_subset_size,
+                device=device)
 
         if cfg.mmd_var:
             mmd2s, vars = ret
@@ -459,13 +471,16 @@ def calculate_fid_kid_is(cfg, data_loader, generator, n_rand_repeat, device, cro
     return res
 
 # Handwriting Distance (HWD) Wrapper
-def calculate_hwd_score(data_loader, generator, n_rand_repeat, device, n_batches=None, real_dataset=None, real_features=None):
+def calculate_hwd_score(
+    data_loader, generator, n_rand_repeat, device, n_batches=None,
+    real_dataset=None, real_features=None, batchsize=32,
+):
     if n_batches is None:
         n_batches = len(data_loader)
-        
+
     fake_imgs_list = []
     fake_authors_list = []
-    
+
     if real_features is None and real_dataset is None:
         real_imgs_list = []
         real_authors_list = []
@@ -476,36 +491,35 @@ def calculate_hwd_score(data_loader, generator, n_rand_repeat, device, n_batches
             imgs = batch['org_imgs']
             lens = batch['org_img_lens']
             wids = batch.get('wids', torch.arange(imgs.size(0)))
-            
+
             pil_imgs = batch_tensor_to_pil_list(imgs, lens)
             real_imgs_list.extend(pil_imgs)
             for i in range(imgs.size(0)):
                 real_authors_list.append(str(wids[i].item()))
         real_dataset = ImageListDataset(real_imgs_list, real_authors_list)
-            
+
     for idx, batch in enumerate(tqdm(generator, total=n_batches * n_rand_repeat, desc='Fake Images')):
         if idx >= n_batches * n_rand_repeat:
             break
         imgs = batch['org_imgs']
         lens = batch['org_img_lens']
         wids = batch.get('wids', torch.arange(imgs.size(0)))
-        
+
         pil_imgs = batch_tensor_to_pil_list(imgs, lens)
         fake_imgs_list.extend(pil_imgs)
         for i in range(imgs.size(0)):
             fake_authors_list.append(str(wids[i].item()))
-            
+
     fake_dataset = ImageListDataset(fake_imgs_list, fake_authors_list)
-    
+
     print("Computing HWD Score...")
-    # Use batch size 64 to speed up VGG16 extraction
-    hwd_scorer = HWDScore(batchsize=64).to(device)
-    
+    hwd_scorer = HWDScore(batchsize=int(batchsize)).to(device)
+
     fake_pd = hwd_scorer.digest(fake_dataset)
     if real_features is None:
         real_pd = hwd_scorer.digest(real_dataset)
     else:
         real_pd = real_features
-        
+
     score = hwd_scorer.distance(fake_pd, real_pd)
     return score
