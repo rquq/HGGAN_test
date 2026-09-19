@@ -1,71 +1,115 @@
-# =======================================================
-# 1. Python & Environments
-# =======================================================
+# Python bytecode, native extensions, and tooling caches
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pyre/
+.pytype/
+.hypothesis/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.tox/
+.nox/
+
+# Virtual environments and local secrets
 .Python
 env/
 venv/
+ENV/
+.venv/
 .env
-.venv
+.env.*
+!.env.example
 
-# =======================================================
-# 3. Training Logs & Caches
-# =======================================================
+# Training runs, experiment tracking, and scheduler state
 runs/
 wandb/
 lightning_logs/
+tensorboard/
+events.out.tfevents.*
 *.log
+nohup.out
+*.pid
+*.status.json
 checkpoint/
 checkpoints/
-.cache/
+ckpts/
+outputs/
+artifacts/
+
+# Temporary smoke tests and agent-generated verification artifacts
 scratch/
-docs/
+tmp/
+temp/
+tmp_test*/
+test_artifacts/
+tests/
+.ua/
+.codex/
+.agents/
 
-# Kill Hugging Face cache completely
+# Downloaded model and metric caches. Versioned teacher checkpoints directly
+# under pretrained/ remain visible and can still be committed.
+.cache/
 pretrained/hf_cache/
-pretrained/hf_cache/*
-pretrained/hf_cache/**
 pretrained/HWD/
-pretrained/HWD/*
-pretrained/HWD/**
+pretrained/clip-*/
 
-# =======================================================
-# 4. Data, Datasets, and Samples
-# =======================================================
+# Local datasets, generated samples, and bulky data products
 data/iam/
 data/image_samples/
-backup/
-
-# Ignore heavy dataset archives
+*.h5
+*.hdf5
+*.hdf
 *.csv
 *.tsv
+*.npy
+*.npz
+*.pkl
+*.pickle
 *.zip
+*.tar
 *.tar.gz
 *.tgz
+*.7z
 
-# =======================================================
-# 5. IDEs, Notebooks & OS
-# =======================================================
-# The ** ensures it ignores these folders even if they are deep inside subfolders
+# Generated exports, profiling output, and crash dumps
+*.onnx
+*.engine
+*.prof
+*.trace
+*.dump
+*.core
+core.*
+
+# Backups and editor temporary files
+backup/
+backups/
+**/backups/
+*.bak
+*.orig
+*.rej
+*.swp
+*.swo
+*~
+.#*
+#*#
+
+# Generated documentation/diagram outputs used locally
+docs/
+
+# IDEs, notebooks, build products, and OS metadata
 **/.ipynb_checkpoints/
-**/.vscode/
-**/.idea/
-
-# Distribution / builds
+.vscode/
+.idea/
 dist/
 build/
 *.egg-info/
-
-# OS Specific
 .DS_Store
 Thumbs.db
 .directory
-*~
-
-# AI-agent local verification artifacts (never commit generated test runners,
-# smoke/invariant tests, or their caches). The project's root test.py remains tracked.
-/tests/
-/.pytest_cache/
