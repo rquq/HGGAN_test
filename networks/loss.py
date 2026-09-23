@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import math
 
 
 def _len2mask(length, max_len=None, dtype=torch.float32):
@@ -44,6 +45,61 @@ def KLloss(mu, logvar):
     # style dimension and prevents KL from abruptly dominating the generator.
     loss = -0.5 * (1 + logvar - mu ** 2 - logvar.exp())
     return loss.flatten(1).mean(dim=1).mean()
+
+
+class SpectralDistributionLoss(nn.Module):
+    """Match stroke-frequency statistics without aligning different words.
+
+    Only valid-width square patches are used. Their spatial means are removed,
+    and FFT magnitudes are averaged across patches; phase/position is excluded
+    so small alignment differences do not dominate the reconstruction signal.
+    """
+
+    def __init__(self, patch_size=32, width_samples=4):
+        super().__init__()
+        self.patch_size = int(patch_size)
+        self.width_samples = int(width_samples)
+        if self.patch_size < 2 or self.width_samples < 1:
+            raise ValueError('patch_size must be >= 2 and width_samples >= 1')
+
+    def _spectrum(self, image, patch_size):
+        height, width = image.shape[-2:]
+        n_rows = min(math.ceil(height / patch_size), height - patch_size + 1)
+        n_cols = min(self.width_samples, width - patch_size + 1)
+        row_starts = torch.linspace(0, height - patch_size, n_rows).round().int().tolist()
+        col_starts = torch.linspace(0, width - patch_size, n_cols).round().int().tolist()
+        patches = torch.cat([
+            image[..., row:row + patch_size, col:col + patch_size]
+            for row in row_starts for col in col_starts
+        ], dim=0).float()
+        patches = patches - patches.mean(dim=(-2, -1), keepdim=True)
+        spectrum = torch.fft.rfft2(patches, norm='ortho').abs().log1p()
+        return spectrum.mean(dim=(0, 1))
+
+    def forward(self, target, generated, target_lengths, generated_lengths):
+        if target.ndim != 4 or generated.ndim != 4 or target.shape[:2] != generated.shape[:2]:
+            raise ValueError('target and generated must have matching batch/channel dimensions')
+        if target_lengths.numel() != target.size(0) or generated_lengths.numel() != generated.size(0):
+            raise ValueError('valid-width lengths must match the batch size')
+
+        target_widths = target_lengths.detach().clamp(1, target.size(-1)).tolist()
+        generated_widths = generated_lengths.detach().clamp(1, generated.size(-1)).tolist()
+        losses = []
+        for index, (target_width, generated_width) in enumerate(zip(target_widths, generated_widths)):
+            target_width, generated_width = int(target_width), int(generated_width)
+            patch_size = min(
+                self.patch_size, target.size(-2), generated.size(-2),
+                target_width, generated_width,
+            )
+            if patch_size < 2:
+                continue
+            target_image = target[index:index + 1, :, :, :target_width]
+            generated_image = generated[index:index + 1, :, :, :generated_width]
+            losses.append(F.l1_loss(
+                self._spectrum(target_image, patch_size),
+                self._spectrum(generated_image, patch_size),
+            ))
+        return torch.stack(losses).mean() if losses else generated.sum() * 0.0
 
 
 ##############################################################################
