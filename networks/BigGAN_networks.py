@@ -525,7 +525,13 @@ class StrokePatchBlock(nn.Module):
         oriented = self.horizontal(self.activation(h))
         oriented = oriented + self.vertical(self.activation(h))
         h = h + self.fuse(self.activation(oriented))
-        return self.downsample(h) + self.downsample(residual)
+        # Keep a shared minimum feature grid for every crop geometry. Once
+        # either axis would fall below four cells, retain resolution on both
+        # residual and main paths.
+        if h.size(-2) // 2 >= 4 and h.size(-1) // 2 >= 4:
+            h = self.downsample(h)
+            residual = self.downsample(residual)
+        return h + residual
 
 
 class PatchDiscriminator(nn.Module):

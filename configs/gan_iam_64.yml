@@ -83,7 +83,9 @@ training:
   lambda_style_cycle: 1.0
   lambda_content_adv: 0.02
   lambda_kl: 0.1
-  lambda_frequency: 4.0
+  # Use bounded reference-feature matching; frequency-only is an optional ablation.
+  lambda_ctx: 0.1
+  lambda_frequency: 0.0
   grad_clip: 5.0
   r1_interval: 32
   lambda_r1: 0.01
@@ -92,7 +94,6 @@ training:
   pretrained_w: './pretrained/wid_iam_train64.pth'
   pretrained_r: './pretrained/ocr_iam_train64.pth'
   pretrained_ckpt: ''
-  masking_mode: 'combined'
 
 
 valid:
