@@ -25,8 +25,7 @@ from lib.datasets import get_dataset, get_collect_fn, Hdf5Dataset
 from lib.alphabet import strLabelConverter, get_lexicon, get_true_alphabet, Alphabets
 from lib.utils import draw_image, get_logger, AverageMeterManager, option_to_string, AverageMeter, plot_heatmap, write_wandb_log
 from networks.rand_dist import prepare_z_dist, prepare_y_dist
-from networks.loss import recn_l1_loss, SpectralDistributionLoss, KLloss, r1_reg
-from networks.masking import apply_vertical_stripe_mask, apply_horizontal_stripe_mask, apply_combined_stripe_mask, apply_light_mixed_patch_mask
+from networks.loss import recn_l1_loss, CXLoss, SpectralDistributionLoss, KLloss, r1_reg
 
 
 class EMA(object):
@@ -1712,6 +1711,7 @@ class GlobalLocalAdversarialModel(AdversarialModel):
 
         self.ctc_loss = CTCLoss(zero_infinity=True, reduction='mean')
         self.classify_loss = CrossEntropyLoss()
+        self.contextual_loss = CXLoss(max_tokens=256)
         self.spectral_distribution_loss = SpectralDistributionLoss()
 
     def train(self):
@@ -1905,7 +1905,7 @@ class GlobalLocalAdversarialModel(AdversarialModel):
 
         self.averager_meters = AverageMeterManager([
             'g_total', 'd_total', 'g_adv', 'g_ctc', 'g_writer',
-            'g_recn', 'g_style', 'g_frequency', 'g_kl',
+            'g_recn', 'g_style', 'g_context', 'g_frequency', 'g_kl',
             'r1_loss', 'fusion_strength', 'fusion_gate_min', 'fusion_gate_max',
             'd_real', 'd_fake', 'd_real_patch', 'd_fake_patch',
             'g_adv_global', 'g_adv_patch', 'g_ctc_rand', 'g_ctc_style',
@@ -1941,7 +1941,11 @@ class GlobalLocalAdversarialModel(AdversarialModel):
         rare_word_ratio = float(getattr(
             self.opt.training, 'rare_word_ratio', 0.15
         ))
-        masking_mode = getattr(self.opt.training, 'masking_mode', 'none')
+        context_weight = float(getattr(self.opt.training, 'lambda_ctx', 0.0))
+        frequency_weight = float(getattr(self.opt.training, 'lambda_frequency', 0.0))
+        if (not (np.isfinite(context_weight) and np.isfinite(frequency_weight))
+                or min(context_weight, frequency_weight) < 0):
+            raise ValueError('appearance loss weights must be finite and non-negative')
         num_critic_train = int(self.opt.training.num_critic_train)
         r1_interval = int(getattr(self.opt.training, 'r1_interval', 16))
         if num_critic_train < 1:
@@ -2018,8 +2022,8 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                     return_confidence=True,
                 )
             )
-            if masking_mode != 'none':
-                patches = apply_light_mixed_patch_mask(patches)
+            # Preserve actual strokes. Artificial stripe erasure removes the
+            # very defects this critic should distinguish from real handwriting.
             if patch_char_min_confidence:
                 patch_confidence = torch.where(
                     patch_confidence >= patch_char_min_confidence,
@@ -2207,24 +2211,15 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                 else:
                     r1_loss = real_disc_loss.new_zeros(())
 
+                # Match the fake-patch path: crop unwarped images on both sides.
+                # Global D retains its symmetric differentiable augmentation.
                 real_patch_groups = [
                     prepare_stroke_patches(
                         real_imgs, real_img_lens, real_lbs, real_lb_lens
                     ),
-                    prepare_stroke_patches(
-                        real_disc_input.detach(), real_disc_lens,
-                        real_lbs, real_lb_lens,
-                    ),
                 ]
-                real_patch_sizes = [group[0].size(0) for group in real_patch_groups]
                 real_patch_logits = run_patch_discriminator(real_patch_groups)
-                real_patch_logits, real_aug_patch_logits = torch.split(
-                    real_patch_logits, real_patch_sizes, dim=0
-                )
-                real_disc_loss_patch = (
-                    torch.mean(F.relu(1.0 - real_patch_logits))
-                    + torch.mean(F.relu(1.0 - real_aug_patch_logits))
-                ) / 2
+                real_disc_loss_patch = torch.mean(F.relu(1.0 - real_patch_logits))
 
                 disc_loss = (
                     real_disc_loss + fake_disc_loss
@@ -2272,7 +2267,7 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                     self.z.sample_()
                     z_in = self.z
 
-                    # Keep style encoder inputs clean; masking is local-critic only.
+                    # Keep reference strokes intact for style encoding.
                     if self.vae_mode:
                         enc_z, mu, logvar = self.models.E(
                             style_refs, style_ref_lens, self.models.B,
@@ -2369,7 +2364,7 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                     styles = self.models.E(
                         fake_imgs, fake_lb_lens * self.opt.char_width, self.models.B
                     )
-                    transferred_styles, _, style_backbone_feat = (
+                    transferred_styles, style_img_feats, style_backbone_feat = (
                         self.models.E(
                             style_imgs,
                             style_img_lens,
@@ -2410,12 +2405,38 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                     )
                     fake_wid_loss = self.classify_loss(style_wid_logits, real_wids)
 
-                    # Reconstruction and target contain the same text; matching
-                    # a different reference word here would confound style with
-                    # letter content (especially for short punctuation refs).
-                    frequency_loss = self.spectral_distribution_loss(
-                        real_imgs, recn_imgs, real_img_lens, recn_img_lens
-                    )
+                    # Non-aligned feature matching directly supervises transfer
+                    # to new text. Reuse B's cached real features and the fake
+                    # features already computed by the style-cycle/writer path.
+                    ctx_loss = recn_imgs.new_zeros(())
+                    if context_weight > 0:
+                        encoder = self.unwrap_model(self.models.E)
+                        real_img_feats = [
+                            reference_features[1][index]
+                            for index in encoder.feature_indices
+                        ]
+                        for real_feat, fake_feat in zip(real_img_feats, style_img_feats):
+                            real_feat_lens = torch.ceil(
+                                style_ref_lens.float()
+                                * (real_feat.size(-1) / float(style_refs.size(-1)))
+                            ).long().clamp_(1, real_feat.size(-1))
+                            fake_feat_lens = torch.ceil(
+                                style_img_lens.float()
+                                * (fake_feat.size(-1) / float(style_imgs.size(-1)))
+                            ).long().clamp_(1, fake_feat.size(-1))
+                            ctx_loss = ctx_loss + self.contextual_loss(
+                                real_feat.detach(), fake_feat,
+                                target_lengths=real_feat_lens,
+                                input_lengths=fake_feat_lens,
+                            )
+
+                    # Optional magnitude-statistics ablation, not a substitute
+                    # for spatial or reference-conditioned feature supervision.
+                    frequency_loss = recn_imgs.new_zeros(())
+                    if frequency_weight > 0:
+                        frequency_loss = self.spectral_distribution_loss(
+                            real_imgs, recn_imgs, real_img_lens, recn_img_lens
+                        )
 
                     kl_loss = KLloss(mu, logvar) if self.vae_mode else torch.tensor(0.0, device=self.device)
 
@@ -2514,14 +2535,12 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                         + getattr(self.opt.training, 'lambda_content_adv', 0.02)
                           * content_adv_loss
                     )
-                    g_frequency = (
-                        float(getattr(self.opt.training, 'lambda_frequency', 4.0))
-                        * frequency_loss
-                    )
+                    g_context = context_weight * ctx_loss
+                    g_frequency = frequency_weight * frequency_loss
                     g_kl = float(getattr(self.opt.training, 'lambda_kl', 0.1)) * kl_loss
                     g_loss = (
                         g_adv + g_ctc + g_writer + g_recn
-                        + g_style + g_frequency + g_kl
+                        + g_style + g_context + g_frequency + g_kl
                     )
 
                     g_loss.backward()
@@ -2545,6 +2564,7 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                         'g_info': info_loss,
                         'g_style_cycle': style_cycle_loss,
                         'g_content_adv': content_adv_loss,
+                        'g_context': g_context,
                         'g_frequency': g_frequency,
                         'g_kl': g_kl,
                         'fusion_strength': fusion_gate.mean(),
@@ -2571,7 +2591,10 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                         f"[{iter_count % len(self.train_loader):4d}|{len(self.train_loader):4d}] "
                         f"G:{meter_vals['g_total']:.3f} D:{meter_vals['d_total']:.3f} | "
                         f"Adv:{meter_vals['g_adv']:.3f} CTC:{meter_vals['g_ctc']:.3f} Recn:{meter_vals['g_recn']:.3f} "
-                        f"Style:{meter_vals['g_style']:.3f} Wid:{meter_vals['g_writer']:.3f} Freq:{meter_vals['g_frequency']:.3f} KL:{meter_vals['g_kl']:.3f} | "
+                        f"Style:{meter_vals['g_style']:.3f} Wid:{meter_vals['g_writer']:.3f} "
+                        + (f"Ctx:{meter_vals['g_context']:.3f} " if context_weight > 0 else '')
+                        + (f"Freq:{meter_vals['g_frequency']:.3f} " if frequency_weight > 0 else '')
+                        + f"KL:{meter_vals['g_kl']:.3f} | "
                         f"R1:{meter_vals['r1_loss']:.3f} Fuse:{meter_vals['fusion_strength']:.3f}"
                         f"[{meter_vals['fusion_gate_min']:.3f},{meter_vals['fusion_gate_max']:.3f}] "
                         f"Lr: G={lr_g:.6g}/D={lr_d:.6g}/P={lr_p:.6g}"
@@ -2616,9 +2639,6 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                             # 5. Writer Identification Loss
                             'loss/g_writer_id': meter_vals['g_writer'],
 
-                            # 6. Reconstruction frequency-distribution matching
-                            'loss/g_frequency': meter_vals['g_frequency'],
-
                             # 7. VAE KL Divergence Loss
                             'loss/g_kl': meter_vals['g_kl'],
 
@@ -2629,6 +2649,10 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                             'loss/d_real_patch': meter_vals['d_real_patch'],
                             'loss/d_fake_patch': meter_vals['d_fake_patch'],
                         }
+                        if context_weight > 0:
+                            wandb_log['loss/g_contextual'] = meter_vals['g_context']
+                        if frequency_weight > 0:
+                            wandb_log['loss/g_frequency'] = meter_vals['g_frequency']
 
                         import wandb as _wandb
                         if _wandb.run:

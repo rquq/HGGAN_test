@@ -53,14 +53,19 @@ class SpectralDistributionLoss(nn.Module):
     Only valid-width square patches are used. Their spatial means are removed,
     and FFT magnitudes are averaged across patches; phase/position is excluded
     so small alignment differences do not dominate the reconstruction signal.
+    This magnitude-only term is not a substitute for spatial or contextual
+    supervision.
     """
 
-    def __init__(self, patch_size=32, width_samples=4):
+    def __init__(self, patch_size=None, width_samples=4, patch_fraction=0.5):
         super().__init__()
-        self.patch_size = int(patch_size)
+        self.patch_size = None if patch_size is None else int(patch_size)
         self.width_samples = int(width_samples)
-        if self.patch_size < 2 or self.width_samples < 1:
-            raise ValueError('patch_size must be >= 2 and width_samples >= 1')
+        self.patch_fraction = float(patch_fraction)
+        if (self.patch_size is not None and self.patch_size < 2) or self.width_samples < 1:
+            raise ValueError('patch_size must be None or >= 2 and width_samples >= 1')
+        if not 0.0 < self.patch_fraction <= 1.0:
+            raise ValueError('patch_fraction must be in (0, 1]')
 
     def _spectrum(self, image, patch_size):
         height, width = image.shape[-2:]
@@ -87,8 +92,12 @@ class SpectralDistributionLoss(nn.Module):
         losses = []
         for index, (target_width, generated_width) in enumerate(zip(target_widths, generated_widths)):
             target_width, generated_width = int(target_width), int(generated_width)
+            # A fixed pixel window changes its relative scale between 32px and
+            # 64px inputs. By default, use half of the smaller image height;
+            # an explicit patch_size remains available for diagnostics.
             patch_size = min(
-                self.patch_size, target.size(-2), generated.size(-2),
+                self.patch_size or max(2, round(min(target.size(-2), generated.size(-2)) * self.patch_fraction)),
+                target.size(-2), generated.size(-2),
                 target_width, generated_width,
             )
             if patch_size < 2:
@@ -106,11 +115,33 @@ class SpectralDistributionLoss(nn.Module):
 # Contextual loss
 ##############################################################################
 class CXLoss(nn.Module):
-    def __init__(self, sigma=0.5, b=1.0, similarity="cosine"):
+    def __init__(self, sigma=0.5, b=1.0, similarity="cosine", max_tokens=256):
         super(CXLoss, self).__init__()
+        if max_tokens is not None and (
+            isinstance(max_tokens, bool) or not isinstance(max_tokens, int) or max_tokens <= 0
+        ):
+            raise ValueError('max_tokens must be a positive int or None')
         self.similarity = similarity
         self.sigma = sigma
         self.b = b
+        self.max_tokens = max_tokens
+
+    def _pool_valid_crop(self, feature):
+        """Downsample a single already-cropped feature map when over budget."""
+        height, width = feature.shape[-2:]
+        if self.max_tokens is None or height * width <= self.max_tokens:
+            return feature
+        scale = math.sqrt(self.max_tokens / float(height * width))
+        out_height = max(1, int(height * scale))
+        out_width = max(1, int(width * scale))
+        while out_height * out_width > self.max_tokens:
+            if out_height >= out_width and out_height > 1:
+                out_height -= 1
+            elif out_width > 1:
+                out_width -= 1
+            else:
+                break
+        return F.adaptive_avg_pool2d(feature, (out_height, out_width))
 
     def center_by_T(self, featureI, featureT):
         # Center each sample independently; a batch-wide mean couples writers.
@@ -169,8 +200,16 @@ class CXLoss(nn.Module):
         return CX_loss
 
     def forward(self, featureT, featureI, target_lengths=None, input_lengths=None):
-        if target_lengths is None and input_lengths is None:
+        if target_lengths is None and input_lengths is None and self.max_tokens is None:
             return self._forward_impl(featureT, featureI)
+        if target_lengths is None and input_lengths is None:
+            return torch.stack([
+                self._forward_impl(
+                    self._pool_valid_crop(featureT[index:index + 1]),
+                    self._pool_valid_crop(featureI[index:index + 1]),
+                )
+                for index in range(featureT.size(0))
+            ]).mean()
         if target_lengths is None or input_lengths is None:
             raise ValueError('target_lengths and input_lengths must be supplied together')
         if len(target_lengths) != featureT.size(0) or len(input_lengths) != featureI.size(0):
@@ -188,9 +227,13 @@ class CXLoss(nn.Module):
         )):
             target_width = int(target_width)
             input_width = int(input_width)
+            target_crop = featureT[index:index + 1, :, :, :target_width]
+            input_crop = featureI[index:index + 1, :, :, :input_width]
+            # Crop padding away before pooling so invalid columns never leak
+            # into the valid feature representation.
             losses.append(self._forward_impl(
-                featureT[index:index + 1, :, :, :target_width],
-                featureI[index:index + 1, :, :, :input_width],
+                self._pool_valid_crop(target_crop),
+                self._pool_valid_crop(input_crop),
             ))
         return torch.stack(losses).mean()
 

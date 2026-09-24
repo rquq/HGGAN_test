@@ -24,8 +24,8 @@ training:
   start_decay_epoch: 36
   n_epochs_decay: 48
   min_lr_ratio: 0.15
-  batch_size: 16
-  eval_batch_size: 16
+  batch_size: 8
+  eval_batch_size: 8
   num_workers: 4
   eval_num_workers: 4
   sample_num_workers: 0
@@ -73,10 +73,6 @@ training:
   ctc_style_decay_end_epoch: 28
   lambda_info: 1.0
   lambda_wid: 0.5
-  # Preserve early identity learning; soften late writer-gradient outliers.
-  lambda_wid_final: 0.25
-  wid_decay_start_epoch: 48
-  wid_decay_end_epoch: 60
   lambda_recn: 10.0
   lambda_recn_final: 2.5
   recn_decay_start_epoch: 24
@@ -84,7 +80,9 @@ training:
   lambda_style_cycle: 1.0
   lambda_content_adv: 0.02
   lambda_kl: 0.1
-  lambda_frequency: 4.0
+  # Use bounded reference-feature matching; frequency-only is an optional ablation.
+  lambda_ctx: 0.1
+  lambda_frequency: 0.0
   grad_clip: 5.0
   r1_interval: 32
   lambda_r1: 0.01
@@ -93,7 +91,6 @@ training:
   pretrained_w: './pretrained/wid_iam_train32.pth'
   pretrained_r: './pretrained/ocr_iam_train32.pth'
   pretrained_ckpt: ''
-  masking_mode: 'combined'
 
 
 valid:
