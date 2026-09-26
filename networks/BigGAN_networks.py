@@ -8,7 +8,6 @@ import torch.nn.functional as F
 
 from . import BigGAN_layers as layers
 from .fusion import StyleContentAttentionFusion
-from .texture_generator import StyleFrequencyRefinement
 from networks.utils import init_weights, _len2mask
 
 # Architectures for G
@@ -81,8 +80,7 @@ class Generator(nn.Module):
                  allograph_modulation_rms_cap=1.0,
                  allograph_routing_center_init=0.5,
                  allograph_routing_scale_max=2.0,
-                 allograph_routing_uniform_mix=0.05,
-                 texture_refinement_enabled=True):
+                 allograph_routing_uniform_mix=0.05):
         super(Generator, self).__init__()
         dim_z = style_dim
         self.style_dim = style_dim
@@ -92,9 +90,6 @@ class Generator(nn.Module):
         # Dimensionality of the latent space
         self.dim_z = dim_z
         self.embed_dim = embed_dim
-        if not isinstance(texture_refinement_enabled, bool):
-            raise TypeError('texture_refinement_enabled must be a boolean')
-        self.texture_refinement_enabled = texture_refinement_enabled
         # The initial width dimensions
         self.bottom_width = bottom_width
         # The initial height dimension
@@ -215,12 +210,6 @@ class Generator(nn.Module):
                                                     mybn=self.mybn),
                                           self.activation,
                                           self.which_conv(self.arch['out_channels'][-1], input_nc))
-        self.texture_refinement = StyleFrequencyRefinement(
-            channels=self.arch['out_channels'][-1],
-            style_dim=self.style_dim,
-            output_channels=input_nc,
-            which_conv=self.which_conv,
-        )
 
         # Initialize weights. Optionally skip init for testing.
         if self.init != 'none':
@@ -228,9 +217,6 @@ class Generator(nn.Module):
         # General initialization touches fusion Linear weights; restore its
         # identity-like nonzero residual handoffs afterwards.
         self.style_content_mix.reset_stability_parameters()
-        self.texture_refinement.reset_stability_parameters()
-        if not self.texture_refinement_enabled:
-            self.texture_refinement.requires_grad_(False)
 
     def forward(self, z, y, y_lens):
         # Distribution is a reusable sampler container, not an activation
@@ -274,12 +260,7 @@ class Generator(nn.Module):
             if upsample_scale is not None:
                 len_scale *= upsample_scale[1]
 
-        # Preserve the reliable base image and add only a bounded,
-        # style-distribution-conditioned high-frequency residual.
-        base_logits = self.output_layer(h)
-        if self.texture_refinement_enabled:
-            base_logits = base_logits + self.texture_refinement(h, z)
-        output = torch.tanh(base_logits)
+        output = torch.tanh(self.output_layer(h))
 
         # Mask blanks
         if not self.training:
@@ -385,9 +366,16 @@ class Discriminator(nn.Module):
                  D_attn='64', num_D_SVs=1, num_D_SV_itrs=1,
                  D_activation=nn.ReLU(inplace=False), SN_eps=1e-12,
                  output_dim=1, D_fp16=False, init='ortho', D_param='SN',
-                 input_nc=3, width_context=False, width_heads=4, **kwargs):
+                 input_nc=3, width_context=False, width_heads=4,
+                 pooling_gain=32.0, **kwargs):
         super(Discriminator, self).__init__()
         self.name = 'D'
+        # Shared at every resolution. A valid-area mean times this fixed gain
+        # retains the former 64px score scale (32 feature cells per character)
+        # without making score magnitude depend on input height or word length.
+        self.pooling_gain = float(pooling_gain)
+        if not 0.0 < self.pooling_gain < float('inf'):
+            raise ValueError('pooling_gain must be finite and positive')
         # Width multiplier
         self.ch = D_ch
         # Use Wide D as in BigGAN and SA-GAN or skinny D as in SN-GAN?
@@ -455,6 +443,23 @@ class Discriminator(nn.Module):
         if self.init != 'none':
             self = init_weights(self, self.init)
 
+    def _pool_features(self, h, h_lens=None):
+        """Average valid spatial evidence independent of image resolution.
+
+        A per-character sum had four times as many contributions at twice
+        the input height. Pool both spatial dimensions before the readout.
+        """
+        width_tokens = h.mean(dim=2).transpose(1, 2)
+        valid_mask = None
+        if h_lens is not None:
+            h_lens = h_lens.long().clamp(min=1, max=h.size(-1))
+            valid_mask = _len2mask(h_lens, h.size(-1), torch.bool).to(h.device)
+        if self.width_context is not None:
+            width_tokens = self.width_context(width_tokens, valid_mask)
+        if valid_mask is None:
+            return width_tokens.mean(dim=1)
+        return (width_tokens * valid_mask.unsqueeze(-1)).sum(dim=1) / h_lens[:, None]
+
     def forward(self, x, x_lens=None, y_lens=None,  **kwargs):
         # Stick x into h for cleaner for loops without flow control
         h = x
@@ -464,34 +469,12 @@ class Discriminator(nn.Module):
             for block in blocklist:
                 h = block(h, x_len=torch.div(x_lens, len_scale, rounding_mode='trunc') if x_lens is not None else None)
             len_scale *= 2 if self.arch['downsample'][index] else 1
-        # Preserve vertical evidence while allowing one cheap, low-resolution
-        # interaction across the complete valid word width.
         h = self.activation(h)
-        width_tokens = torch.sum(h, dim=2).transpose(1, 2)
-        valid_mask = None
-        if x_lens is not None:
-            h_lens = torch.div(
-                x_lens * h.size(-1), x.size(-1), rounding_mode='trunc'
-            ).long().clamp_(1, h.size(-1))
-            valid_mask = _len2mask(
-                h_lens.int(), h.size(-1), torch.bool
-            ).to(x.device).detach()
-
-        if self.width_context is not None:
-            width_tokens = self.width_context(width_tokens, valid_mask)
-
-        if valid_mask is None:
-            h = torch.sum(width_tokens, dim=1)
-        else:
-            h = torch.sum(
-                width_tokens * valid_mask.unsqueeze(-1).to(width_tokens.dtype),
-                dim=1,
-            )
-            normalizer = y_lens if y_lens is not None else h_lens
-            h = h / torch.clamp(normalizer, min=1).unsqueeze(dim=-1)
+        h_lens = torch.div(x_lens, len_scale, rounding_mode='floor') if x_lens is not None else None
+        h = self._pool_features(h, h_lens)
 
         # Get initial class-unconditional output
-        out = self.linear(h)
+        out = self.linear(h * self.pooling_gain)
 
         return out
 

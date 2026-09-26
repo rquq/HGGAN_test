@@ -458,15 +458,22 @@ class DBlock(nn.Module):
                 x = self.conv_sc(x)
         return x
 
-    def forward(self, x, **kwargs):
+    def forward(self, x, x_len=None, **kwargs):
+        def mask(value, lengths):
+            if lengths is None:
+                return value
+            valid = torch.arange(value.size(-1), device=value.device)[None, :] < lengths[:, None]
+            return value.masked_fill(~valid[:, None, None, :], 0.0)
+
+        x = mask(x, x_len)
         if self.preactivation:
             # Must use an out-of-place ReLU activation to preserve shortcut connection state
             h = F.relu(x)
         else:
             h = x
-        h = self.conv1(h)
-        h = self.conv2(self.activation(h))
+        h = mask(self.conv1(h), x_len)
+        h = mask(self.conv2(self.activation(h)), x_len)
         if self.downsample:
             h = self.downsample(h)
-
-        return h + self.shortcut(x)
+        out_lengths = torch.div(x_len, 2, rounding_mode='floor') if self.downsample and x_len is not None else x_len
+        return mask(h + self.shortcut(x), out_lengths)

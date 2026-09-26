@@ -16,6 +16,91 @@ def _input_stride_for_height(img_height, base_height=32):
     return max(1, height // base_height)
 
 
+def _mask_width(x, lengths, value=0.0, cache=None):
+    """Exclude batch padding, never background pixels inside a valid image."""
+    key = (id(lengths), x.size(-1), x.ndim)
+    if cache is not None and key in cache:
+        invalid = cache[key][1]
+    else:
+        invalid = torch.arange(x.size(-1), device=x.device)[None, :] >= lengths[:, None]
+        invalid = invalid.view(x.size(0), *([1] * (x.ndim - 2)), x.size(-1))
+        if cache is not None:
+            # Retain lengths with its mask so object IDs cannot be reused.
+            cache[key] = (lengths, invalid)
+    return x.masked_fill(invalid, value)
+
+
+def _output_widths(lengths, layer):
+    """Propagate exact CNN geometry, including explicit padding offsets."""
+    if isinstance(layer, (nn.Sequential, ActFirstResBlock)):
+        children = layer if isinstance(layer, nn.Sequential) else (layer.conv_0, layer.conv_1)
+        for child in children:
+            lengths = _output_widths(lengths, child)
+    elif isinstance(layer, Conv2dBlock):
+        conv = layer.conv
+        delta = (sum(getattr(layer.pad, 'padding', (0, 0))[:2]) + 2 * conv.padding[-1]
+                 - conv.dilation[-1] * (conv.kernel_size[-1] - 1))
+        stride = conv.stride[-1]
+        # Most residual convolutions preserve width. Avoid GPU length/mask
+        # recomputation for those layers, and reuse their masks within a forward.
+        if stride == 1:
+            return lengths if delta == 0 else lengths + delta
+        lengths = torch.div(lengths + delta + stride - 1, stride, rounding_mode='floor')
+    elif isinstance(layer, (nn.ConstantPad2d, nn.ReflectionPad2d, nn.ReplicationPad2d)):
+        lengths = lengths + layer.padding[0] + layer.padding[1]
+    elif isinstance(layer, (nn.Conv2d, nn.MaxPool2d, nn.AvgPool2d)):
+        def last(value):
+            return value[-1] if isinstance(value, (tuple, list)) else value
+        kernel = last(layer.kernel_size)
+        stride = last(layer.stride) if layer.stride is not None else kernel
+        padding = last(layer.padding)
+        dilation = last(getattr(layer, 'dilation', 1))
+        numerator = lengths + 2 * padding - dilation * (kernel - 1) - 1
+        if getattr(layer, 'ceil_mode', False):
+            numerator = numerator + stride - 1
+        lengths = torch.div(numerator, stride, rounding_mode='floor') + 1
+    return lengths
+
+
+def _valid_backbone_layer(layer, x, lengths, mask_cache=None):
+    """Batched equivalent of cropped forwards for the frozen style backbone.
+
+    Mask intermediate activations too: a final mask cannot undo convolutions
+    which have already read padded activations. Existing pretraining forwards
+    without lengths keep their original BatchNorm behavior.
+    """
+    if isinstance(layer, nn.Sequential):
+        for child in layer:
+            x, lengths = _valid_backbone_layer(child, x, lengths, mask_cache)
+        return x, lengths
+    if isinstance(layer, ActFirstResBlock):
+        shortcut = _valid_backbone_layer(layer.conv_s, x, lengths, mask_cache)[0] if layer.learned_shortcut else x
+        out, out_lengths = _valid_backbone_layer(layer.conv_0, x, lengths, mask_cache)
+        out = layer.dropout(out)
+        out, out_lengths = _valid_backbone_layer(layer.conv_1, out, out_lengths, mask_cache)
+        # Both branches are already masked; addition preserves their zero tail.
+        return shortcut + out, out_lengths
+    out_lengths = _output_widths(lengths, layer)
+    if isinstance(layer, Conv2dBlock):
+        if layer.activation_first and layer.activation is not None:
+            x = layer.activation(x)
+        # The previous layer already masked its output. These activations map
+        # zero to zero, so another input mask would add a redundant GPU kernel.
+        x = layer.conv(layer.pad(x))
+        if layer.norm is not None:
+            x = layer.norm(x)
+        if not layer.activation_first and layer.activation is not None:
+            x = layer.activation(x)
+    else:
+        x = layer(x)
+        if isinstance(layer, (nn.ConstantPad2d, nn.ReLU)):
+            # Explicit padding extends the existing canonical tail; ReLU
+            # preserves zero. Neither operation can mix it into valid pixels.
+            return x, out_lengths
+    fill = layer.value if isinstance(layer, nn.ConstantPad2d) else 0.0
+    return _mask_width(x, out_lengths, fill, mask_cache), out_lengths
+
+
 class HeavyCNNAttention(nn.Module):
     def __init__(self, in_dim):
         super().__init__()
@@ -58,20 +143,38 @@ class HeavyCNNAttention(nn.Module):
         )
         self.gamma = nn.Parameter(torch.zeros(1))
 
-    def forward(self, x, **kwargs):
+    def forward(self, x, valid_mask=None, **kwargs):
+        mask = valid_mask[:, None, :].to(x.dtype) if valid_mask is not None else None
+
+        def masked(value):
+            return value * mask if mask is not None else value
+
+        x = masked(x)
         # Global context mapping
-        x1 = F.silu(self.conv1(x))
-        x2 = F.silu(self.conv_dilated1(x))
-        x3 = F.silu(self.conv_dilated2(x))
-        x4 = F.silu(self.conv_dilated3(x))
+        x1 = masked(F.silu(self.conv1(x)))
+        x2 = masked(F.silu(self.conv_dilated1(x)))
+        x3 = masked(F.silu(self.conv_dilated2(x)))
+        x4 = masked(F.silu(self.conv_dilated3(x)))
 
         fused_global = torch.cat([x1, x2, x3, x4], dim=1)
-        out_global = self.fuse(fused_global)
+        if mask is None:
+            out_global = self.fuse(fused_global)
+        else:
+            projected = self.fuse[0](fused_global)
+            norm = self.fuse[1]
+            grouped = projected.reshape(x.size(0), norm.num_groups, -1, x.size(-1))
+            group_mask = mask.unsqueeze(1)
+            count = mask.sum(-1, keepdim=True).unsqueeze(1).clamp_min(1) * grouped.size(2)
+            mean = (grouped * group_mask).sum((2, 3), keepdim=True) / count
+            variance = ((grouped - mean).square() * group_mask).sum((2, 3), keepdim=True) / count
+            normalized = ((grouped - mean) * torch.rsqrt(variance + norm.eps)).reshape_as(projected)
+            normalized = normalized * norm.weight[None, :, None] + norm.bias[None, :, None]
+            out_global = masked(self.fuse[3](masked(self.fuse[2](normalized))))
 
         # Local context mapping
-        l1 = F.silu(self.local_conv1(x))
-        l2 = F.silu(self.local_conv2(x))
-        out_local = self.local_fuse(torch.cat([l1, l2], dim=1))
+        l1 = masked(F.silu(self.local_conv1(x)))
+        l2 = masked(F.silu(self.local_conv2(x)))
+        out_local = masked(self.local_fuse(torch.cat([l1, l2], dim=1)))
 
         # Dynamic Gated Fusion of Global and Local contexts
         g_g = self.gate_global(out_global)
@@ -79,10 +182,15 @@ class HeavyCNNAttention(nn.Module):
         out_fused = out_global * g_g + out_local * g_l
 
         # Squeeze-and-Excitation gating
-        scale = self.se(out_fused)
+        if mask is None:
+            scale = self.se(out_fused)
+        else:
+            scale = masked(out_fused).sum(-1, keepdim=True) / mask.sum(-1, keepdim=True).clamp_min(1)
+            for layer in list(self.se.children())[1:]:
+                scale = layer(scale)
         out = out_fused * scale
 
-        return x + self.gamma * out
+        return masked(x + self.gamma * out)
 
 
 class StyleBackbone(nn.Module):
@@ -132,14 +240,30 @@ class StyleBackbone(nn.Module):
         if init != 'none':
             init_weights(self, init)
 
-    def forward(self, x, ret_feats=False):
+    def feature_lengths(self, image_lengths):
+        lengths = image_lengths.long()
+        feature_lengths = []
+        for name, layer in self.cnn_backbone._modules.items():
+            lengths = _output_widths(lengths, layer)
+            if name in self.layer_name_mapping:
+                feature_lengths.append(lengths)
+        return _output_widths(lengths, self.cnn_ctc), feature_lengths
+
+    def forward(self, x, ret_feats=False, x_lens=None):
+        lengths = x_lens.to(device=x.device, dtype=torch.long) if x_lens is not None else None
+        mask_cache = {}
+        if lengths is not None:
+            x = _mask_width(x, lengths, -1.0, mask_cache)
         feats = []
         for name, layer in self.cnn_backbone._modules.items():
-            x = layer(x)
+            if lengths is None:
+                x = layer(x)
+            else:
+                x, lengths = _valid_backbone_layer(layer, x, lengths, mask_cache)
             if ret_feats and name in self.layer_name_mapping:
                 feats.append(x)
 
-        out = self.cnn_ctc(x)
+        out = self.cnn_ctc(x) if lengths is None else _valid_backbone_layer(self.cnn_ctc, x, lengths, mask_cache)[0]
         if out.dim() == 4:
             out = out.squeeze(2) if out.size(2) == 1 else out.mean(dim=2)
 
@@ -384,16 +508,6 @@ class StyleEncoder(nn.Module):
         nn.init.constant_(self.logvar.weight, 0.)
         nn.init.constant_(self.logvar.bias, -10.)
 
-    @staticmethod
-    def _width_mask(img_len, source_width, target_width):
-        if img_len is None:
-            return None, None
-        scaled_len = torch.ceil(
-            img_len.to(dtype=torch.float32) * (float(target_width) / float(source_width))
-        ).long().clamp_(min=1, max=target_width)
-        positions = torch.arange(target_width, device=img_len.device).unsqueeze(0)
-        return positions < scaled_len.unsqueeze(1), scaled_len
-
     def _load_from_state_dict(self, state_dict, prefix, local_metadata, strict,
                               missing_keys, unexpected_keys, error_msgs):
         # Texture ablations should remain possible with checkpoints created
@@ -421,7 +535,7 @@ class StyleEncoder(nn.Module):
     def forward(self, img, img_len, cnn_backbone=None, ret_feats=False,
                 vae_mode=False, ret_backbone_feat=False, backbone_features=None):
         feat, all_feats = (
-            cnn_backbone(img, ret_feats=True)
+            cnn_backbone(img, ret_feats=True, x_lens=img_len)
             if backbone_features is None else backbone_features
         )
         if self.feature_indices and max(self.feature_indices) >= len(all_feats):
@@ -443,9 +557,15 @@ class StyleEncoder(nn.Module):
                     f'configured projection expects {proj_layer.in_channels}.'
                 )
 
-        feat_mask, feat_len = self._width_mask(img_len, img.size(-1), feat.size(-1))
+        backbone = getattr(cnn_backbone, 'module', cnn_backbone)
+        if img_len is not None:
+            feat_len, map_lengths = backbone.feature_lengths(img_len)
+            feat_len = feat_len.clamp(min=1, max=feat.size(-1))
+            feat_mask = torch.arange(feat.size(-1), device=img.device)[None, :] < feat_len[:, None]
+        else:
+            feat_mask, feat_len, map_lengths = None, None, None
         feat_mask_f = feat_mask.unsqueeze(1).to(feat.dtype) if feat_mask is not None else 1.0
-        feat_m = self.sequence_model(feat * feat_mask_f) * feat_mask_f
+        feat_m = self.sequence_model(feat, valid_mask=feat_mask)
         if feat_mask is None:
             global_context = feat_m.mean(dim=-1)
             feature_variation = (
@@ -471,8 +591,11 @@ class StyleEncoder(nn.Module):
         spatial_tokens = [feat_m_trans]
         padding_masks = [~feat_mask] if feat_mask is not None else []
         masked_all_feats = []
-        for proj_layer, feature in zip(self.proj_layers, selected_all_feats):
-            width_mask, _ = self._width_mask(img_len, img.size(-1), feature.size(-1))
+        for feature_index, proj_layer, feature in zip(self.feature_indices, self.proj_layers, selected_all_feats):
+            width_mask = (
+                torch.arange(feature.size(-1), device=img.device)[None, :]
+                < map_lengths[feature_index][:, None]
+            ) if map_lengths is not None else None
             width_mask_f = (
                 width_mask[:, None, None, :].to(feature.dtype)
                 if width_mask is not None else 1.0
