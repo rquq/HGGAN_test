@@ -2129,7 +2129,9 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                     # B is frozen and in eval mode. Cache only its real-image
                     # features for this batch; E must run again with gradients
                     # during the G update.
-                    reference_features = self.models.B(style_refs, ret_feats=True)
+                    reference_features = self.models.B(
+                        style_refs, ret_feats=True, x_lens=style_ref_lens
+                    )
                     if self.vae_mode:
                         enc_z, _, _ = self.models.E(
                             style_refs, style_ref_lens, self.models.B, vae_mode=True,
@@ -2415,15 +2417,14 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                             reference_features[1][index]
                             for index in encoder.feature_indices
                         ]
-                        for real_feat, fake_feat in zip(real_img_feats, style_img_feats):
-                            real_feat_lens = torch.ceil(
-                                style_ref_lens.float()
-                                * (real_feat.size(-1) / float(style_refs.size(-1)))
-                            ).long().clamp_(1, real_feat.size(-1))
-                            fake_feat_lens = torch.ceil(
-                                style_img_lens.float()
-                                * (fake_feat.size(-1) / float(style_imgs.size(-1)))
-                            ).long().clamp_(1, fake_feat.size(-1))
+                        backbone = self.unwrap_model(self.models.B)
+                        _, reference_map_lengths = backbone.feature_lengths(style_ref_lens)
+                        _, generated_map_lengths = backbone.feature_lengths(style_img_lens)
+                        for feature_index, real_feat, fake_feat in zip(
+                            encoder.feature_indices, real_img_feats, style_img_feats
+                        ):
+                            real_feat_lens = reference_map_lengths[feature_index].clamp(1, real_feat.size(-1))
+                            fake_feat_lens = generated_map_lengths[feature_index].clamp(1, fake_feat.size(-1))
                             ctx_loss = ctx_loss + self.contextual_loss(
                                 real_feat.detach(), fake_feat,
                                 target_lengths=real_feat_lens,

@@ -565,7 +565,9 @@ def augment_word_batch(
     The canvas and valid widths do not change.  Only horizontal scale and
     translation are used so text content, baseline, and label lengths remain
     valid.  Applying this same policy family to real and generated words avoids
-    teaching D an augmentation shortcut.
+    teaching D an augmentation shortcut. Extend each word's boundary pixels
+    inside its valid canvas, rather than introducing constant-color paper seams.
+    Padding outside the valid word remains fill_value and is never extended.
     """
     if images.ndim != 4:
         raise ValueError('images must have shape (B, C, H, W)')
@@ -601,7 +603,7 @@ def augment_word_batch(
             pad_left = int(torch.randint(0, pad_total + 1, (1,)).item())
             word = F.pad(
                 word, (pad_left, pad_total - pad_left, 0, 0),
-                value=float(fill_value),
+                mode='replicate',
             )
 
         shift = int(torch.randint(
@@ -611,13 +613,13 @@ def augment_word_batch(
         if shift > 0:
             word = F.pad(
                 word[..., :valid_width - shift], (shift, 0, 0, 0),
-                value=float(fill_value),
+                mode='replicate',
             )
         elif shift < 0:
             amount = -shift
             word = F.pad(
                 word[..., amount:], (0, amount, 0, 0),
-                value=float(fill_value),
+                mode='replicate',
             )
         output[row:row + 1, :, :, :valid_width] = word
 

@@ -40,10 +40,10 @@ training:
   prefetch_factor: 3
   sample_nrow: 4
   # optimization:
-  # G runs every second critic batch, matching the full training configs.
+  # G update frequency follows num_critic_train, matching the full training configs.
   lr: 2.0e-4
-  d_lr: 1.0e-4
-  patch_d_lr: 1.2e-4
+  d_lr: 2.0e-4
+  patch_d_lr: 2.0e-4
   adam_b1: 0.5
   adam_b2: 0.999
   # sampling and saving
@@ -169,7 +169,6 @@ test:
 GenModel:
   G_ch: 64
   style_dim: 32
-  texture_refinement_enabled: true
   fusion_gate_init: 0.25
   local_projection_residual_init: 0.1
   allograph_routing_temperature: 0.7
@@ -202,6 +201,7 @@ GenModel:
 
 
 DiscModel:
+  pooling_gain: 32.0  # Shared valid-area readout scale at every image height.
   D_ch: 64
   D_wide: true
   resolution: 64
