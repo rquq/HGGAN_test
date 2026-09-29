@@ -202,6 +202,31 @@ def fused_bn(x, mean, var, gain=None, bias=None, eps=1e-5):
     return x * scale - shift
 
 
+def _masked_batch_stats(x, valid_lens):
+    """Batch statistics over real word columns, excluding right padding."""
+    lengths = valid_lens.to(device=x.device, dtype=torch.long).clamp(
+        min=0, max=x.size(-1)
+    )
+    mask = (
+        torch.arange(x.size(-1), device=x.device)[None, :]
+        < lengths[:, None]
+    ).to(dtype=x.dtype)[:, None, None, :]
+    count = (lengths.sum() * x.size(-2)).clamp_min(1).to(dtype=x.dtype)
+    mean = (x * mask).sum(dim=(0, 2, 3)) / count
+    centered = (x - mean.view(1, -1, 1, 1)) * mask
+    var = centered.square().sum(dim=(0, 2, 3)) / count
+    return mean, var, count
+
+
+def _update_running_stats(running_mean, running_var, mean, var, count, momentum):
+    # Match BatchNorm's biased variance for normalization and unbiased variance
+    # for the running estimate.
+    unbiased_var = var * (count / (count - 1).clamp_min(1))
+    with torch.no_grad():
+        running_mean.lerp_(mean.detach(), momentum)
+        running_var.lerp_(unbiased_var.detach(), momentum)
+
+
 # Manual BN
 # Calculate means and variances using mean-of-squares minus mean-squared
 def manual_bn(x, gain=None, bias=None, return_mean_var=False, eps=1e-5):
@@ -318,7 +343,7 @@ class ccbn(nn.Module):
             self.register_buffer('stored_mean', torch.zeros(output_size))
             self.register_buffer('stored_var', torch.ones(output_size))
 
-    def forward(self, x, y):
+    def forward(self, x, y, valid_lens=None):
         # Calculate class-conditional gains and biases
         gain = (1 + self.gain(y)).view(y.size(0), -1, 1, 1)
         bias = self.bias(y).view(y.size(0), -1, 1, 1)
@@ -328,6 +353,16 @@ class ccbn(nn.Module):
         # else:
         else:
             if self.norm_style == 'bn':
+                if self.training and valid_lens is not None:
+                    mean, var, count = _masked_batch_stats(x, valid_lens)
+                    _update_running_stats(
+                        self.stored_mean, self.stored_var, mean, var,
+                        count, 0.1,
+                    )
+                    return fused_bn(
+                        x, mean.view(1, -1, 1, 1),
+                        var.view(1, -1, 1, 1), gain, bias, self.eps,
+                    )
                 out = F.batch_norm(x, self.stored_mean, self.stored_var, None, None,
                                    self.training, 0.1, self.eps)
             elif self.norm_style == 'in':
@@ -372,12 +407,24 @@ class bn(nn.Module):
             self.register_buffer('stored_mean', torch.zeros(output_size))
             self.register_buffer('stored_var', torch.ones(output_size))
 
-    def forward(self, x, y=None):
+    def forward(self, x, y=None, valid_lens=None):
         if self.cross_replica or self.mybn:
             gain = self.gain.view(1, -1, 1, 1)
             bias = self.bias.view(1, -1, 1, 1)
             return self.bn(x, gain=gain, bias=bias)
         else:
+            if self.training and valid_lens is not None:
+                mean, var, count = _masked_batch_stats(x, valid_lens)
+                _update_running_stats(
+                    self.stored_mean, self.stored_var, mean, var,
+                    count, self.momentum,
+                )
+                return fused_bn(
+                    x, mean.view(1, -1, 1, 1),
+                    var.view(1, -1, 1, 1),
+                    self.gain.view(1, -1, 1, 1),
+                    self.bias.view(1, -1, 1, 1), self.eps,
+                )
             return F.batch_norm(x, self.stored_mean, self.stored_var, self.gain,
                                 self.bias, self.training, self.momentum, self.eps)
 
@@ -411,17 +458,36 @@ class GBlock(nn.Module):
         # upsample layers
         self.upsample = upsample
 
-    def forward(self, x, y, **kwargs):
-        h = self.activation(self.bn1(x, y))
+    @staticmethod
+    def _mask_valid_width(x, valid_lens):
+        if valid_lens is None:
+            return x
+        lengths = valid_lens.to(device=x.device, dtype=torch.long).clamp(
+            min=0, max=x.size(-1)
+        )
+        mask = (
+            torch.arange(x.size(-1), device=x.device)[None, :]
+            < lengths[:, None]
+        )
+        return x * mask[:, None, None, :].to(x.dtype)
+
+    def forward(self, x, y, x_lens=None, out_x_lens=None, **kwargs):
+        h = self.activation(self.bn1(x, y, valid_lens=x_lens))
+        h = self._mask_valid_width(h, x_lens)
+        x = self._mask_valid_width(x, x_lens)
         if self.upsample:
             h = self.upsample(h)
             x = self.upsample(x)
+        valid_lens = out_x_lens if out_x_lens is not None else x_lens
+        h = self._mask_valid_width(h, valid_lens)
+        x = self._mask_valid_width(x, valid_lens)
         h = self.conv1(h)
-        h = self.activation(self.bn2(h, y))
+        h = self.activation(self.bn2(h, y, valid_lens=valid_lens))
+        h = self._mask_valid_width(h, valid_lens)
         h = self.conv2(h)
         if self.learnable_sc:
             x = self.conv_sc(x)
-        return h + x
+        return self._mask_valid_width(h + x, valid_lens)
 
 
 # Residual block for the discriminator
