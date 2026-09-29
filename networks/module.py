@@ -431,6 +431,12 @@ class StyleEncoder(nn.Module):
             nn.Linear(in_dim, in_dim),
             nn.LeakyReLU(),
         )
+        # Global pooled features have a different scale from attention tokens.
+        # Normalize them before the shared global-style projector so short or
+        # low-ink references cannot drive an extreme conditioning vector.
+        self.global_context_norm = nn.LayerNorm(
+            in_dim, elementwise_affine=False
+        )
         self.mu = nn.Linear(in_dim, style_dim)
         self.logvar = nn.Linear(in_dim, style_dim)
         self.sequence_model = HeavyCNNAttention(in_dim)
@@ -644,16 +650,23 @@ class StyleEncoder(nn.Module):
                 key_padding_mask=key_padding_mask,
                 need_weights=False,
             )
+            # Cross-attention weights can grow substantially during long GAN
+            # runs. Normalize the attended evidence before mixing it with the
+            # learned slot queries, and keep local evidence out of the global
+            # MLP whose negative activations were suppressing its variation.
+            local_attended = self.style_key_norm(local_attended)
             attention_strength = torch.sigmoid(
                 self.local_attention_gate_logits
             ).view(1, 1, -1)
-            local_style = self.linear_style(self.local_output_norm(
+            local_style = self.local_output_norm(
                 style_queries + attention_strength * local_attended
-            ))
+            )
         else:
             local_style = style_queries
 
-        global_style = self.linear_style(global_context).unsqueeze(1)
+        global_style = self.linear_style(
+            self.global_context_norm(global_context)
+        ).unsqueeze(1)
 
         if local_style.size(1):
             expanded_global = global_style.expand_as(local_style)
@@ -672,17 +685,16 @@ class StyleEncoder(nn.Module):
                 torch.abs(normalized_local - normalized_global),
                 normalized_variation,
             ], dim=-1)
-            local_reliability = torch.sigmoid(
+            # Keep a minimum contribution from local visual evidence. The
+            # previous unconstrained sigmoid saturated at 1 for both checkpoints
+            # and could not be relied on to regulate a collapsed local path.
+            local_reliability = 0.5 + 0.5 * torch.sigmoid(
                 self.local_evidence_gate(evidence_descriptor)
             )
-            local_style_for_stats = global_style + local_reliability * (
-                local_style - global_style
-            )
         else:
-            local_style_for_stats = local_style
-        # Use the same stabilized tokens for VAE statistics; otherwise
-        # sampling would re-introduce the unstable short-reference variation.
-        style = torch.cat([global_style, local_style_for_stats], dim=1)
+            local_reliability = local_style.new_ones(
+                batch_size, 0, 1
+            )
         global_mu = self.mu(global_style)
 
         # Keep writer/style conditioning in the range learned by GBlocks. The
@@ -719,9 +731,17 @@ class StyleEncoder(nn.Module):
         style_tokens_mu = torch.cat([global_mu, local_mu], dim=1)
 
         if vae_mode:
-            logvar = torch.clamp(self.logvar(style), min=-14.0, max=4.0)
-            std = torch.exp(0.5 * logvar)
-            style_tokens_sampled = torch.randn_like(std) * std + style_tokens_mu
+            # Keep stochastic variation in the global writer code. Local
+            # tokens describe observed strokes and remain deterministic; their
+            # unit-Gaussian KL pressure had driven their posterior to the prior.
+            global_logvar = torch.clamp(
+                self.logvar(global_style), min=-14.0, max=4.0
+            )
+            global_std = torch.exp(0.5 * global_logvar)
+            global_sample = torch.randn_like(global_std) * global_std + global_mu
+            style_tokens_sampled = torch.cat([global_sample, local_mu], dim=1)
+            local_logvar = torch.zeros_like(local_mu)
+            logvar = torch.cat([global_logvar, local_logvar], dim=1)
             style_tokens = (style_tokens_sampled, style_tokens_mu, logvar)
         else:
             style_tokens = style_tokens_mu

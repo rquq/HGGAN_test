@@ -250,23 +250,54 @@ class Generator(nn.Module):
         len_scale = 1
         x_lens = y_lens * self.bottom_width
         for index, blocklist in enumerate(self.blocks):
+            stage_input_lens = (x_lens * len_scale).clamp(
+                min=1, max=h.size(-1)
+            )
+            upsample_scale = self.arch['upsample'][index]
+            width_scale = upsample_scale[1] if upsample_scale is not None else 1
+            stage_output_lens = (stage_input_lens * width_scale).clamp(
+                min=1
+            )
             # Second inner loop in case block has multiple layers
             for block in blocklist:
                 if isinstance(block, layers.Attention):
-                    h = block(h, x_lens=x_lens * len_scale)
+                    h = block(h, x_lens=stage_output_lens)
                 else:
-                    h = block(h, y=ys[index])
-            upsample_scale = self.arch['upsample'][index]
+                    h = block(
+                        h, y=ys[index], x_lens=stage_input_lens,
+                        out_x_lens=stage_output_lens,
+                    )
+            # Conditional normalization and convolutions can populate padded
+            # columns. Clear them after each stage so those activations cannot
+            # feed back across the valid word boundary in a later convolution.
+            valid_width = stage_output_lens.clamp(max=h.size(-1))
+            stage_mask = (
+                torch.arange(h.size(-1), device=h.device)[None, :]
+                < valid_width[:, None]
+            )
+            h = h * stage_mask[:, None, None, :].to(h.dtype)
             if upsample_scale is not None:
                 len_scale *= upsample_scale[1]
 
-        output = torch.tanh(self.output_layer(h))
+        # The final conditional normalization can also inject values into the
+        # right padded area. Mask before the last convolution so it cannot
+        # perturb valid edge pixels; mask its final tail as before below.
+        output_lens = torch.div(
+            y_lens * h.size(-2), 2, rounding_mode='trunc'
+        ).clamp(min=1)
+        output = self.output_layer[0](h, valid_lens=output_lens)
+        output = self.output_layer[1](output)
+        output_lens = output_lens.clamp(max=output.size(-1))
+        output_mask = _len2mask(
+            output_lens.int(), output.size(-1), torch.float32
+        ).to(output.device).unsqueeze(1).unsqueeze(1)
+        output = torch.tanh(
+            self.output_layer[2](output * output_mask.to(output.dtype))
+        )
 
         # Mask blanks
         if not self.training:
-            out_lens = torch.div(y_lens * output.size(-2), 2, rounding_mode='trunc')
-            mask = _len2mask(out_lens.int(), output.size(-1), torch.float32).to(z.device).detach()
-            mask = mask.unsqueeze(1).unsqueeze(1)
+            mask = output_mask.detach()
             output = output * mask + (mask - 1)
 
         return output
