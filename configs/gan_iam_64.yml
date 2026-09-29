@@ -20,7 +20,7 @@ inference:
 
 training:
   dset_split: 'trnval'
-  epochs: 84
+  epochs: 100
   lr_policy: 'linear'
   start_decay_epoch: 36
   n_epochs_decay: 48
