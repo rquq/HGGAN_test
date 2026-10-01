@@ -169,10 +169,24 @@ class SelfAttention(nn.Module):
                 out : self attention value + input feature
                 attention: B X N X N (N is Width*Height)
         """
+        # Accept the generator's historical plural spelling as well as D's
+        # x_len. Padding must not participate in attention's softmax denominator.
+        if x_len is None:
+            x_len = kwargs.get('x_lens')
         m_batchsize, C, height, width = x.size()
+        spatial_mask = None
+        if x_len is not None:
+            lengths = x_len.to(device=x.device, dtype=torch.long).clamp(0, width)
+            width_mask = torch.arange(width, device=x.device)[None, :] < lengths[:, None]
+            spatial_mask = width_mask[:, None, :].expand(-1, height, -1).reshape(m_batchsize, -1)
+            x = x.masked_fill(~width_mask[:, None, None, :], 0.0)
         proj_query = self.query_conv(x).view(m_batchsize, -1, width * height).permute(0, 2, 1)
         proj_key = self.key_conv(x).view(m_batchsize, -1, width * height)
         energy = torch.bmm(proj_query, proj_key)
+        if spatial_mask is not None:
+            energy = energy.masked_fill(
+                ~spatial_mask[:, None, :], torch.finfo(energy.dtype).min
+            )
         attention = self.softmax(energy)
 
         proj_value = self.value_conv(x).view(m_batchsize, -1, width * height)
@@ -181,6 +195,8 @@ class SelfAttention(nn.Module):
         out = out.view(m_batchsize, C, height, width)
 
         out = self.gamma * out + x
+        if spatial_mask is not None:
+            out = out.masked_fill(~width_mask[:, None, None, :], 0.0)
         return out
 
 
@@ -476,8 +492,13 @@ class GBlock(nn.Module):
         h = self._mask_valid_width(h, x_lens)
         x = self._mask_valid_width(x, x_lens)
         if self.upsample:
+            input_width = x.size(-1)
             h = self.upsample(h)
             x = self.upsample(x)
+            if out_x_lens is None and x_lens is not None:
+                out_x_lens = torch.div(
+                    x_lens * x.size(-1), input_width, rounding_mode='floor'
+                )
         valid_lens = out_x_lens if out_x_lens is not None else x_lens
         h = self._mask_valid_width(h, valid_lens)
         x = self._mask_valid_width(x, valid_lens)

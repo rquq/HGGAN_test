@@ -418,9 +418,9 @@ class StyleEncoder(nn.Module):
             raise ValueError(
                 'local_query_anchor_strength must be in [0, 1]'
             )
-        if not 0.0 < self.local_evidence_gate_init < 1.0:
+        if not 0.5 < self.local_evidence_gate_init < 1.0:
             raise ValueError(
-                'local_evidence_gate_init must be strictly between 0 and 1'
+                'local_evidence_gate_init must be strictly between 0.5 and 1'
             )
         if self.local_evidence_gate_hidden < 1:
             raise ValueError('local_evidence_gate_hidden must be positive')
@@ -509,7 +509,9 @@ class StyleEncoder(nn.Module):
         nn.init.zeros_(self.local_evidence_gate[-1].weight)
         nn.init.constant_(
             self.local_evidence_gate[-1].bias,
-            torch.logit(torch.tensor(self.local_evidence_gate_init)).item(),
+            torch.logit(torch.tensor(
+                2.0 * self.local_evidence_gate_init - 1.0
+            )).item(),
         )
         nn.init.constant_(self.logvar.weight, 0.)
         nn.init.constant_(self.logvar.bias, -10.)
@@ -685,9 +687,9 @@ class StyleEncoder(nn.Module):
                 torch.abs(normalized_local - normalized_global),
                 normalized_variation,
             ], dim=-1)
-            # Keep a minimum contribution from local visual evidence. The
-            # previous unconstrained sigmoid saturated at 1 for both checkpoints
-            # and could not be relied on to regulate a collapsed local path.
+            # Keep at least half of the local visual evidence. This lower
+            # bound prevents local suppression; it does not prevent the gate
+            # from approaching one or guarantee diverse learned local tokens.
             local_reliability = 0.5 + 0.5 * torch.sigmoid(
                 self.local_evidence_gate(evidence_descriptor)
             )
