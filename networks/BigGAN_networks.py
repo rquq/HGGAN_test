@@ -261,7 +261,7 @@ class Generator(nn.Module):
             # Second inner loop in case block has multiple layers
             for block in blocklist:
                 if isinstance(block, layers.Attention):
-                    h = block(h, x_lens=stage_output_lens)
+                    h = block(h, x_len=stage_output_lens)
                 else:
                     h = block(
                         h, y=ys[index], x_lens=stage_input_lens,
@@ -498,7 +498,12 @@ class Discriminator(nn.Module):
         len_scale = 1
         for index, blocklist in enumerate(self.blocks):
             for block in blocklist:
-                h = block(h, x_len=torch.div(x_lens, len_scale, rounding_mode='trunc') if x_lens is not None else None)
+                # Spatial attention follows this stage's downsampling block,
+                # so it receives output lengths rather than input lengths.
+                block_scale = len_scale
+                if isinstance(block, layers.Attention) and self.arch['downsample'][index]:
+                    block_scale *= 2
+                h = block(h, x_len=torch.div(x_lens, block_scale, rounding_mode='trunc') if x_lens is not None else None)
             len_scale *= 2 if self.arch['downsample'][index] else 1
         h = self.activation(h)
         h_lens = torch.div(x_lens, len_scale, rounding_mode='floor') if x_lens is not None else None

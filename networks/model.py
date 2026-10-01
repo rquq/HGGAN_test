@@ -2439,11 +2439,12 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                             real_imgs, recn_imgs, real_img_lens, recn_img_lens
                         )
 
-                    # Local tokens encode observed stroke evidence and use a
-                    # deterministic posterior. Applying the global Gaussian KL
-                    # to those tokens was driving them toward fixed unit noise.
+                    # Local tokens are deterministic and have no Gaussian KL.
+                    # Retain the former global token's contribution to the
+                    # all-token mean; removing local terms must not silently
+                    # multiply global regularization by the number of tokens.
                     kl_loss = (
-                        KLloss(mu[:, :1], logvar[:, :1])
+                        KLloss(mu[:, :1], logvar[:, :1]) / mu.size(1)
                         if self.vae_mode else torch.tensor(0.0, device=self.device)
                     )
 
