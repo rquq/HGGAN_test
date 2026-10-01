@@ -261,7 +261,8 @@ def calculate_activation_statistics(*args, **kwargs):
     return act, mu, sigma, logits
 
 def polynomial_mmd_averages(codes_g, codes_r, n_subsets=50, subset_size=1000,
-                            ret_var=True, output=sys.stdout, **kernel_args):
+                            ret_var=True, output=sys.stdout, device=None,
+                            **kernel_args):
     m = min(codes_g.shape[0], codes_r.shape[0])
     mmds = np.zeros(n_subsets)
     if ret_var:
@@ -277,7 +278,10 @@ def polynomial_mmd_averages(codes_g, codes_r, n_subsets=50, subset_size=1000,
         for i in bar:
             g = codes_g[choice(len(codes_g), subset_size, replace=False)]
             r = codes_r[choice(len(codes_r), subset_size, replace=False)]
-            o = polynomial_mmd(g, r, **kernel_args, var_at_m=m, ret_var=ret_var)
+            o = polynomial_mmd(
+                g, r, **kernel_args, var_at_m=m, ret_var=ret_var,
+                device=device,
+            )
             if ret_var:
                 mmds[i], vars[i] = o
             else:
@@ -286,9 +290,10 @@ def polynomial_mmd_averages(codes_g, codes_r, n_subsets=50, subset_size=1000,
     return (mmds, vars) if ret_var else mmds
 
 def polynomial_mmd(codes_g, codes_r, degree=3, gamma=None, coef0=1,
-                   var_at_m=None, ret_var=True):
-    if torch.cuda.is_available():
-        device = 'cuda'
+                   var_at_m=None, ret_var=True, device=None):
+    if device is None:
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    if torch.cuda.is_available() and str(device).startswith('cuda'):
         X_t = torch.from_numpy(codes_g).to(device)
         Y_t = torch.from_numpy(codes_r).to(device)
 
@@ -453,7 +458,8 @@ def calculate_fid_kid_is(cfg, data_loader, generator, n_rand_repeat, device, cro
         ret = polynomial_mmd_averages(
                 act1, act2, degree=cfg.mmd_degree, gamma=cfg.mmd_gamma,
                 coef0=cfg.mmd_coef0, ret_var=cfg.mmd_var,
-                n_subsets=cfg.mmd_subsets, subset_size=cfg.mmd_subset_size)
+                n_subsets=cfg.mmd_subsets, subset_size=cfg.mmd_subset_size,
+                device=device)
 
         if cfg.mmd_var:
             mmd2s, vars = ret

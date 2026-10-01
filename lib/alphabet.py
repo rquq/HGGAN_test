@@ -147,7 +147,7 @@ def get_lexicon(path, true_alphabet, max_length=20, ignore_case=True):
         with open(path, 'r', encoding='utf-8') as f:
             for line in f.readlines():
                 line = line.strip()
-                if len(line) < 2:
+                if not line:
                     continue
 
                 word = ''.join(ch for ch in line if ch in true_alphabet)

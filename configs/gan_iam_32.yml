@@ -19,13 +19,13 @@ inference:
 
 training:
   dset_split: 'trnval'
-  epochs: 84
+  epochs: 100
   lr_policy: 'linear'
   start_decay_epoch: 36
   n_epochs_decay: 48
   min_lr_ratio: 0.15
-  batch_size: 16
-  eval_batch_size: 16
+  batch_size: 8
+  eval_batch_size: 8
   num_workers: 4
   eval_num_workers: 4
   sample_num_workers: 0
@@ -33,8 +33,8 @@ training:
   prefetch_factor: 3
   sample_nrow: 4
   lr: 2.0e-4
-  d_lr: 1.0e-4
-  patch_d_lr: 1.2e-4
+  d_lr: 2.0e-4
+  patch_d_lr: 2.0e-4
   adam_b1: 0.5
   adam_b2: 0.999
   sample_iter_val: 500
@@ -49,13 +49,12 @@ training:
   n_class: 80
   capitalize_ratio: 0.5
   blank_ratio: 0.
+  rare_word_ratio: 0.15
   sort_input: true
   num_critic_train: 2
   lambda_patch_adv: 0.45
-  patch_size: 16
   min_patch_crops: 4
   max_patch_crops: 8
-  patch_char_jitter: 2
   d_diffaug: true
   d_aug_translate: 2
   d_aug_width_scale: 0.05
@@ -65,15 +64,11 @@ training:
   ctc_rand_decay_start_epoch: 10
   ctc_rand_decay_end_epoch: 20
   lambda_ctc_style: 0.5
-  lambda_ctc_style_final: 0.08
+  lambda_ctc_style_final: 0.20
   ctc_style_decay_start_epoch: 8
   ctc_style_decay_end_epoch: 28
   lambda_info: 1.0
   lambda_wid: 0.5
-  # Preserve early identity learning; soften late writer-gradient outliers.
-  lambda_wid_final: 0.25
-  wid_decay_start_epoch: 48
-  wid_decay_end_epoch: 60
   lambda_recn: 10.0
   lambda_recn_final: 2.5
   recn_decay_start_epoch: 24
@@ -81,7 +76,9 @@ training:
   lambda_style_cycle: 1.0
   lambda_content_adv: 0.02
   lambda_kl: 0.1
+  # Use bounded reference-feature matching; frequency-only is an optional ablation.
   lambda_ctx: 0.1
+  lambda_frequency: 0.0
   grad_clip: 5.0
   r1_interval: 32
   lambda_r1: 0.01
@@ -90,7 +87,6 @@ training:
   pretrained_w: './pretrained/wid_iam_train32.pth'
   pretrained_r: './pretrained/ocr_iam_train32.pth'
   pretrained_ckpt: ''
-  masking_mode: 'combined'
 
 
 valid:
@@ -109,6 +105,7 @@ valid:
   validate_psnr: false
   validate_mssim: false
   validate_wier: false
+  metric_cache_dtype: 'float32'
   use_rand_corpus: false
   n_rand_repeat: 10
   batch_size: 32
@@ -147,15 +144,10 @@ test:
 GenModel:
   G_ch: 64
   style_dim: 32
-  fusion_gate_init: 0.25
-  local_projection_residual_init: 0.1
-  allograph_routing_temperature: 0.7
-  allograph_routing_center_init: 0.5
-  allograph_routing_scale_max: 2.0
-  allograph_routing_uniform_mix: 0.05
-  allograph_modulation_limit: 0.3
-  allograph_residual_init: 0.5
-  allograph_modulation_rms_cap: 1.0
+  fusion_nhead: 4
+  fusion_attn_dim: 128
+  fusion_ffn_dim: 360
+  fusion_residual_init: 0.25
   bottom_width: 4
   bottom_height: 4
   resolution: 32
@@ -179,6 +171,7 @@ GenModel:
 
 
 DiscModel:
+  pooling_gain: 32.0  # Shared valid-area readout scale at every image height.
   D_ch: 64
   D_wide: true
   resolution: 32
@@ -198,20 +191,15 @@ DiscModel:
 
 PatchDiscModel:
   D_ch: 64
-  D_wide: true
-  resolution: 16
-  D_kernel_size: 3
-  D_attn: '0'
-  n_class: 80
+  D_max_ch: 192
+  D_layers: 3
   num_D_SVs: 1
   num_D_SV_itrs: 1
   SN_eps: 1.e-08
   output_dim: 1
   init: 'N02'
   D_param: 'SN'
-  bn_linear: 'SN'
   input_nc: 1
-  one_hot: true
 
 
 OcrModel:
@@ -239,14 +227,19 @@ EncModel:
   style_dim: 32
   in_dim: 256
   init: 'none'
+  num_style_tokens: 8
   num_local_queries: 7
   query_dim: 256
   heads: 4
   cross_attn_dropout: 0.0
-  local_attention_gate_init: 0.5
+  local_attention_residual_init: 0.5
   local_query_residual: 0.1
   local_query_anchor_strength: 0.1
-  feature_scales: [1, 2]
+  local_evidence_gate_init: 0.75
+  local_evidence_gate_hidden: 64
+  # All three backbone maps keep old 32px checkpoints shape-compatible.  A
+  # future speed ablation may shorten this list to select shallow maps only.
+  feature_scales: [1, 2, 4]
 
 
 WidModel:

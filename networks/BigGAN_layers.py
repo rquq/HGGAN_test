@@ -108,6 +108,28 @@ class SNConv2d(nn.Conv2d, SN):
                         self.padding, self.dilation, self.groups)
 
 
+class SNDepthwiseConv2d(nn.Conv2d):
+    """Kernel-matrix SN for independent one-filter depthwise groups.
+
+    The grouped kernel matrix is block diagonal: its largest singular value
+    is the largest filter L2 norm, not the norm of a dense stack of filters.
+    Like ordinary convolution SN, this is not the full spatial operator norm.
+    """
+
+    def __init__(self, channels, kernel_size, padding=0, bias=True, eps=1e-12):
+        super().__init__(channels, channels, kernel_size, padding=padding,
+                         groups=channels, bias=bias)
+        self.eps = eps
+
+    def W_(self):
+        norm = self.weight.flatten(1).norm(dim=1).amax().clamp_min(self.eps)
+        return self.weight / norm
+
+    def forward(self, x):
+        return F.conv2d(x, self.W_(), self.bias, self.stride,
+                        self.padding, self.dilation, self.groups)
+
+
 # Linear layer with spectral norm
 class SNLinear(nn.Linear, SN):
     def __init__(self, in_features, out_features,  bias=True,
@@ -169,10 +191,24 @@ class SelfAttention(nn.Module):
                 out : self attention value + input feature
                 attention: B X N X N (N is Width*Height)
         """
+        # Accept the generator's historical plural spelling as well as D's
+        # x_len. Padding must not participate in attention's softmax denominator.
+        if x_len is None:
+            x_len = kwargs.get('x_lens')
         m_batchsize, C, height, width = x.size()
+        spatial_mask = None
+        if x_len is not None:
+            lengths = x_len.to(device=x.device, dtype=torch.long).clamp(0, width)
+            width_mask = torch.arange(width, device=x.device)[None, :] < lengths[:, None]
+            spatial_mask = width_mask[:, None, :].expand(-1, height, -1).reshape(m_batchsize, -1)
+            x = x.masked_fill(~width_mask[:, None, None, :], 0.0)
         proj_query = self.query_conv(x).view(m_batchsize, -1, width * height).permute(0, 2, 1)
         proj_key = self.key_conv(x).view(m_batchsize, -1, width * height)
         energy = torch.bmm(proj_query, proj_key)
+        if spatial_mask is not None:
+            energy = energy.masked_fill(
+                ~spatial_mask[:, None, :], torch.finfo(energy.dtype).min
+            )
         attention = self.softmax(energy)
 
         proj_value = self.value_conv(x).view(m_batchsize, -1, width * height)
@@ -181,6 +217,8 @@ class SelfAttention(nn.Module):
         out = out.view(m_batchsize, C, height, width)
 
         out = self.gamma * out + x
+        if spatial_mask is not None:
+            out = out.masked_fill(~width_mask[:, None, None, :], 0.0)
         return out
 
 
@@ -200,6 +238,31 @@ def fused_bn(x, mean, var, gain=None, bias=None, eps=1e-5):
     if bias is not None:
         shift = shift - bias
     return x * scale - shift
+
+
+def _masked_batch_stats(x, valid_lens):
+    """Batch statistics over real word columns, excluding right padding."""
+    lengths = valid_lens.to(device=x.device, dtype=torch.long).clamp(
+        min=0, max=x.size(-1)
+    )
+    mask = (
+        torch.arange(x.size(-1), device=x.device)[None, :]
+        < lengths[:, None]
+    ).to(dtype=x.dtype)[:, None, None, :]
+    count = (lengths.sum() * x.size(-2)).clamp_min(1).to(dtype=x.dtype)
+    mean = (x * mask).sum(dim=(0, 2, 3)) / count
+    centered = (x - mean.view(1, -1, 1, 1)) * mask
+    var = centered.square().sum(dim=(0, 2, 3)) / count
+    return mean, var, count
+
+
+def _update_running_stats(running_mean, running_var, mean, var, count, momentum):
+    # Match BatchNorm's biased variance for normalization and unbiased variance
+    # for the running estimate.
+    unbiased_var = var * (count / (count - 1).clamp_min(1))
+    with torch.no_grad():
+        running_mean.lerp_(mean.detach(), momentum)
+        running_var.lerp_(unbiased_var.detach(), momentum)
 
 
 # Manual BN
@@ -318,7 +381,7 @@ class ccbn(nn.Module):
             self.register_buffer('stored_mean', torch.zeros(output_size))
             self.register_buffer('stored_var', torch.ones(output_size))
 
-    def forward(self, x, y):
+    def forward(self, x, y, valid_lens=None):
         # Calculate class-conditional gains and biases
         gain = (1 + self.gain(y)).view(y.size(0), -1, 1, 1)
         bias = self.bias(y).view(y.size(0), -1, 1, 1)
@@ -328,6 +391,16 @@ class ccbn(nn.Module):
         # else:
         else:
             if self.norm_style == 'bn':
+                if self.training and valid_lens is not None:
+                    mean, var, count = _masked_batch_stats(x, valid_lens)
+                    _update_running_stats(
+                        self.stored_mean, self.stored_var, mean, var,
+                        count, 0.1,
+                    )
+                    return fused_bn(
+                        x, mean.view(1, -1, 1, 1),
+                        var.view(1, -1, 1, 1), gain, bias, self.eps,
+                    )
                 out = F.batch_norm(x, self.stored_mean, self.stored_var, None, None,
                                    self.training, 0.1, self.eps)
             elif self.norm_style == 'in':
@@ -372,12 +445,24 @@ class bn(nn.Module):
             self.register_buffer('stored_mean', torch.zeros(output_size))
             self.register_buffer('stored_var', torch.ones(output_size))
 
-    def forward(self, x, y=None):
+    def forward(self, x, y=None, valid_lens=None):
         if self.cross_replica or self.mybn:
             gain = self.gain.view(1, -1, 1, 1)
             bias = self.bias.view(1, -1, 1, 1)
             return self.bn(x, gain=gain, bias=bias)
         else:
+            if self.training and valid_lens is not None:
+                mean, var, count = _masked_batch_stats(x, valid_lens)
+                _update_running_stats(
+                    self.stored_mean, self.stored_var, mean, var,
+                    count, self.momentum,
+                )
+                return fused_bn(
+                    x, mean.view(1, -1, 1, 1),
+                    var.view(1, -1, 1, 1),
+                    self.gain.view(1, -1, 1, 1),
+                    self.bias.view(1, -1, 1, 1), self.eps,
+                )
             return F.batch_norm(x, self.stored_mean, self.stored_var, self.gain,
                                 self.bias, self.training, self.momentum, self.eps)
 
@@ -411,17 +496,41 @@ class GBlock(nn.Module):
         # upsample layers
         self.upsample = upsample
 
-    def forward(self, x, y, **kwargs):
-        h = self.activation(self.bn1(x, y))
+    @staticmethod
+    def _mask_valid_width(x, valid_lens):
+        if valid_lens is None:
+            return x
+        lengths = valid_lens.to(device=x.device, dtype=torch.long).clamp(
+            min=0, max=x.size(-1)
+        )
+        mask = (
+            torch.arange(x.size(-1), device=x.device)[None, :]
+            < lengths[:, None]
+        )
+        return x * mask[:, None, None, :].to(x.dtype)
+
+    def forward(self, x, y, x_lens=None, out_x_lens=None, **kwargs):
+        h = self.activation(self.bn1(x, y, valid_lens=x_lens))
+        h = self._mask_valid_width(h, x_lens)
+        x = self._mask_valid_width(x, x_lens)
         if self.upsample:
+            input_width = x.size(-1)
             h = self.upsample(h)
             x = self.upsample(x)
+            if out_x_lens is None and x_lens is not None:
+                out_x_lens = torch.div(
+                    x_lens * x.size(-1), input_width, rounding_mode='floor'
+                )
+        valid_lens = out_x_lens if out_x_lens is not None else x_lens
+        h = self._mask_valid_width(h, valid_lens)
+        x = self._mask_valid_width(x, valid_lens)
         h = self.conv1(h)
-        h = self.activation(self.bn2(h, y))
+        h = self.activation(self.bn2(h, y, valid_lens=valid_lens))
+        h = self._mask_valid_width(h, valid_lens)
         h = self.conv2(h)
         if self.learnable_sc:
             x = self.conv_sc(x)
-        return h + x
+        return self._mask_valid_width(h + x, valid_lens)
 
 
 # Residual block for the discriminator
@@ -458,15 +567,22 @@ class DBlock(nn.Module):
                 x = self.conv_sc(x)
         return x
 
-    def forward(self, x, **kwargs):
+    def forward(self, x, x_len=None, **kwargs):
+        def mask(value, lengths):
+            if lengths is None:
+                return value
+            valid = torch.arange(value.size(-1), device=value.device)[None, :] < lengths[:, None]
+            return value.masked_fill(~valid[:, None, None, :], 0.0)
+
+        x = mask(x, x_len)
         if self.preactivation:
             # Must use an out-of-place ReLU activation to preserve shortcut connection state
             h = F.relu(x)
         else:
             h = x
-        h = self.conv1(h)
-        h = self.conv2(self.activation(h))
+        h = mask(self.conv1(h), x_len)
+        h = mask(self.conv2(self.activation(h)), x_len)
         if self.downsample:
             h = self.downsample(h)
-
-        return h + self.shortcut(x)
+        out_lengths = torch.div(x_len, 2, rounding_mode='floor') if self.downsample and x_len is not None else x_len
+        return mask(h + self.shortcut(x), out_lengths)

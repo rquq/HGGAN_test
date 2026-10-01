@@ -367,6 +367,15 @@ class AverageMeterManager(object):
     def update(self, key, val, n=1):
         self.meters[key].update(val, n)
 
+    def update_many(self, values, n=1):
+        """Transfer detached scalar tensors together, with one host sync."""
+        if not values:
+            return
+        keys = list(values)
+        scalars = torch.stack([values[key].detach().reshape(()) for key in keys])
+        for key, value in zip(keys, scalars.cpu().tolist()):
+            self.update(key, value, n)
+
     def eval(self, keys):
         if isinstance(keys, str):
             keys = [keys]

@@ -8,7 +8,6 @@ import torch.nn.functional as F
 
 from . import BigGAN_layers as layers
 from .fusion import StyleContentAttentionFusion
-from .texture_generator import StyleFrequencyRefinement
 from networks.utils import init_weights, _len2mask
 
 # Architectures for G
@@ -17,10 +16,15 @@ from networks.utils import init_weights, _len2mask
 def G_arch(ch=64, attention='64', ksize='333333', dilation='111111'):
     arch = {}
 
-    arch[32] = {'in_channels': [ch * item for item in [4, 2, 1]],
-                'out_channels': [ch * item for item in [2, 1, 1]],
-                'upsample': [(2, 1), (2, 2), (2, 2)],
-                'resolution': [8, 16, 32],
+    # Keep one architecture at every supported resolution: four conditioned
+    # stages and the same channel schedule. Resolution controls geometry only.
+    # At 32px the image reaches its target after stage three, so stage four is
+    # a learned same-resolution refinement. At 64px that stage performs the
+    # final 2x upsample. There is no dataset- or metric-specific capacity path.
+    arch[32] = {'in_channels': [ch * item for item in [8, 4, 2, 1]],
+                'out_channels': [ch * item for item in [4, 2, 1, 1]],
+                'upsample': [(2, 1), (2, 2), (2, 2), None],
+                'resolution': [8, 16, 32, 32],
                 'attention': {2 ** i: (2 ** i in [int(item) for item in attention.split('_')])
                               for i in range(2, 6)}}
 
@@ -68,15 +72,9 @@ class Generator(nn.Module):
                  G_activation=nn.ReLU(inplace=False),
                  BN_eps=1e-5, SN_eps=1e-12, G_fp16=False,
                  init='ortho', G_param='SN', norm_style='bn', bn_linear='embed', input_nc=3,
-                 embed_pad_idx=0, embed_max_norm=1.0, fusion_gate_init=0.25,
-                 local_projection_residual_init=0.1,
-                 allograph_routing_temperature=0.7,
-                 allograph_modulation_limit=0.3,
-                 allograph_residual_init=0.5,
-                 allograph_modulation_rms_cap=1.0,
-                 allograph_routing_center_init=0.5,
-                 allograph_routing_scale_max=2.0,
-                 allograph_routing_uniform_mix=0.05):
+                 embed_pad_idx=0, embed_max_norm=1.0,
+                 fusion_nhead=4, fusion_attn_dim=128, fusion_ffn_dim=None,
+                 fusion_residual_init=0.25):
         super(Generator, self).__init__()
         dim_z = style_dim
         self.style_dim = style_dim
@@ -155,23 +153,9 @@ class Generator(nn.Module):
         self.filter_linear = self.which_linear(self.embed_dim,
                                         self.arch['in_channels'][0] * (self.bottom_width * self.bottom_height))
         self.style_content_mix = StyleContentAttentionFusion(
-            self.embed_dim, self.style_dim, vocab_size=self.n_classes,
-            local_projection_residual_init=local_projection_residual_init,
-            routing_temperature=allograph_routing_temperature,
-            modulation_limit=allograph_modulation_limit,
-            modulation_residual_init=allograph_residual_init,
-            modulation_rms_cap=allograph_modulation_rms_cap,
-            routing_center_init=allograph_routing_center_init,
-            routing_scale_max=allograph_routing_scale_max,
-            routing_uniform_mix=allograph_routing_uniform_mix,
-        )
-        if not 0.0 < fusion_gate_init < 1.0:
-            raise ValueError('fusion_gate_init must be strictly between 0 and 1')
-        # A channel-wise, non-zero gate gives fusion gradients from the first
-        # update while retaining the reliable unfused content path.
-        gate_logit = torch.logit(torch.tensor(float(fusion_gate_init)))
-        self.fusion_gate_logits = nn.Parameter(
-            torch.full((self.embed_dim,), gate_logit.item())
+            self.embed_dim, self.style_dim, nhead=fusion_nhead,
+            attn_dim=fusion_attn_dim, ffn_dim=fusion_ffn_dim,
+            residual_init=fusion_residual_init,
         )
 
         self.bssp = BlockSpecificStyleProjection(style_dim=self.style_dim, num_blocks=len(self.arch['in_channels']), style_chunk_size=self.z_chunk_size, which_linear=self.which_linear)
@@ -181,15 +165,17 @@ class Generator(nn.Module):
         # while the inner loop is over a given block
         self.blocks = []
         for index in range(len(self.arch['out_channels'])):
+            upsample_scale = self.arch['upsample'][index]
             self.blocks += [[layers.GBlock(in_channels=self.arch['in_channels'][index],
                                            out_channels=self.arch['out_channels'][index],
                                            which_conv1=self.which_conv,
                                            which_conv2=self.which_conv,
                                            which_bn=self.which_bn,
                                            activation=self.activation,
-                                           upsample=(functools.partial(F.interpolate,
-                                                                       scale_factor=self.arch['upsample'][index])
-                                                     if index < len(self.arch['upsample']) else None))]]
+                                           upsample=(functools.partial(
+                                               F.interpolate,
+                                               scale_factor=upsample_scale,
+                                           ) if upsample_scale is not None else None))]]
 
             if self.arch['attention'][self.arch['resolution'][index]]:
                 self.blocks[-1] += [layers.Attention(self.arch['out_channels'][index], self.which_conv)]
@@ -204,12 +190,6 @@ class Generator(nn.Module):
                                                     mybn=self.mybn),
                                           self.activation,
                                           self.which_conv(self.arch['out_channels'][-1], input_nc))
-        self.texture_refinement = StyleFrequencyRefinement(
-            channels=self.arch['out_channels'][-1],
-            style_dim=self.style_dim,
-            output_channels=input_nc,
-            which_conv=self.which_conv,
-        )
 
         # Initialize weights. Optionally skip init for testing.
         if self.init != 'none':
@@ -217,7 +197,6 @@ class Generator(nn.Module):
         # General initialization touches fusion Linear weights; restore its
         # identity-like nonzero residual handoffs afterwards.
         self.style_content_mix.reset_stability_parameters()
-        self.texture_refinement.reset_stability_parameters()
 
     def forward(self, z, y, y_lens):
         # Distribution is a reusable sampler container, not an activation
@@ -230,15 +209,12 @@ class Generator(nn.Module):
         # Local tokens must travel through the aligned fusion path.
         ys = self.bssp(z[:, 0])
 
-        char_ids = y
         content = self.text_embedding(y).float().to(y.device)
-        fused_content = self.style_content_mix(
-            content, z, char_ids=char_ids, y_lens=y_lens
+        y_mixed = self.style_content_mix(
+            content, z, y_lens=y_lens
         )
         token_positions = torch.arange(y.size(1), device=y.device).unsqueeze(0)
         valid_tokens = (token_positions < y_lens.unsqueeze(1)).unsqueeze(-1)
-        fusion_gate = torch.sigmoid(self.fusion_gate_logits).view(1, 1, -1)
-        y_mixed = content + fusion_gate * (fused_content - content)
         y_mixed = y_mixed * valid_tokens.to(y_mixed.dtype)
         h = self.filter_linear(y_mixed) * valid_tokens.to(y_mixed.dtype)
 
@@ -251,31 +227,60 @@ class Generator(nn.Module):
         len_scale = 1
         x_lens = y_lens * self.bottom_width
         for index, blocklist in enumerate(self.blocks):
+            stage_input_lens = (x_lens * len_scale).clamp(
+                min=1, max=h.size(-1)
+            )
+            upsample_scale = self.arch['upsample'][index]
+            width_scale = upsample_scale[1] if upsample_scale is not None else 1
+            stage_output_lens = (stage_input_lens * width_scale).clamp(
+                min=1
+            )
             # Second inner loop in case block has multiple layers
             for block in blocklist:
                 if isinstance(block, layers.Attention):
-                    h = block(h, x_lens=x_lens * len_scale)
+                    h = block(h, x_len=stage_output_lens)
                 else:
-                    h = block(h, y=ys[index])
-            len_scale *= self.arch['upsample'][index][1]
+                    h = block(
+                        h, y=ys[index], x_lens=stage_input_lens,
+                        out_x_lens=stage_output_lens,
+                    )
+            # Conditional normalization and convolutions can populate padded
+            # columns. Clear them after each stage so those activations cannot
+            # feed back across the valid word boundary in a later convolution.
+            valid_width = stage_output_lens.clamp(max=h.size(-1))
+            stage_mask = (
+                torch.arange(h.size(-1), device=h.device)[None, :]
+                < valid_width[:, None]
+            )
+            h = h * stage_mask[:, None, None, :].to(h.dtype)
+            if upsample_scale is not None:
+                len_scale *= upsample_scale[1]
 
-        # Preserve the reliable base image and add only a bounded,
-        # style-distribution-conditioned high-frequency residual.
-        base_logits = self.output_layer(h)
-        texture_detail = self.texture_refinement(h, z)
-        output = torch.tanh(base_logits + texture_detail)
+        # The final conditional normalization can also inject values into the
+        # right padded area. Mask before the last convolution so it cannot
+        # perturb valid edge pixels; mask its final tail as before below.
+        output_lens = torch.div(
+            y_lens * h.size(-2), 2, rounding_mode='trunc'
+        ).clamp(min=1)
+        output = self.output_layer[0](h, valid_lens=output_lens)
+        output = self.output_layer[1](output)
+        output_lens = output_lens.clamp(max=output.size(-1))
+        output_mask = _len2mask(
+            output_lens.int(), output.size(-1), torch.float32
+        ).to(output.device).unsqueeze(1).unsqueeze(1)
+        output = torch.tanh(
+            self.output_layer[2](output * output_mask.to(output.dtype))
+        )
 
         # Mask blanks
         if not self.training:
-            out_lens = torch.div(y_lens * output.size(-2), 2, rounding_mode='trunc')
-            mask = _len2mask(out_lens.int(), output.size(-1), torch.float32).to(z.device).detach()
-            mask = mask.unsqueeze(1).unsqueeze(1)
+            mask = output_mask.detach()
             output = output * mask + (mask - 1)
 
         return output
 
     def fusion_strength(self):
-        return torch.sigmoid(self.fusion_gate_logits).mean()
+        return self.style_content_mix.residual_scales.mean()
 
     def _info_attention(self):
         attn_index = -1
@@ -369,9 +374,16 @@ class Discriminator(nn.Module):
                  D_attn='64', num_D_SVs=1, num_D_SV_itrs=1,
                  D_activation=nn.ReLU(inplace=False), SN_eps=1e-12,
                  output_dim=1, D_fp16=False, init='ortho', D_param='SN',
-                 input_nc=3, width_context=False, width_heads=4, **kwargs):
+                 input_nc=3, width_context=False, width_heads=4,
+                 pooling_gain=32.0, **kwargs):
         super(Discriminator, self).__init__()
         self.name = 'D'
+        # Shared at every resolution. A valid-area mean times this fixed gain
+        # retains the former 64px score scale (32 feature cells per character)
+        # without making score magnitude depend on input height or word length.
+        self.pooling_gain = float(pooling_gain)
+        if not 0.0 < self.pooling_gain < float('inf'):
+            raise ValueError('pooling_gain must be finite and positive')
         # Width multiplier
         self.ch = D_ch
         # Use Wide D as in BigGAN and SA-GAN or skinny D as in SN-GAN?
@@ -439,6 +451,23 @@ class Discriminator(nn.Module):
         if self.init != 'none':
             self = init_weights(self, self.init)
 
+    def _pool_features(self, h, h_lens=None):
+        """Average valid spatial evidence independent of image resolution.
+
+        A per-character sum had four times as many contributions at twice
+        the input height. Pool both spatial dimensions before the readout.
+        """
+        width_tokens = h.mean(dim=2).transpose(1, 2)
+        valid_mask = None
+        if h_lens is not None:
+            h_lens = h_lens.long().clamp(min=1, max=h.size(-1))
+            valid_mask = _len2mask(h_lens, h.size(-1), torch.bool).to(h.device)
+        if self.width_context is not None:
+            width_tokens = self.width_context(width_tokens, valid_mask)
+        if valid_mask is None:
+            return width_tokens.mean(dim=1)
+        return (width_tokens * valid_mask.unsqueeze(-1)).sum(dim=1) / h_lens[:, None]
+
     def forward(self, x, x_lens=None, y_lens=None,  **kwargs):
         # Stick x into h for cleaner for loops without flow control
         h = x
@@ -446,36 +475,19 @@ class Discriminator(nn.Module):
         len_scale = 1
         for index, blocklist in enumerate(self.blocks):
             for block in blocklist:
-                h = block(h, x_len=torch.div(x_lens, len_scale, rounding_mode='trunc') if x_lens is not None else None)
+                # Spatial attention follows this stage's downsampling block,
+                # so it receives output lengths rather than input lengths.
+                block_scale = len_scale
+                if isinstance(block, layers.Attention) and self.arch['downsample'][index]:
+                    block_scale *= 2
+                h = block(h, x_len=torch.div(x_lens, block_scale, rounding_mode='trunc') if x_lens is not None else None)
             len_scale *= 2 if self.arch['downsample'][index] else 1
-        # Preserve vertical evidence while allowing one cheap, low-resolution
-        # interaction across the complete valid word width.
         h = self.activation(h)
-        width_tokens = torch.sum(h, dim=2).transpose(1, 2)
-        valid_mask = None
-        if x_lens is not None:
-            h_lens = torch.div(
-                x_lens * h.size(-1), x.size(-1), rounding_mode='trunc'
-            ).long().clamp_(1, h.size(-1))
-            valid_mask = _len2mask(
-                h_lens.int(), h.size(-1), torch.bool
-            ).to(x.device).detach()
-
-        if self.width_context is not None:
-            width_tokens = self.width_context(width_tokens, valid_mask)
-
-        if valid_mask is None:
-            h = torch.sum(width_tokens, dim=1)
-        else:
-            h = torch.sum(
-                width_tokens * valid_mask.unsqueeze(-1).to(width_tokens.dtype),
-                dim=1,
-            )
-            normalizer = y_lens if y_lens is not None else h_lens
-            h = h / torch.clamp(normalizer, min=1).unsqueeze(dim=-1)
+        h_lens = torch.div(x_lens, len_scale, rounding_mode='floor') if x_lens is not None else None
+        h = self._pool_features(h, h_lens)
 
         # Get initial class-unconditional output
-        out = self.linear(h)
+        out = self.linear(h * self.pooling_gain)
 
         return out
 
@@ -483,17 +495,16 @@ class Discriminator(nn.Module):
 class StrokePatchBlock(nn.Module):
     """Anisotropic residual block specialized for handwriting strokes."""
 
-    def __init__(self, in_channels, out_channels, which_conv, activation):
+    def __init__(self, in_channels, out_channels, which_conv, activation,
+                 which_depthwise):
         super().__init__()
         self.activation = activation
         self.conv_in = which_conv(in_channels, out_channels)
-        self.horizontal = which_conv(
-            out_channels, out_channels, kernel_size=(1, 5),
-            padding=(0, 2), groups=out_channels,
+        self.horizontal = which_depthwise(
+            out_channels, kernel_size=(1, 5), padding=(0, 2),
         )
-        self.vertical = which_conv(
-            out_channels, out_channels, kernel_size=(5, 1),
-            padding=(2, 0), groups=out_channels,
+        self.vertical = which_depthwise(
+            out_channels, kernel_size=(5, 1), padding=(2, 0),
         )
         self.fuse = which_conv(
             out_channels, out_channels, kernel_size=1, padding=0
@@ -509,7 +520,13 @@ class StrokePatchBlock(nn.Module):
         oriented = self.horizontal(self.activation(h))
         oriented = oriented + self.vertical(self.activation(h))
         h = h + self.fuse(self.activation(oriented))
-        return self.downsample(h) + self.downsample(residual)
+        # Keep a shared minimum feature grid for every crop geometry. Once
+        # either axis would fall below four cells, retain resolution on both
+        # residual and main paths.
+        if h.size(-2) // 2 >= 4 and h.size(-1) // 2 >= 4:
+            h = self.downsample(h)
+            residual = self.downsample(residual)
+        return h + residual
 
 
 class PatchDiscriminator(nn.Module):
@@ -527,7 +544,6 @@ class PatchDiscriminator(nn.Module):
         init='ortho',
         D_param='SN',
         input_nc=1,
-        n_class=80,
         **kwargs
     ):
         super().__init__()
@@ -542,10 +558,15 @@ class PatchDiscriminator(nn.Module):
                 num_itrs=num_D_SV_itrs,
                 eps=SN_eps,
             )
+            which_depthwise = functools.partial(
+                layers.SNDepthwiseConv2d, eps=SN_eps
+            )
         else:
             which_conv = functools.partial(
                 nn.Conv2d, kernel_size=3, padding=1
             )
+            def which_depthwise(channels, **conv_kwargs):
+                return nn.Conv2d(channels, channels, groups=channels, **conv_kwargs)
 
         self.stem = which_conv(input_nc, D_ch)
         blocks = []
@@ -554,7 +575,8 @@ class PatchDiscriminator(nn.Module):
             out_channels = min(D_ch * (2 ** (index + 1)), D_max_ch)
             blocks.append(
                 StrokePatchBlock(
-                    in_channels, out_channels, which_conv, self.activation
+                    in_channels, out_channels, which_conv, self.activation,
+                    which_depthwise,
                 )
             )
             in_channels = out_channels
@@ -562,36 +584,12 @@ class PatchDiscriminator(nn.Module):
         self.logits = which_conv(
             in_channels, output_dim, kernel_size=1, padding=0
         )
-        # Projection conditioning asks whether this local stroke is plausible
-        # for the character it was sampled from, rather than only whether it
-        # resembles generic ink.  The spatial projection retains PatchGAN's
-        # local decisions instead of collapsing each crop to one score.
-        self.char_embedding = nn.Embedding(
-            n_class, in_channels, padding_idx=0
-        )
-
         if init != 'none':
             init_weights(self, init)
-        with torch.no_grad():
-            self.char_embedding.weight[0].zero_()
 
-    def forward(self, x, char_ids=None, **kwargs):
+    def forward(self, x):
         h = self.stem(x)
         for block in self.blocks:
             h = block(h)
         h = self.activation(h)
-        output = self.logits(h)
-        if char_ids is not None:
-            if char_ids.ndim != 1 or char_ids.numel() != x.size(0):
-                raise ValueError(
-                    'char_ids must have shape (number_of_patches,)'
-                )
-            char_ids = char_ids.to(h.device).long().clamp_(
-                0, self.char_embedding.num_embeddings - 1
-            )
-            condition = self.char_embedding(char_ids)
-            projection = torch.sum(
-                h * condition.unsqueeze(-1).unsqueeze(-1), dim=1, keepdim=True
-            ) / (h.size(1) ** 0.5)
-            output = output + projection
-        return output
+        return self.logits(h)

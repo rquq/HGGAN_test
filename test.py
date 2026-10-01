@@ -195,9 +195,9 @@ if __name__ == '__main__':
     print(f" - Seed        : {seed}")
     print("=" * 60)
 
-    model = get_model(cfg.model)(cfg)
     if not os.path.exists(ckpt):
-        print(f"[Warning] Specified checkpoint path does not exist: {ckpt}")
+        raise FileNotFoundError(f"Specified checkpoint path does not exist: {ckpt}")
+    model = get_model(cfg.model)(cfg)
     model.load(ckpt, device)
     model.set_mode('eval')
     val_results = model.validate(guided, test_stage=True)

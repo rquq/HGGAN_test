@@ -116,6 +116,7 @@ if __name__ == "__main__":
     try:
         model = get_model(cfg.model)(cfg, logdir)
         model.train()
+        job_status = 'completed'
     except KeyboardInterrupt:
         job_status = 'interrupted'
         print("\n[Notice] Training interrupted by user.")
