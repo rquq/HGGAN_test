@@ -3,6 +3,7 @@ multi_gpu: false
 gpus: [0]
 model: 'gl_adversarial_model'
 dataset: 'iam_word'
+dataset_source_polarity: white
 seed: 123456
 img_height: 32
 char_width: 16
@@ -46,7 +47,7 @@ training:
   ckpt_dir: 'ckpts'
   lexicon: './data/english_words.txt'
   max_word_len: 20
-  n_class: 80
+  n_class: 81
   capitalize_ratio: 0.5
   blank_ratio: 0.
   rare_word_ratio: 0.15
@@ -76,9 +77,8 @@ training:
   lambda_style_cycle: 1.0
   lambda_content_adv: 0.02
   lambda_kl: 0.1
-  # Use bounded reference-feature matching; frequency-only is an optional ablation.
+  # Use bounded reference-feature matching.
   lambda_ctx: 0.1
-  lambda_frequency: 0.0
   grad_clip: 5.0
   r1_interval: 32
   lambda_r1: 0.01
@@ -153,7 +153,7 @@ GenModel:
   resolution: 32
   G_kernel_size: 3
   G_attn: '0'
-  n_class: 80
+  n_class: 81
   embed_dim: 120
   embed_pad_idx: 0
   embed_max_norm: 1.0
@@ -177,7 +177,7 @@ DiscModel:
   resolution: 32
   D_kernel_size: 3
   D_attn: '0'
-  n_class: 80
+  n_class: 81
   num_D_SVs: 1
   num_D_SV_itrs: 1
   SN_eps: 1.e-08
@@ -209,7 +209,7 @@ OcrModel:
   norm: 'bn'
   init: 'none'
   dropout: 0.
-  n_class: 80
+  n_class: 81
   rnn_depth: 2
   bidirectional: true
 
@@ -233,8 +233,6 @@ EncModel:
   heads: 4
   cross_attn_dropout: 0.0
   local_attention_residual_init: 0.5
-  local_query_residual: 0.1
-  local_query_anchor_strength: 0.1
   local_evidence_gate_init: 0.75
   local_evidence_gate_hidden: 64
   # All three backbone maps keep old 32px checkpoints shape-compatible.  A

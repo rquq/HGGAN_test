@@ -25,7 +25,7 @@ from lib.datasets import get_dataset, get_collect_fn, Hdf5Dataset
 from lib.alphabet import strLabelConverter, get_lexicon, get_true_alphabet, Alphabets
 from lib.utils import draw_image, get_logger, AverageMeterManager, option_to_string, AverageMeter, plot_heatmap, write_wandb_log
 from networks.rand_dist import prepare_z_dist, prepare_y_dist
-from networks.loss import recn_l1_loss, CXLoss, SpectralDistributionLoss, KLloss, r1_reg
+from networks.loss import recn_l1_loss, CXLoss, KLloss, r1_reg
 
 
 class EMA(object):
@@ -1766,7 +1766,6 @@ class GlobalLocalAdversarialModel(AdversarialModel):
         self.ctc_loss = CTCLoss(zero_infinity=True, reduction='mean')
         self.classify_loss = CrossEntropyLoss()
         self.contextual_loss = CXLoss(max_tokens=256)
-        self.spectral_distribution_loss = SpectralDistributionLoss()
 
         # Standalone evaluation must initialize/load the same EMA snapshots as
         # in-training validation. Do not rebuild these after loading a checkpoint.
@@ -1952,7 +1951,7 @@ class GlobalLocalAdversarialModel(AdversarialModel):
 
         self.averager_meters = AverageMeterManager([
             'g_total', 'd_total', 'g_adv', 'g_ctc', 'g_writer',
-            'g_recn', 'g_style', 'g_context', 'g_frequency', 'g_kl',
+            'g_recn', 'g_style', 'g_context', 'g_kl',
             'r1_loss', 'fusion_strength', 'fusion_scale_min', 'fusion_scale_max',
             'd_real', 'd_fake', 'd_real_patch', 'd_fake_patch',
             'g_adv_global', 'g_adv_patch', 'g_ctc_rand', 'g_ctc_style',
@@ -1979,10 +1978,8 @@ class GlobalLocalAdversarialModel(AdversarialModel):
             self.opt.training, 'rare_word_ratio', 0.15
         ))
         context_weight = float(getattr(self.opt.training, 'lambda_ctx', 0.0))
-        frequency_weight = float(getattr(self.opt.training, 'lambda_frequency', 0.0))
-        if (not (np.isfinite(context_weight) and np.isfinite(frequency_weight))
-                or min(context_weight, frequency_weight) < 0):
-            raise ValueError('appearance loss weights must be finite and non-negative')
+        if not np.isfinite(context_weight) or context_weight < 0:
+            raise ValueError('contextual loss weight must be finite and non-negative')
         num_critic_train = int(self.opt.training.num_critic_train)
         r1_interval = int(getattr(self.opt.training, 'r1_interval', 16))
         if num_critic_train < 1:
@@ -2419,14 +2416,6 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                                 input_lengths=fake_feat_lens,
                             )
 
-                    # Optional magnitude-statistics ablation, not a substitute
-                    # for spatial or reference-conditioned feature supervision.
-                    frequency_loss = recn_imgs.new_zeros(())
-                    if frequency_weight > 0:
-                        frequency_loss = self.spectral_distribution_loss(
-                            real_imgs, recn_imgs, real_img_lens, recn_img_lens
-                        )
-
                     # Local tokens are deterministic and have no Gaussian KL.
                     # Retain the former global token's contribution to the
                     # all-token mean; removing local terms must not silently
@@ -2532,11 +2521,10 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                           * content_adv_loss
                     )
                     g_context = context_weight * ctx_loss
-                    g_frequency = frequency_weight * frequency_loss
                     g_kl = float(getattr(self.opt.training, 'lambda_kl', 0.1)) * kl_loss
                     g_loss = (
                         g_adv + g_ctc + g_writer + g_recn
-                        + g_style + g_context + g_frequency + g_kl
+                        + g_style + g_context + g_kl
                     )
 
                     g_loss.backward()
@@ -2561,7 +2549,6 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                         'g_style_cycle': style_cycle_loss,
                         'g_content_adv': content_adv_loss,
                         'g_context': g_context,
-                        'g_frequency': g_frequency,
                         'g_kl': g_kl,
                         'fusion_strength': fusion_scales.mean(),
                         'fusion_scale_min': fusion_scales.min(),
@@ -2591,7 +2578,6 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                         f"Adv:{meter_vals['g_adv']:.3f} CTC:{meter_vals['g_ctc']:.3f} Recn:{meter_vals['g_recn']:.3f} "
                         f"Style:{meter_vals['g_style']:.3f} Wid:{meter_vals['g_writer']:.3f} "
                         + (f"Ctx:{meter_vals['g_context']:.3f} " if context_weight > 0 else '')
-                        + (f"Freq:{meter_vals['g_frequency']:.3f} " if frequency_weight > 0 else '')
                         + f"KL:{meter_vals['g_kl']:.3f} | "
                         f"R1:{meter_vals['r1_loss']:.3f} Fuse:{meter_vals['fusion_strength']:.3f}"
                         f"[{meter_vals['fusion_scale_min']:.3f},{meter_vals['fusion_scale_max']:.3f}] "
@@ -2649,8 +2635,6 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                         }
                         if context_weight > 0:
                             wandb_log['loss/g_contextual'] = meter_vals['g_context']
-                        if frequency_weight > 0:
-                            wandb_log['loss/g_frequency'] = meter_vals['g_frequency']
 
                         import wandb as _wandb
                         if _wandb.run:
