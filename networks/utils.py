@@ -426,7 +426,7 @@ def adaptive_crop_count(valid_width, patch_size=32, min_crops=4, max_crops=8):
 def sample_stroke_patches(
     images, image_lens, min_crops=4, max_crops=8, fill_value=-1.0,
 ):
-    """Return half-height square stroke crops with per-word counts.
+    """Return half-height square crop batches with per-word counts.
 
     Crop positions are stratified across valid horizontal starts and alternate
     upper/lower bands. No character boxes, ink thresholds, or labels are used.

@@ -98,6 +98,8 @@ class BaseModel(object):
         self.eval_metric_columns = list(self.EVAL_METRIC_COLUMNS)
         self.eval_history = []
         self.completed_epoch = 0
+        self.current_epoch = 0
+        self.last_completed_iter = None
         self.last_eval_scores = {}
         self.last_eval_kid = None
         alphabet_key = 'rimes_word' if opt.dataset.startswith('rimes') else 'all'
@@ -386,10 +388,18 @@ class BaseModel(object):
                 f"{os.path.join(self.log_root, 'eval_metrics.csv')}"
             )
 
-    def save(self, tag='best', epoch_done=0, iter_count=None,
+    def save(self, tag='best', epoch_done=None, iter_count=None,
              best_fid=None, **kwargs):
         if self.local_rank > 0:
             return
+        if epoch_done is None:
+            epoch_done = self.current_epoch if tag == 'interrupted' else self.completed_epoch
+        if tag == 'interrupted':
+            if iter_count is None:
+                iter_count = self.last_completed_iter
+            for key in ('best_cer', 'best_wier'):
+                if hasattr(self, key):
+                    kwargs.setdefault(key, getattr(self, key))
         ckpt = {}
         model_manifest = {}
         for name, model in self.models.items():
@@ -552,7 +562,7 @@ class BaseModel(object):
                         )
 
         try:
-            if tag == 'last':
+            if tag in ('last', 'interrupted'):
                 fid_str = (
                     f'{this_fid:.4f}' if this_fid is not None else 'inf'
                 )
@@ -708,8 +718,7 @@ class BaseModel(object):
             ckpt = resolved_ckpt
 
         if not ckpt or not os.path.exists(ckpt):
-            self.print(f'Checkpoint file not found: {ckpt}')
-            return 0
+            raise FileNotFoundError(f'Checkpoint file not found: {ckpt}')
 
         self.print(f'load checkpoint from {ckpt}')
         if map_location is None:
@@ -717,7 +726,7 @@ class BaseModel(object):
         ckpt_data = torch.load(ckpt, map_location=map_location, weights_only=False)
 
         if ckpt_data is None:
-            return 0
+            raise ValueError(f'Checkpoint contains no model state: {ckpt}')
 
         best_fid = ckpt_data.get('best_fid', ckpt_data.get('fid', None))
         if best_fid is None:
@@ -761,6 +770,8 @@ class BaseModel(object):
             'best_cer': ckpt_data.get('best_cer', np.inf),
             'best_wier': ckpt_data.get('best_wier', np.inf),
         }
+        self.current_epoch = int(self.restored_metadata['Epoch'])
+        self.last_completed_iter = self.restored_metadata['iter_count']
         self.restore_eval_history(ckpt_data)
 
         for name, model in self.models.items():
@@ -1107,6 +1118,51 @@ class AdversarialModel(BaseModel):
 
                     yield fake_batch
 
+    def _cmmd_cache_path(self, dataset):
+        """Key real embeddings by input geometry and actual dataset revision."""
+        import hashlib
+        subsets = []
+        while not hasattr(dataset, 'file_path') and hasattr(dataset, 'dataset'):
+            if hasattr(dataset, 'indices'):
+                subsets.append(tuple(int(index) for index in dataset.indices))
+            dataset = dataset.dataset
+        path = os.path.realpath(dataset.file_path)
+        stat = os.stat(path)
+        identity = (
+            path, stat.st_size, stat.st_mtime_ns,
+            getattr(self.opt, 'img_height', 64), self.opt.char_width,
+            tuple(subsets),
+        )
+        digest = hashlib.sha256(repr(identity).encode()).hexdigest()[:16]
+        name = str(self.opt.valid.dset_name).replace('/', '_').replace('\\', '_')
+        split = str(self.opt.valid.dset_split).replace('/', '_').replace('\\', '_')
+        return os.path.join('./pretrained', f'real_cmmd_{name}_{split}_{digest}.npy')
+
+    def _load_test_writer(self):
+        path = os.fspath(getattr(self.opt.valid, 'pretrained_test_w', '') or '')
+        if not path or not os.path.isfile(path):
+            raise FileNotFoundError(
+                f'WIER requires a matching test-writer W+B checkpoint: {path!r}. '
+                'Set valid.pretrained_test_w, or disable valid.validate_wier.'
+            )
+        stat = os.stat(path)
+        key = (os.path.realpath(path), stat.st_size, stat.st_mtime_ns,
+               getattr(self.opt, 'img_height', 64), repr(dict(self.opt.valid.test_wid_model)))
+        if getattr(self, '_test_writer_key', None) != key:
+            state = torch.load(path, map_location='cpu', weights_only=False)
+            writer_state = state.get('WriterIdentifier', state.get('W'))
+            backbone_state = state.get('StyleBackbone', state.get('B'))
+            if writer_state is None or backbone_state is None:
+                raise KeyError(f'{path} must contain both WriterIdentifier/W and StyleBackbone/B')
+            writer = WriterIdentifier(**self.opt.valid.test_wid_model)
+            backbone = StyleBackbone(**self.opt.StyBackbone, img_height=getattr(self.opt, 'img_height', 64))
+            writer.load_state_dict(writer_state, strict=True)
+            backbone.load_state_dict(backbone_state, strict=True)
+            self._test_writer_models = (writer.to(self.device).eval(), backbone.to(self.device).eval())
+            self._test_writer_key = key
+            self.print(f'load pretrained test_writer_identifier: {path}')
+        return self._test_writer_models
+
     def validate(self, style_guided=True, test_stage=False, *args, **kwargs):
         # KID subset selection and a few validation helpers use process-global
         # RNGs. Isolate them so metric toggles/frequency cannot change training.
@@ -1126,6 +1182,11 @@ class AdversarialModel(BaseModel):
         self.set_mode('eval')
 
         try:
+            # Fail before expensive metrics for missing/incompatible WIER
+            # teachers, inside RNG isolation so initialization cannot affect GAN training.
+            if (style_guided and getattr(self.opt.valid, 'validate_wier', False)
+                    and self.opt.valid.dset_split == 'test'):
+                self._load_test_writer()
             # OPTIMIZATION: Cache validation DataLoader to avoid worker startup/shutdown overhead
             loader_key = (
                 self.opt.valid.dset_name, self.opt.valid.dset_split,
@@ -1376,12 +1437,12 @@ class AdversarialModel(BaseModel):
                     if not hasattr(self, 'cmmd_embedding_model') or self.cmmd_embedding_model is None:
                         from metric.val_metrics import ClipEmbeddingModel
                         self.cmmd_embedding_model = ClipEmbeddingModel(self.device)
-                    if not hasattr(self, 'real_cmmd_embeddings') or self.real_cmmd_embeddings is None:
+                    cache_path = self._cmmd_cache_path(eval_dloader.dataset)
+                    if (getattr(self, 'real_cmmd_embeddings', None) is None
+                            or getattr(self, '_real_cmmd_cache_key', None) != cache_path):
                         import os
                         import numpy as np
                         cache_dir = "./pretrained"
-                        safe_dset_split = self.opt.valid.dset_split.replace('/', '_').replace('\\', '_').replace('.', '_')
-                        cache_path = os.path.join(cache_dir, f"real_cmmd_{self.opt.valid.dset_name}_{safe_dset_split}.npy")
                         if os.path.exists(cache_path):
                             self.print(f"Loading cached real CMMD embeddings from {cache_path}...")
                             self.real_cmmd_embeddings = np.load(cache_path)
@@ -1396,6 +1457,7 @@ class AdversarialModel(BaseModel):
                                 self.print(f"Saved real CMMD embeddings to cache: {cache_path}")
                             except Exception as e:
                                 self.print(f"Could not save real CMMD embeddings cache: {e}")
+                        self._real_cmmd_cache_key = cache_path
                     cmmd_val = calculate_cmmd_score(
                         eval_dloader,
                         get_cached_generator(),
@@ -1458,15 +1520,7 @@ class AdversarialModel(BaseModel):
 
     def validate_wid(self, generator, real_dloader, split='test'):
         if split == 'test':
-            assert os.path.exists(self.opt.valid.pretrained_test_w)
-            w_dict = torch.load(self.opt.valid.pretrained_test_w, map_location=self.device, weights_only=False)
-            test_writer = WriterIdentifier(**self.opt.valid.test_wid_model).to(self.device)
-            test_writer.load_state_dict(w_dict.get('WriterIdentifier', w_dict.get('W')), strict=False)
-            test_writer_backbone = StyleBackbone(**self.opt.StyBackbone, img_height=getattr(self.opt, 'img_height', 64)).to(self.device)
-            test_writer_backbone.load_state_dict(w_dict.get('StyleBackbone', w_dict.get('B')), strict=False)
-            self.print(f'load pretrained test_writer_identifier: {self.opt.valid.pretrained_test_w}')
-            writer_identifier = test_writer
-            writer_backbone = test_writer_backbone
+            writer_identifier, writer_backbone = self._load_test_writer()
         else:
             # OPTIMIZATION: Use the already loaded WriterIdentifier and StyleBackbone
             # from self.models instead of creating a new copy to avoid redundant VRAM allocation and OOM.
@@ -1713,6 +1767,16 @@ class GlobalLocalAdversarialModel(AdversarialModel):
         self.classify_loss = CrossEntropyLoss()
         self.contextual_loss = CXLoss(max_tokens=256)
 
+        # Standalone evaluation must initialize/load the same EMA snapshots as
+        # in-training validation. Do not rebuild these after loading a checkpoint.
+        self.use_ema = bool(getattr(opt.training, 'update_ema', False))
+        if self.use_ema:
+            import copy
+            self.ema_beta = getattr(opt.training, 'ema_beta', 0.999)
+            self.models_ema.G = copy.deepcopy(generator).requires_grad_(False).eval()
+            self.models_ema.E = copy.deepcopy(style_encoder).requires_grad_(False).eval()
+            self.ema_tracker = EMA(self.ema_beta)
+
     def train(self):
         _is_master = self.local_rank < 1
         self.info()
@@ -1757,16 +1821,8 @@ class GlobalLocalAdversarialModel(AdversarialModel):
 
         # EMA only trainable generation modules. The frozen pretrained backbone
         # remains the single source of style features.
-        self.use_ema = getattr(opt.training, 'update_ema', False)
         if self.use_ema:
-            import copy
-            self.ema_beta = getattr(opt.training, 'ema_beta', 0.999)
-            self.print(f"EMA is enabled with beta={self.ema_beta}. Initializing EMA models...")
-            self.models_ema.G = copy.deepcopy(self.models.G).requires_grad_(False)
-            self.models_ema.E = copy.deepcopy(self.models.E).requires_grad_(False)
-            self.models_ema.G.eval()
-            self.models_ema.E.eval()
-            self.ema_tracker = EMA(self.ema_beta)
+            self.print(f"EMA is enabled with beta={self.ema_beta}.")
 
         epoch_done = 1
         requested_resume = getattr(self.opt.training, 'resume', None)
@@ -1786,6 +1842,12 @@ class GlobalLocalAdversarialModel(AdversarialModel):
         else:
             writer_loss_weight = float(getattr(self.opt.training, "lambda_wid", 0.0))
             writer_path = os.fspath(getattr(self.opt.training, "pretrained_w", "") or "")
+            recognizer_path = os.fspath(getattr(self.opt.training, 'pretrained_r', '') or '')
+            if not recognizer_path or not os.path.isfile(recognizer_path):
+                raise FileNotFoundError(f'No OCR teacher found at {recognizer_path!r}.')
+            # B supplies every style feature, even when writer loss is disabled.
+            if not writer_path or not os.path.isfile(writer_path):
+                raise FileNotFoundError(f'No writer/backbone teacher found at {writer_path!r}.')
             train_wids = np.asarray(self.train_loader.dataset.wids)
             train_writer_count = int(np.unique(train_wids).size)
             model_writer_count = self.unwrap_model(self.models.W).linear_wid[-1].out_features
@@ -1808,32 +1870,17 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                         f"Writer teacher/model has {model_writer_count} classes, but the active "
                         f"train HDF5 has {train_writer_count} writers. Use a matching data profile."
                     )
-                if not writer_path or not os.path.isfile(writer_path):
-                    raise FileNotFoundError(
-                        "lambda_wid is enabled but no writer teacher was found at "
-                        f"{writer_path!r}. Train configs/wid_iam.yml first."
-                    )
-                writer_ckpt = torch.load(writer_path, map_location="cpu", weights_only=False)
-                writer_state = writer_ckpt.get("WriterIdentifier", writer_ckpt.get("W"))
-                if writer_state is None or "linear_wid.2.weight" not in writer_state:
-                    raise KeyError(f"{writer_path} does not contain a compatible WriterIdentifier state")
-                checkpoint_writer_count = writer_state["linear_wid.2.weight"].shape[0]
-                if checkpoint_writer_count != model_writer_count:
-                    raise RuntimeError(
-                        f"Writer teacher has {checkpoint_writer_count} classes, expected "
-                        f"{model_writer_count}; do not reuse the old IAM teacher across splits."
-                    )
-            if os.path.exists(self.opt.training.pretrained_w):
-                w_dict = torch.load(self.opt.training.pretrained_w, map_location='cpu', weights_only=False)
-                self.models.W.load_state_dict(w_dict.get('WriterIdentifier', w_dict.get('W')), strict=False)
-                self.models.B.load_state_dict(w_dict.get('StyleBackbone', w_dict.get('B')), strict=True)
-                self.print(f'load pretrained writer_identifier: {self.opt.training.pretrained_w}')
-                # self.validate_wid()
-            if os.path.exists(self.opt.training.pretrained_r):
-                r_dict = torch.load(self.opt.training.pretrained_r, map_location='cpu', weights_only=False)['Recognizer']
-                self.models.R.load_state_dict(r_dict, strict=False)
-                self.print(f'load pretrained recognizer: {self.opt.training.pretrained_r}')
-                # self.validate_ocr()
+            w_dict = torch.load(writer_path, map_location='cpu', weights_only=False)
+            writer_state = w_dict.get('WriterIdentifier', w_dict.get('W'))
+            backbone_state = w_dict.get('StyleBackbone', w_dict.get('B'))
+            if writer_state is None or backbone_state is None:
+                raise KeyError(f'{writer_path} must contain both writer and backbone teacher states')
+            self.models.W.load_state_dict(writer_state, strict=True)
+            self.models.B.load_state_dict(backbone_state, strict=True)
+            self.print(f'load pretrained writer_identifier: {writer_path}')
+            r_dict = torch.load(recognizer_path, map_location='cpu', weights_only=False)['Recognizer']
+            self.models.R.load_state_dict(r_dict, strict=True)
+            self.print(f'load pretrained recognizer: {recognizer_path}')
 
         restored_meta = getattr(self, 'restored_metadata', {})
         restored_iter = restored_meta.get('iter_count', None)
@@ -1905,7 +1952,7 @@ class GlobalLocalAdversarialModel(AdversarialModel):
         self.averager_meters = AverageMeterManager([
             'g_total', 'd_total', 'g_adv', 'g_ctc', 'g_writer',
             'g_recn', 'g_style', 'g_context', 'g_kl',
-            'r1_loss', 'fusion_strength', 'fusion_gate_min', 'fusion_gate_max',
+            'r1_loss', 'fusion_strength', 'fusion_scale_min', 'fusion_scale_max',
             'd_real', 'd_fake', 'd_real_patch', 'd_fake_patch',
             'g_adv_global', 'g_adv_patch', 'g_ctc_rand', 'g_ctc_style',
             'g_info', 'g_style_cycle', 'g_content_adv',
@@ -1980,6 +2027,7 @@ class GlobalLocalAdversarialModel(AdversarialModel):
             f'floor={getattr(opt.training, "min_lr_ratio", 0.001):.3f}x; '
             f'D/P:G={num_critic_train}:1; '
             f'patch G weight={patch_adv_weight:.3g}; '
+            f'crops=H/2 ({min_patch_crops}-{max_patch_crops}/word); '
             f'DiffAug={"on" if use_d_diffaug else "off"}'
         )
 
@@ -2158,11 +2206,11 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                         real_imgs, real_img_lens
                     ),
                 ]
-                real_patch_penalty = run_patch_discriminator(
+                real_patch_losses = run_patch_discriminator(
                     self.models.P, real_patch_groups,
                     score_transform=lambda scores: F.relu(1.0 - scores),
                 )[0]
-                real_disc_loss_patch = real_patch_penalty.mean()
+                real_disc_loss_patch = real_patch_losses.mean()
 
                 disc_loss = (
                     real_disc_loss + fake_disc_loss
@@ -2263,7 +2311,7 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                         ),
                     ]
                     p_fake, p_style, p_recn = run_patch_discriminator(
-                        self.models.P, fake_patch_groups,
+                        self.models.P, fake_patch_groups
                     )
                     adv_loss_patch = -(
                         torch.mean(p_fake)
@@ -2485,7 +2533,7 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                         getattr(self.opt.training, 'grad_clip', 5.0),
                     )
                     generator = self.unwrap_model(self.models.G)
-                    fusion_gate = torch.sigmoid(generator.fusion_gate_logits).detach()
+                    fusion_scales = generator.style_content_mix.residual_scales.detach()
                     self.averager_meters.update_many({
                         'g_total': g_loss,
                         'g_adv': g_adv,
@@ -2502,9 +2550,9 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                         'g_content_adv': content_adv_loss,
                         'g_context': g_context,
                         'g_kl': g_kl,
-                        'fusion_strength': fusion_gate.mean(),
-                        'fusion_gate_min': fusion_gate.min(),
-                        'fusion_gate_max': fusion_gate.max(),
+                        'fusion_strength': fusion_scales.mean(),
+                        'fusion_scale_min': fusion_scales.min(),
+                        'fusion_scale_max': fusion_scales.max(),
                     })
                     self.optimizers.G.step()
                     if self.use_ema:
@@ -2513,6 +2561,8 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                         self.ema_tracker.step += 1
                     self.optimizers.G.zero_grad(set_to_none=True)
 
+                self.current_epoch = epoch
+                self.last_completed_iter = iter_count
                 if iter_count % self.opt.training.print_iter_val == 0:
                     meter_vals = self.averager_meters.eval_all()
                     self.averager_meters.reset_all()
@@ -2530,7 +2580,7 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                         + (f"Ctx:{meter_vals['g_context']:.3f} " if context_weight > 0 else '')
                         + f"KL:{meter_vals['g_kl']:.3f} | "
                         f"R1:{meter_vals['r1_loss']:.3f} Fuse:{meter_vals['fusion_strength']:.3f}"
-                        f"[{meter_vals['fusion_gate_min']:.3f},{meter_vals['fusion_gate_max']:.3f}] "
+                        f"[{meter_vals['fusion_scale_min']:.3f},{meter_vals['fusion_scale_max']:.3f}] "
                         f"Lr: G={lr_g:.6g}/D={lr_d:.6g}/P={lr_p:.6g}"
                     )
                     self.print(info) if self.local_rank < 1 else None
@@ -2543,8 +2593,8 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                             'train/lr_p': lr_p,
                             'train/epoch': epoch,
                             'train/fusion_strength': meter_vals['fusion_strength'],
-                            'train/fusion_gate_min': meter_vals['fusion_gate_min'],
-                            'train/fusion_gate_max': meter_vals['fusion_gate_max'],
+                            'train/fusion_scale_min': meter_vals['fusion_scale_min'],
+                            'train/fusion_scale_max': meter_vals['fusion_scale_max'],
 
                             # ── Loss Category: Overall Totals ──
                             'loss/g_total': meter_vals['g_total'],
@@ -2836,6 +2886,8 @@ class RecognizeModel(BaseModel):
                     self.ema_tracker.step_ema(self.models_ema.R, self.models.R)
                     self.ema_tracker.step += 1
 
+                self.current_epoch = epoch
+                self.last_completed_iter = iter_count
                 if iter_count % self.opt.training.print_iter_val == 0:
                     if epoch > 1 and not self.logger:
                             self.create_logger()
@@ -2907,7 +2959,7 @@ class RecognizeModel(BaseModel):
 
                 if self.local_rank < 1:
                     self.save(
-                        'last', epoch, iter_count=iter_count,
+                        'last', epoch, iter_count=iter_count - 1,
                         best_cer=best_cer,
                         cer=(eval_scores or {}).get('CER'),
                         wer=(eval_scores or {}).get('WER'),
@@ -3236,6 +3288,8 @@ class WriterIdentifyModel(BaseModel):
                     self.ema_tracker.step_ema(self.models_ema.B, self.models.B)
                     self.ema_tracker.step += 1
 
+                self.current_epoch = epoch
+                self.last_completed_iter = iter_count
                 if iter_count % self.opt.training.print_iter_val == 0:
                     if epoch > 1 and not self.logger:
                             self.create_logger()
@@ -3314,7 +3368,7 @@ class WriterIdentifyModel(BaseModel):
 
                 if self.local_rank < 1:
                     self.save(
-                        'last', epoch, iter_count=iter_count,
+                        'last', epoch, iter_count=iter_count - 1,
                         best_wier=best_wier,
                         wier=(eval_scores or {}).get('WIER'),
                     )

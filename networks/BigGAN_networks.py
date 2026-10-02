@@ -72,9 +72,9 @@ class Generator(nn.Module):
                  G_activation=nn.ReLU(inplace=False),
                  BN_eps=1e-5, SN_eps=1e-12, G_fp16=False,
                  init='ortho', G_param='SN', norm_style='bn', bn_linear='embed', input_nc=3,
-                 embed_pad_idx=0, embed_max_norm=1.0, fusion_gate_init=0.25,
-                 local_projection_residual_init=0.1,
-                 reference_residual_init=0.15):
+                 embed_pad_idx=0, embed_max_norm=1.0,
+                 fusion_nhead=4, fusion_attn_dim=128, fusion_ffn_dim=None,
+                 fusion_residual_init=0.25):
         super(Generator, self).__init__()
         dim_z = style_dim
         self.style_dim = style_dim
@@ -153,17 +153,9 @@ class Generator(nn.Module):
         self.filter_linear = self.which_linear(self.embed_dim,
                                         self.arch['in_channels'][0] * (self.bottom_width * self.bottom_height))
         self.style_content_mix = StyleContentAttentionFusion(
-            self.embed_dim, self.style_dim,
-            local_projection_residual_init=local_projection_residual_init,
-            reference_residual_init=reference_residual_init,
-        )
-        if not 0.0 < fusion_gate_init < 1.0:
-            raise ValueError('fusion_gate_init must be strictly between 0 and 1')
-        # A channel-wise, non-zero gate gives fusion gradients from the first
-        # update while retaining the reliable unfused content path.
-        gate_logit = torch.logit(torch.tensor(float(fusion_gate_init)))
-        self.fusion_gate_logits = nn.Parameter(
-            torch.full((self.embed_dim,), gate_logit.item())
+            self.embed_dim, self.style_dim, nhead=fusion_nhead,
+            attn_dim=fusion_attn_dim, ffn_dim=fusion_ffn_dim,
+            residual_init=fusion_residual_init,
         )
 
         self.bssp = BlockSpecificStyleProjection(style_dim=self.style_dim, num_blocks=len(self.arch['in_channels']), style_chunk_size=self.z_chunk_size, which_linear=self.which_linear)
@@ -174,10 +166,18 @@ class Generator(nn.Module):
         self.blocks = []
         for index in range(len(self.arch['out_channels'])):
             upsample_scale = self.arch['upsample'][index]
+            # Replace only middle-stage conv2; keep conv1, style conditioning,
+            # upsampling and the GBlock shortcut identical to the baseline.
+            conv2 = self.which_conv
+            if index in (1, 2):
+                conv2 = functools.partial(
+                    layers.StarConv2d, which_conv=self.which_conv,
+                    spectral_norm=self.G_param == 'SN', eps=self.SN_eps,
+                )
             self.blocks += [[layers.GBlock(in_channels=self.arch['in_channels'][index],
                                            out_channels=self.arch['out_channels'][index],
                                            which_conv1=self.which_conv,
-                                           which_conv2=self.which_conv,
+                                           which_conv2=conv2,
                                            which_bn=self.which_bn,
                                            activation=self.activation,
                                            upsample=(functools.partial(
@@ -218,13 +218,11 @@ class Generator(nn.Module):
         ys = self.bssp(z[:, 0])
 
         content = self.text_embedding(y).float().to(y.device)
-        fused_content = self.style_content_mix(
+        y_mixed = self.style_content_mix(
             content, z, y_lens=y_lens
         )
         token_positions = torch.arange(y.size(1), device=y.device).unsqueeze(0)
         valid_tokens = (token_positions < y_lens.unsqueeze(1)).unsqueeze(-1)
-        fusion_gate = torch.sigmoid(self.fusion_gate_logits).view(1, 1, -1)
-        y_mixed = content + fusion_gate * (fused_content - content)
         y_mixed = y_mixed * valid_tokens.to(y_mixed.dtype)
         h = self.filter_linear(y_mixed) * valid_tokens.to(y_mixed.dtype)
 
@@ -290,7 +288,7 @@ class Generator(nn.Module):
         return output
 
     def fusion_strength(self):
-        return torch.sigmoid(self.fusion_gate_logits).mean()
+        return self.style_content_mix.residual_scales.mean()
 
     def _info_attention(self):
         attn_index = -1
@@ -505,17 +503,16 @@ class Discriminator(nn.Module):
 class StrokePatchBlock(nn.Module):
     """Anisotropic residual block specialized for handwriting strokes."""
 
-    def __init__(self, in_channels, out_channels, which_conv, activation):
+    def __init__(self, in_channels, out_channels, which_conv, activation,
+                 which_depthwise):
         super().__init__()
         self.activation = activation
         self.conv_in = which_conv(in_channels, out_channels)
-        self.horizontal = which_conv(
-            out_channels, out_channels, kernel_size=(1, 5),
-            padding=(0, 2), groups=out_channels,
+        self.horizontal = which_depthwise(
+            out_channels, kernel_size=(1, 5), padding=(0, 2),
         )
-        self.vertical = which_conv(
-            out_channels, out_channels, kernel_size=(5, 1),
-            padding=(2, 0), groups=out_channels,
+        self.vertical = which_depthwise(
+            out_channels, kernel_size=(5, 1), padding=(2, 0),
         )
         self.fuse = which_conv(
             out_channels, out_channels, kernel_size=1, padding=0
@@ -569,10 +566,15 @@ class PatchDiscriminator(nn.Module):
                 num_itrs=num_D_SV_itrs,
                 eps=SN_eps,
             )
+            which_depthwise = functools.partial(
+                layers.SNDepthwiseConv2d, eps=SN_eps
+            )
         else:
             which_conv = functools.partial(
                 nn.Conv2d, kernel_size=3, padding=1
             )
+            def which_depthwise(channels, **conv_kwargs):
+                return nn.Conv2d(channels, channels, groups=channels, **conv_kwargs)
 
         self.stem = which_conv(input_nc, D_ch)
         blocks = []
@@ -581,7 +583,8 @@ class PatchDiscriminator(nn.Module):
             out_channels = min(D_ch * (2 ** (index + 1)), D_max_ch)
             blocks.append(
                 StrokePatchBlock(
-                    in_channels, out_channels, which_conv, self.activation
+                    in_channels, out_channels, which_conv, self.activation,
+                    which_depthwise,
                 )
             )
             in_channels = out_channels
@@ -597,5 +600,4 @@ class PatchDiscriminator(nn.Module):
         for block in self.blocks:
             h = block(h)
         h = self.activation(h)
-        output = self.logits(h)
-        return output
+        return self.logits(h)

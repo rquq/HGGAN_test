@@ -165,9 +165,10 @@ test:
 GenModel:
   G_ch: 64
   style_dim: 32
-  fusion_gate_init: 0.25
-  local_projection_residual_init: 0.1
-  reference_residual_init: 0.15
+  fusion_nhead: 4
+  fusion_attn_dim: 128
+  fusion_ffn_dim: 360
+  fusion_residual_init: 0.25
   bottom_width: 4
   bottom_height: 4
   resolution: 64
@@ -208,7 +209,7 @@ DiscModel:
 
 
 PatchDiscModel:
-  D_ch: 32
+  D_ch: 64
   D_max_ch: 192
   D_layers: 3
   num_D_SVs: 1

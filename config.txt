@@ -18,7 +18,7 @@ training
 |--lr_policy: linear
 |--start_decay_epoch: 60
 |--n_epochs_decay: 40
-|--batch_size: 4
+|--batch_size: 2
 |--lr: 0.001
 |--print_iter_val: 20
 |--eval_epoch_val: 10

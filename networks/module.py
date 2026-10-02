@@ -102,98 +102,56 @@ def _valid_backbone_layer(layer, x, lengths, mask_cache=None):
     return _mask_width(x, out_lengths, fill, mask_cache), out_lengths
 
 
-class MultiScaleStyleContext(nn.Module):
-    """Multi-scale reference-style context with gated local/global CNN branches."""
+class _StyleContextBlock(nn.Module):
+    """Width context followed by expressive, gated cross-channel mixing."""
+
+    def __init__(self, in_dim, dilation):
+        super().__init__()
+        hidden_dim = in_dim * 2
+        self.depthwise = nn.Conv1d(
+            in_dim, in_dim, kernel_size=7, padding=3 * dilation,
+            dilation=dilation, groups=in_dim,
+        )
+        # Channel normalization at each position is independent of batch padding.
+        self.norm = nn.LayerNorm(in_dim)
+        self.expand = nn.Conv1d(in_dim, hidden_dim * 2, kernel_size=1)
+        self.project = nn.Conv1d(hidden_dim, in_dim, kernel_size=1)
+        # Preserve backbone evidence while allowing every context weight to
+        # receive gradients from update one (unlike a zero residual gate).
+        self.residual_scale = nn.Parameter(torch.full((in_dim,), 0.1))
+
+    def forward(self, x, valid_mask=None):
+        invalid = ~valid_mask[:, None, :].bool() if valid_mask is not None else None
+        if invalid is not None:
+            x = x.masked_fill(invalid, 0.0)
+        context = self.depthwise(x)
+        context = self.norm(context.transpose(1, 2)).transpose(1, 2)
+        value, gate = self.expand(context).chunk(2, dim=1)
+        context = self.project(value * F.silu(gate))
+        out = x + self.residual_scale[None, :, None] * context
+        return out.masked_fill(invalid, 0.0) if invalid is not None else out
+
+
+class GatedStyleContext(nn.Module):
+    """Gated reference-style context using two sequential residual blocks.
+
+    Two residual blocks, with dilation 1 then 2, cover 19 feature positions:
+    the old widest dilated-plus-fusion receptive field without four dense
+    parallel branches. Global pooling and multi-scale local-token attention
+    remain in StyleEncoder, rather than being duplicated here.
+    """
 
     def __init__(self, in_dim):
         super().__init__()
-        # 1. Global Multi-scale dilated convolutions for global context (slant, spacing, aspect ratio)
-        self.conv1 = nn.Conv1d(in_dim, in_dim, kernel_size=3, padding=1)
-        self.conv_dilated1 = nn.Conv1d(in_dim, in_dim, kernel_size=3, padding=2, dilation=2)
-        self.conv_dilated2 = nn.Conv1d(in_dim, in_dim, kernel_size=3, padding=4, dilation=4)
-        self.conv_dilated3 = nn.Conv1d(in_dim, in_dim, kernel_size=3, padding=8, dilation=8)
-
-        # 2. Local detail branch (depthwise and small convolutions to capture fine-grained glyph strokes and curves)
-        self.local_conv1 = nn.Conv1d(in_dim, in_dim, kernel_size=3, padding=1)
-        self.local_conv2 = nn.Conv1d(in_dim, in_dim, kernel_size=5, padding=2, groups=in_dim)
-        self.local_fuse = nn.Conv1d(in_dim * 2, in_dim, kernel_size=1)
-
-        # 3. Global bottleneck fusion
-        self.fuse = nn.Sequential(
-            nn.Conv1d(in_dim * 4, in_dim, kernel_size=1),
-            nn.GroupNorm(8, in_dim),
-            nn.SiLU(),
-            nn.Conv1d(in_dim, in_dim, kernel_size=3, padding=1)
-        )
-
-        # 4. Gating layers to dynamically fuse local and global features based on allographic complexity
-        self.gate_global = nn.Sequential(
-            nn.Conv1d(in_dim, in_dim, kernel_size=1),
-            nn.Sigmoid()
-        )
-        self.gate_local = nn.Sequential(
-            nn.Conv1d(in_dim, in_dim, kernel_size=1),
-            nn.Sigmoid()
-        )
-
-        # 5. Channel Squeeze-and-Excitation for focused style extraction
-        self.se = nn.Sequential(
-            nn.AdaptiveAvgPool1d(1),
-            nn.Conv1d(in_dim, in_dim // 4, kernel_size=1),
-            nn.SiLU(),
-            nn.Conv1d(in_dim // 4, in_dim, kernel_size=1),
-            nn.Sigmoid()
-        )
-        self.gamma = nn.Parameter(torch.zeros(1))
+        self.blocks = nn.ModuleList([
+            _StyleContextBlock(in_dim, dilation=1),
+            _StyleContextBlock(in_dim, dilation=2),
+        ])
 
     def forward(self, x, valid_mask=None, **kwargs):
-        mask = valid_mask[:, None, :].to(x.dtype) if valid_mask is not None else None
-
-        def masked(value):
-            return value * mask if mask is not None else value
-
-        x = masked(x)
-        # Global context mapping
-        x1 = masked(F.silu(self.conv1(x)))
-        x2 = masked(F.silu(self.conv_dilated1(x)))
-        x3 = masked(F.silu(self.conv_dilated2(x)))
-        x4 = masked(F.silu(self.conv_dilated3(x)))
-
-        fused_global = torch.cat([x1, x2, x3, x4], dim=1)
-        if mask is None:
-            out_global = self.fuse(fused_global)
-        else:
-            projected = self.fuse[0](fused_global)
-            norm = self.fuse[1]
-            grouped = projected.reshape(x.size(0), norm.num_groups, -1, x.size(-1))
-            group_mask = mask.unsqueeze(1)
-            count = mask.sum(-1, keepdim=True).unsqueeze(1).clamp_min(1) * grouped.size(2)
-            mean = (grouped * group_mask).sum((2, 3), keepdim=True) / count
-            variance = ((grouped - mean).square() * group_mask).sum((2, 3), keepdim=True) / count
-            normalized = ((grouped - mean) * torch.rsqrt(variance + norm.eps)).reshape_as(projected)
-            normalized = normalized * norm.weight[None, :, None] + norm.bias[None, :, None]
-            out_global = masked(self.fuse[3](masked(self.fuse[2](normalized))))
-
-        # Local context mapping
-        l1 = masked(F.silu(self.local_conv1(x)))
-        l2 = masked(F.silu(self.local_conv2(x)))
-        out_local = masked(self.local_fuse(torch.cat([l1, l2], dim=1)))
-
-        # Dynamic Gated Fusion of Global and Local contexts
-        g_g = self.gate_global(out_global)
-        g_l = self.gate_local(out_local)
-        out_fused = out_global * g_g + out_local * g_l
-
-        # Squeeze-and-Excitation gating
-        if mask is None:
-            scale = self.se(out_fused)
-        else:
-            scale = masked(out_fused).sum(-1, keepdim=True) / mask.sum(-1, keepdim=True).clamp_min(1)
-            for layer in list(self.se.children())[1:]:
-                scale = layer(scale)
-        out = out_fused * scale
-
-        return masked(x + self.gamma * out)
+        for block in self.blocks:
+            x = block(x, valid_mask=valid_mask)
+        return x
 
 
 class StyleBackbone(nn.Module):
@@ -432,7 +390,7 @@ class StyleEncoder(nn.Module):
         )
         self.mu = nn.Linear(in_dim, style_dim)
         self.logvar = nn.Linear(in_dim, style_dim)
-        self.sequence_model = MultiScaleStyleContext(in_dim)
+        self.sequence_model = GatedStyleContext(in_dim)
 
         # Build every trainable projection before the optimizer is created. The old
         # forward-time replacement silently left new parameters unoptimised.

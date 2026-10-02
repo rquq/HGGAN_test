@@ -108,6 +108,28 @@ class SNConv2d(nn.Conv2d, SN):
                         self.padding, self.dilation, self.groups)
 
 
+class SNDepthwiseConv2d(nn.Conv2d):
+    """Kernel-matrix SN for independent one-filter depthwise groups.
+
+    The grouped kernel matrix is block diagonal: its largest singular value
+    is the largest filter L2 norm, not the norm of a dense stack of filters.
+    Like ordinary convolution SN, this is not the full spatial operator norm.
+    """
+
+    def __init__(self, channels, kernel_size, padding=0, bias=True, eps=1e-12):
+        super().__init__(channels, channels, kernel_size, padding=padding,
+                         groups=channels, bias=bias)
+        self.eps = eps
+
+    def W_(self):
+        norm = self.weight.flatten(1).norm(dim=1).amax().clamp_min(self.eps)
+        return self.weight / norm
+
+    def forward(self, x):
+        return F.conv2d(x, self.W_(), self.bias, self.stride,
+                        self.padding, self.dilation, self.groups)
+
+
 # Linear layer with spectral norm
 class SNLinear(nn.Linear, SN):
     def __init__(self, in_features, out_features,  bias=True,
@@ -446,11 +468,39 @@ class bn(nn.Module):
 
 
 # Generator blocks
-# Note that this class assumes the kernel size and padding (and any other
-# settings) have been selected in the main generator module and passed in
-# through the which_conv arg. Similar rules apply with which_bn (the input
-# size [which is actually the number of channels of the conditional info] must
-# be preselected)
+class StarConv2d(nn.Module):
+    """Star-style replacement for a same-channel generator convolution.
+
+    Two learned pointwise projections interact multiplicatively, following
+    Rewrite the Stars (CVPR 2024). Keep the existing GBlock normalization and
+    residual; this mixer adds neither a second residual nor a strength gate.
+    """
+
+    def __init__(self, in_channels, out_channels, which_conv=nn.Conv2d,
+                 spectral_norm=False, eps=1e-12):
+        super().__init__()
+        if in_channels != out_channels:
+            raise ValueError('StarConv2d replaces only same-channel convolutions')
+        hidden_channels = out_channels * 2
+        if spectral_norm:
+            self.spatial = SNDepthwiseConv2d(
+                in_channels, kernel_size=5, padding=2, eps=eps,
+            )
+        else:
+            self.spatial = nn.Conv2d(
+                in_channels, in_channels, kernel_size=5, padding=2,
+                groups=in_channels,
+            )
+        self.value = which_conv(in_channels, hidden_channels, kernel_size=1, padding=0)
+        self.gate = which_conv(in_channels, hidden_channels, kernel_size=1, padding=0)
+        self.project = which_conv(hidden_channels, out_channels, kernel_size=1, padding=0)
+
+    def forward(self, x):
+        x = self.spatial(x)
+        return self.project(self.value(x) * F.silu(self.gate(x)))
+
+
+# Kernel/padding and normalization factories are selected by Generator.
 class GBlock(nn.Module):
     def __init__(self, in_channels, out_channels,
                  which_conv1=nn.Conv2d, which_conv2=nn.Conv2d, which_bn=bn, activation=None,
