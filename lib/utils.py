@@ -48,6 +48,8 @@ def yaml2config(yml_path):
         return munch.Munch(json)
 
     cfg = to_munch(json)
+    from lib.path_config import set_source_polarity
+    set_source_polarity(getattr(cfg, 'dataset_source_polarity', 'white'))
     return cfg
 
 

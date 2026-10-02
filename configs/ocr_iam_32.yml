@@ -4,6 +4,7 @@ multi_gpu: false
 gpus: [0]
 model: 'recognize_model'
 dataset: 'iam_word'
+dataset_source_polarity: white
 seed: 123456
 img_height: 64
 source_height: 32

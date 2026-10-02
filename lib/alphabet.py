@@ -39,6 +39,16 @@ class strLabelConverter(object):
             # NOTE: 0 is reserved for 'blank' required by wrap_ctc
             self.dict[char] = i
 
+    def _encode_word(self, text):
+        normalized = text.lower() if self._ignore_case else text
+        unknown = sorted(set(normalized).difference(self.dict))
+        if unknown:
+            raise ValueError(
+                f'Character(s) {unknown!r} are outside the configured alphabet; '
+                'extend the alphabet and matching model vocabulary explicitly.'
+            )
+        return [self.dict[char] for char in normalized]
+
     def encode(self, text, max_len=None):
         """Support batch or single str.
         Args:
@@ -51,11 +61,7 @@ class strLabelConverter(object):
             text = text[0]
 
         if isinstance(text, str):
-            text = [
-                self.dict[char.lower() if self._ignore_case else char]
-                for char in text
-            ]
-            return text
+            return self._encode_word(text)
 
         length = []
         result = []
@@ -63,9 +69,7 @@ class strLabelConverter(object):
         for item in text:
             # item = item.decode('utf-8', 'strict')
             length.append(len(item))
-            for char in item:
-                index = self.dict[char]
-                result.append(index)
+            result.extend(self._encode_word(item))
             results.append(result)
             result = []
 

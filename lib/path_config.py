@@ -1,5 +1,6 @@
 ImgHeight = 64
 CharWidth = ImgHeight // 2
+SourcePolarity = 'white'
 
 data_roots = {
     'iam': './data/iam/'
@@ -34,3 +35,12 @@ def set_data_height(height):
     """
     data_paths.clear()
     data_paths.update(get_data_paths(int(height)))
+
+
+def set_source_polarity(polarity):
+    """Declare source background colour; never infer it from ink or borders."""
+    global SourcePolarity
+    polarity = str(polarity).strip().lower()
+    if polarity not in ('white', 'black'):
+        raise ValueError('dataset_source_polarity must be white or black')
+    SourcePolarity = polarity

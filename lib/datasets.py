@@ -10,20 +10,30 @@ import torch
 from torch.utils.data import Dataset
 from torchvision.transforms import Compose, Normalize, ToTensor
 from lib.alphabet import strLabelConverter
+from lib import path_config
 from lib.path_config import data_roots, data_paths, ImgHeight, CharWidth
 from lib.transforms import RandomScale, RandomClip
 
 
 class Hdf5Dataset(Dataset):
     def __init__(self, root, split, transforms=None, alphabet_key='all', process_style=False,
-                 normalize_wid=True, invert_polarity=True):
+                 normalize_wid=True, invert_polarity=True, source_polarity=None):
         super(Hdf5Dataset, self).__init__()
         self.root = root
-        self.invert_polarity = bool(invert_polarity)
+        self._requested_source_polarity = source_polarity
+        self.source_polarity = self._validate_source_polarity(
+            path_config.SourcePolarity if source_polarity is None else source_polarity
+        )
         self._load_h5py(os.path.join(self.root, split), normalize_wid)
+        self.source_is_white_paper = self.source_polarity == 'white'
+        self.invert_polarity = bool(invert_polarity and self.source_is_white_paper)
         self.transforms = transforms
         self.org_transforms = Compose([ToTensor(), Normalize([0.5], [0.5])])
         self.label_converter = strLabelConverter(alphabet_key)
+        try:
+            self.label_converter.encode(''.join(chr(int(code)) for code in np.unique(self.lbs)))
+        except ValueError as error:
+            raise ValueError(f'Dataset {os.path.join(root, split)}: {error}') from error
         self.process_style = process_style
 
     def _load_h5py(self, file_path, normalize_wid=True):
@@ -36,31 +46,21 @@ class Hdf5Dataset(Dataset):
             self.wids = h5f['wids'][:]
             if normalize_wid:
                 self.wids -= self.wids.min()
-            self.source_is_white_paper = self._source_is_white_paper()
+            if self._requested_source_polarity is None:
+                metadata = h5f.attrs.get('source_polarity', self.source_polarity)
+                self.source_polarity = self._validate_source_polarity(metadata)
             h5f.close()
         else:
             raise FileNotFoundError('HDF5 dataset file does not exist: {}'.format(self.file_path))
 
-        # New IAM releases are white paper / black ink.  Classic HiGAN+ was
-        # trained with the inverse normalized convention, so canonicalize only
-        # the source polarity—not the model or any loss.
-        self.invert_polarity = bool(self.invert_polarity and self.source_is_white_paper)
-
-    def _source_is_white_paper(self, sample_count=128):
-        count = min(len(self.img_lens), int(sample_count))
-        if count == 0:
-            raise ValueError('HDF5 dataset contains no images: {}'.format(self.file_path))
-        indices = np.linspace(0, len(self.img_lens) - 1, count, dtype=np.int64)
-        edges = []
-        for index in indices:
-            start, width = int(self.img_seek_idxs[index]), int(self.img_lens[index])
-            word = self.imgs[:, start:start + width]
-            if word.size:
-                edges.append(np.concatenate((word[0].ravel(), word[-1].ravel(),
-                                             word[:, 0].ravel(), word[:, -1].ravel())))
-        if not edges:
-            raise ValueError('HDF5 dataset has no valid image borders: {}'.format(self.file_path))
-        return float(np.median(np.concatenate(edges))) >= 128.0
+    @staticmethod
+    def _validate_source_polarity(value):
+        if isinstance(value, bytes):
+            value = value.decode('utf-8')
+        value = str(value).strip().lower()
+        if value not in ('white', 'black'):
+            raise ValueError('source_polarity must be white or black (background colour)')
+        return value
 
     def __getitem__(self, idx):
         data = {}
@@ -231,7 +231,7 @@ class Hdf5Dataset(Dataset):
         return mbdata
 
     @staticmethod
-    def gen_h5file(all_imgs, all_texts, all_wids, save_path):
+    def gen_h5file(all_imgs, all_texts, all_wids, save_path, source_polarity='white'):
         img_seek_idxs, img_lens = [], []
         cur_seek_idx = 0
         for img in all_imgs:
@@ -250,6 +250,7 @@ class Hdf5Dataset(Dataset):
         save_texts = list(itertools.chain(*all_texts))
         save_lbs = [ord(ch) for ch in save_texts]
         h5f = h5py.File(save_path, 'w')
+        h5f.attrs['source_polarity'] = Hdf5Dataset._validate_source_polarity(source_polarity)
         h5f.create_dataset('imgs',
                            data=save_imgs,
                            compression='gzip',
@@ -307,7 +308,7 @@ class ImageDataset(Hdf5Dataset):
                 resize_img = cv2.resize(img, dim, interpolation=cv2.INTER_AREA)
             else:
                 resize_img = cv2.resize(img, dim, interpolation=cv2.INTER_LINEAR)
-            res_img = 255 - resize_img
+            res_img = resize_img
 
             all_imgs.append(res_img)
             all_texts.append(label_text)

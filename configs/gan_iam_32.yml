@@ -9,6 +9,7 @@ wandb:
   name: ~
   resume: 'allow'
 dataset: 'iam_word_org'
+dataset_source_polarity: white
 seed: 123456
 img_height: 64
 source_height: 32
