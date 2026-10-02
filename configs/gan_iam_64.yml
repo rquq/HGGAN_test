@@ -55,7 +55,7 @@ training:
   # punctuation/digit strings that are absent from the training distribution.
   rare_word_ratio: 0.15
   sort_input: true
-  num_critic_train: 4
+  num_critic_train: 2
   lambda_patch_adv: 0.45
   min_patch_crops: 4
   max_patch_crops: 8
