@@ -74,13 +74,7 @@ class Generator(nn.Module):
                  init='ortho', G_param='SN', norm_style='bn', bn_linear='embed', input_nc=3,
                  embed_pad_idx=0, embed_max_norm=1.0, fusion_gate_init=0.25,
                  local_projection_residual_init=0.1,
-                 allograph_routing_temperature=0.7,
-                 allograph_modulation_limit=0.3,
-                 allograph_residual_init=0.5,
-                 allograph_modulation_rms_cap=1.0,
-                 allograph_routing_center_init=0.5,
-                 allograph_routing_scale_max=2.0,
-                 allograph_routing_uniform_mix=0.05):
+                 reference_residual_init=0.15):
         super(Generator, self).__init__()
         dim_z = style_dim
         self.style_dim = style_dim
@@ -159,15 +153,9 @@ class Generator(nn.Module):
         self.filter_linear = self.which_linear(self.embed_dim,
                                         self.arch['in_channels'][0] * (self.bottom_width * self.bottom_height))
         self.style_content_mix = StyleContentAttentionFusion(
-            self.embed_dim, self.style_dim, vocab_size=self.n_classes,
+            self.embed_dim, self.style_dim,
             local_projection_residual_init=local_projection_residual_init,
-            routing_temperature=allograph_routing_temperature,
-            modulation_limit=allograph_modulation_limit,
-            modulation_residual_init=allograph_residual_init,
-            modulation_rms_cap=allograph_modulation_rms_cap,
-            routing_center_init=allograph_routing_center_init,
-            routing_scale_max=allograph_routing_scale_max,
-            routing_uniform_mix=allograph_routing_uniform_mix,
+            reference_residual_init=reference_residual_init,
         )
         if not 0.0 < fusion_gate_init < 1.0:
             raise ValueError('fusion_gate_init must be strictly between 0 and 1')
@@ -229,10 +217,9 @@ class Generator(nn.Module):
         # Local tokens must travel through the aligned fusion path.
         ys = self.bssp(z[:, 0])
 
-        char_ids = y
         content = self.text_embedding(y).float().to(y.device)
         fused_content = self.style_content_mix(
-            content, z, char_ids=char_ids, y_lens=y_lens
+            content, z, y_lens=y_lens
         )
         token_positions = torch.arange(y.size(1), device=y.device).unsqueeze(0)
         valid_tokens = (token_positions < y_lens.unsqueeze(1)).unsqueeze(-1)
@@ -568,7 +555,6 @@ class PatchDiscriminator(nn.Module):
         init='ortho',
         D_param='SN',
         input_nc=1,
-        n_class=80,
         **kwargs
     ):
         super().__init__()
@@ -603,47 +589,13 @@ class PatchDiscriminator(nn.Module):
         self.logits = which_conv(
             in_channels, output_dim, kernel_size=1, padding=0
         )
-        # Projection conditioning asks whether this local stroke is plausible
-        # for the character it was sampled from, rather than only whether it
-        # resembles generic ink.  The spatial projection retains PatchGAN's
-        # local decisions instead of collapsing each crop to one score.
-        self.char_embedding = nn.Embedding(
-            n_class, in_channels, padding_idx=0
-        )
-
         if init != 'none':
             init_weights(self, init)
-        with torch.no_grad():
-            self.char_embedding.weight[0].zero_()
 
-    def forward(self, x, char_ids=None, char_confidence=None, **kwargs):
+    def forward(self, x):
         h = self.stem(x)
         for block in self.blocks:
             h = block(h)
         h = self.activation(h)
         output = self.logits(h)
-        if char_ids is not None:
-            if char_ids.ndim != 1 or char_ids.numel() != x.size(0):
-                raise ValueError(
-                    'char_ids must have shape (number_of_patches,)'
-                )
-            char_ids = char_ids.to(h.device).long().clamp_(
-                0, self.char_embedding.num_embeddings - 1
-            )
-            condition = self.char_embedding(char_ids)
-            projection = torch.sum(
-                h * condition.unsqueeze(-1).unsqueeze(-1), dim=1, keepdim=True
-            ) / (h.size(1) ** 0.5)
-            if char_confidence is not None:
-                if (char_confidence.ndim != 1
-                        or char_confidence.numel() != x.size(0)):
-                    raise ValueError(
-                        'char_confidence must have shape '
-                        '(number_of_patches,)'
-                    )
-                confidence = char_confidence.to(
-                    device=h.device, dtype=projection.dtype
-                ).clamp_(0.0, 1.0)
-                projection = projection * confidence.view(-1, 1, 1, 1)
-            output = output + projection
         return output

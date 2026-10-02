@@ -423,134 +423,83 @@ def adaptive_crop_count(valid_width, patch_size=32, min_crops=4, max_crops=8):
     return max(min_crops, min(max_crops, width_crops))
 
 
-def sample_character_patches(
-    images,
-    image_lens,
-    labels,
-    label_lens,
-    patch_size=32,
-    min_crops=4,
-    max_crops=8,
-    horizontal_jitter=4,
-    fill_value=-1.0,
-    return_confidence=False,
+def sample_stroke_patches(
+    images, image_lens, min_crops=4, max_crops=8, fill_value=-1.0,
 ):
-    """Sample character-aligned stroke crops and return their character IDs.
+    """Return half-height square stroke crops with per-word counts.
 
-    Each crop is centered on a character-width stratum, while alternate crops
-    cover the upper and lower writing bands.  This preserves the old bounded
-    4--8 crop budget but gives StrokePatchD an explicit allograph label.
+    Crop positions are stratified across valid horizontal starts and alternate
+    upper/lower bands. No character boxes, ink thresholds, or labels are used.
+    Short words are extended with the dataset padding value, never canvas pixels.
     """
-    if images.ndim != 4:
-        raise ValueError('images must have shape (B, C, H, W)')
-    if labels.ndim != 2:
-        raise ValueError('labels must have shape (B, L)')
-    if images.size(0) != len(image_lens) or images.size(0) != labels.size(0):
-        raise ValueError('images, image_lens, and labels must share a batch size')
-    if images.size(0) != len(label_lens):
-        raise ValueError('label_lens must contain one length per image')
-    if patch_size < 1 or min_crops < 1 or max_crops < min_crops:
-        raise ValueError('invalid adaptive crop configuration')
-    if horizontal_jitter < 0:
-        raise ValueError('horizontal_jitter must be non-negative')
+    if images.ndim != 4 or images.size(0) == 0 or min(images.shape[-2:]) < 2:
+        raise ValueError('images must be a nonempty (B, C, H, W) batch with H/W >= 2')
+    if min_crops < 1 or max_crops < min_crops:
+        raise ValueError('invalid adaptive crop bounds')
+    widths = torch.as_tensor(image_lens, device=images.device, dtype=torch.long)
+    if (widths.ndim != 1 or widths.numel() != images.size(0)
+            or torch.any(widths < 1) or torch.any(widths > images.size(-1))):
+        raise ValueError('image_lens must contain one valid width per image')
 
-    pad_bottom = max(0, patch_size - images.size(-2))
-    pad_right = max(0, patch_size - images.size(-1))
-    if pad_bottom or pad_right:
-        images = F.pad(
-            images, (0, pad_right, 0, pad_bottom), value=float(fill_value)
+    height = images.size(-2)
+    slots = torch.arange(max_crops, device=images.device)
+    scales = []
+    for size in (max(1, height // 2),):
+        counts = ((widths + size - 1) // size).clamp(min_crops, max_crops)
+        rows, indices = (slots[None, :] < counts[:, None]).nonzero(as_tuple=True)
+        n = rows.numel()
+        # Every stratum covers a disjoint interval of feasible crop starts.
+        positions = (widths[rows] - size + 1).clamp_min(1)
+        left = torch.floor(
+            (indices + torch.rand(n, device=images.device))
+            * positions / counts[rows]
+        ).long()
+        vertical_positions = height - size + 1
+        band = indices.remainder(2)
+        lower = band * (vertical_positions // 2)
+        upper = torch.maximum((band + 1) * vertical_positions // 2, lower + 1)
+        top = lower + torch.floor(
+            torch.rand(n, device=images.device) * (upper - lower)
+        ).long()
+        offset = torch.arange(size, device=images.device)
+        x = left[:, None] + offset
+        patches = images[
+            rows[:, None, None, None],
+            torch.arange(images.size(1), device=images.device)[None, :, None, None],
+            (top[:, None] + offset)[:, None, :, None],
+            x.clamp_max(images.size(-1) - 1)[:, None, None, :],
+        ]
+        patches = patches.masked_fill(
+            (x >= widths[rows, None])[:, None, None, :], float(fill_value)
         )
+        scales.append((patches, counts))
+    return tuple(scales)
 
-    image_height, image_width = images.shape[-2:]
-    device = images.device
-    batch_size = images.size(0)
-    if batch_size == 0 or labels.size(1) == 0:
-        raise ValueError('character crops require a nonempty batch and label dimension')
-    # Length tensors may already have this device/dtype: avoid mutating the
-    # caller's lengths, which are also consumed by OCR and reconstruction.
-    widths = image_lens.to(device=device, dtype=torch.long).clamp(1, image_width)
-    lengths = label_lens.to(device=device, dtype=torch.long).clamp(1, labels.size(1))
-    crop_counts = ((widths + patch_size - 1) // patch_size).clamp_(min_crops, max_crops)
-    crop_slots = torch.arange(max_crops, device=device)
-    row_indices, crop_indices = (
-        crop_slots[None, :] < crop_counts[:, None]
-    ).nonzero(as_tuple=True)
-    total_crops = row_indices.numel()
-    valid_widths = widths[row_indices]
-    valid_lengths = lengths[row_indices]
 
-    char_start = torch.div(
-        crop_indices * valid_lengths, crop_counts[row_indices], rounding_mode='floor'
-    )
-    char_start = torch.minimum(char_start, valid_lengths - 1)
-    char_end = torch.div(
-        (crop_indices + 1) * valid_lengths,
-        crop_counts[row_indices], rounding_mode='floor'
-    )
-    char_end = torch.maximum(char_end, char_start + 1)
-    char_end = torch.minimum(char_end, valid_lengths)
-    char_index = char_start + torch.floor(
-        torch.rand(total_crops, device=device) * (char_end - char_start).to(torch.float32)
-    ).to(torch.long)
+def run_patch_discriminator(discriminator, groups, score_transform=None):
+    """Shared critic, equal word/scale weighting, one score vector per branch.
 
-    span_start = char_index.to(torch.float32) * valid_widths.to(torch.float32) / valid_lengths
-    span_end = (char_index + 1).to(torch.float32) * valid_widths.to(torch.float32) / valid_lengths
-    left = torch.round((span_start + span_end - float(patch_size)) / 2.0).to(torch.long)
-    if horizontal_jitter:
-        left += torch.randint(
-            -horizontal_jitter, horizontal_jitter + 1, (total_crops,), device=device
-        )
-    left = left.clamp_(min=0)
-    left = torch.minimum(left, (valid_widths - patch_size).clamp_min(0))
-
-    max_top = max(image_height - patch_size, 0)
-    vertical_positions = max(max_top + 1, 1)
-    vertical_slot = crop_indices.remainder(2)
-    top_start = vertical_slot * (vertical_positions // 2)
-    top_end = torch.maximum(
-        (vertical_slot + 1) * vertical_positions // 2,
-        top_start + 1,
-    )
-    top = top_start + torch.floor(
-        torch.rand(total_crops, device=device) * (top_end - top_start).to(torch.float32)
-    ).to(torch.long)
-    top = top.clamp_(max=max_top)
-
-    # Gather only the selected pixels. Indexing an unfold view makes backward
-    # allocate gradients for *every* sliding window, even for just a few crops.
-    offset = torch.arange(patch_size, device=device)
-    patches = images[
-        row_indices[:, None, None, None],
-        torch.arange(images.size(1), device=device)[None, :, None, None],
-        (top[:, None] + offset)[:, None, :, None],
-        (left[:, None] + offset)[:, None, None, :],
-    ]
-
-    # The crop label is approximate because IAM stores word boxes, not per-glyph
-    # boxes.  Pass a soft confidence to StrokePatchD: partial/blank crops still
-    # train its unconditional stroke critic but cannot inject a wrong class code.
-    overlap = (
-        torch.minimum(span_end, left.to(torch.float32) + patch_size)
-        - torch.maximum(span_start, left.to(torch.float32))
-    ).clamp_min(0.0)
-    span_capacity = (span_end - span_start).clamp_min(1.0).clamp_max(float(patch_size))
-    geometry_confidence = (overlap / span_capacity).clamp(0.0, 1.0)
-    ink_fraction = (patches > -0.75).to(torch.float32).mean(dim=(1, 2, 3))
-    ink_confidence = ((ink_fraction - 0.005) / 0.04).clamp(0.0, 1.0)
-    patch_confidence = (geometry_confidence * ink_confidence).to(patches.dtype)
-
-    labels_device = labels.device
-    row_for_labels = row_indices.to(labels_device)
-    char_for_labels = char_index.to(labels_device)
-    character_ids = labels[row_for_labels, char_for_labels].long().to(device)
-    result = (
-        patches,
-        crop_counts.to(device=device),
-        character_ids,
-    )
-    if return_confidence:
-        result = result + (patch_confidence,)
-    return result
+    Batch same-size crops together; different scales must remain separate.
+    Apply any hinge penalty per spatial decision before averaging maps, crops,
+    and scales. Branch averaging is owned by the GAN objective.
+    """
+    if not groups:
+        raise ValueError('at least one patch group is required')
+    branch_scores = [[] for _ in groups]
+    for scale in range(len(groups[0])):
+        batches = [group[scale] for group in groups]
+        sizes = [patches.size(0) for patches, _ in batches]
+        logits = discriminator(torch.cat([patches for patches, _ in batches], dim=0))
+        if score_transform is not None:
+            logits = score_transform(logits)
+        crop_scores = logits.flatten(1).mean(dim=1)
+        for branch, scores, (_, counts) in zip(
+            branch_scores, crop_scores.split(sizes), batches
+        ):
+            rows = torch.arange(counts.numel(), device=scores.device).repeat_interleave(counts)
+            sums = scores.new_zeros(counts.numel()).scatter_add(0, rows, scores)
+            branch.append(sums / counts.to(scores.dtype))
+    return [torch.stack(scores).mean(dim=0) for scores in branch_scores]
 
 
 def augment_word_batch(

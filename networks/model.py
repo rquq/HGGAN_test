@@ -18,14 +18,14 @@ import torch.nn.functional as F
 from metric.val_metrics import calculate_fid_kid_is
 from metric.mssim_psnr import calculate_mssim_psnr
 from networks.utils import _info, set_requires_grad, get_scheduler, idx_to_words, rescale_images, rescale_images2, \
-                            words_to_images, ctc_greedy_decoder, sample_character_patches, augment_word_batch, frozen_bn, restore_scheduler_state
+                            words_to_images, ctc_greedy_decoder, sample_stroke_patches, run_patch_discriminator, augment_word_batch, frozen_bn, restore_scheduler_state
 from networks.BigGAN_networks import Generator, Discriminator, PatchDiscriminator
 from networks.module import Recognizer, WriterIdentifier, StyleEncoder, StyleBackbone
 from lib.datasets import get_dataset, get_collect_fn, Hdf5Dataset
 from lib.alphabet import strLabelConverter, get_lexicon, get_true_alphabet, Alphabets
 from lib.utils import draw_image, get_logger, AverageMeterManager, option_to_string, AverageMeter, plot_heatmap, write_wandb_log
 from networks.rand_dist import prepare_z_dist, prepare_y_dist
-from networks.loss import recn_l1_loss, CXLoss, SpectralDistributionLoss, KLloss, r1_reg
+from networks.loss import recn_l1_loss, CXLoss, KLloss, r1_reg
 
 
 class EMA(object):
@@ -1712,7 +1712,6 @@ class GlobalLocalAdversarialModel(AdversarialModel):
         self.ctc_loss = CTCLoss(zero_infinity=True, reduction='mean')
         self.classify_loss = CrossEntropyLoss()
         self.contextual_loss = CXLoss(max_tokens=256)
-        self.spectral_distribution_loss = SpectralDistributionLoss()
 
     def train(self):
         _is_master = self.local_rank < 1
@@ -1905,7 +1904,7 @@ class GlobalLocalAdversarialModel(AdversarialModel):
 
         self.averager_meters = AverageMeterManager([
             'g_total', 'd_total', 'g_adv', 'g_ctc', 'g_writer',
-            'g_recn', 'g_style', 'g_context', 'g_frequency', 'g_kl',
+            'g_recn', 'g_style', 'g_context', 'g_kl',
             'r1_loss', 'fusion_strength', 'fusion_gate_min', 'fusion_gate_max',
             'd_real', 'd_fake', 'd_real_patch', 'd_fake_patch',
             'g_adv_global', 'g_adv_patch', 'g_ctc_rand', 'g_ctc_style',
@@ -1914,12 +1913,8 @@ class GlobalLocalAdversarialModel(AdversarialModel):
         device = self.device
 
         ctc_len_scale = self.unwrap_model(self.models.R).len_scale
-        patch_size = int(getattr(self.opt.training, 'patch_size', 32))
         min_patch_crops = int(getattr(self.opt.training, 'min_patch_crops', 4))
         max_patch_crops = int(getattr(self.opt.training, 'max_patch_crops', 8))
-        patch_char_jitter = int(getattr(
-            self.opt.training, 'patch_char_jitter', 4
-        ))
         use_d_diffaug = bool(getattr(
             self.opt.training, 'd_diffaug', False
         ))
@@ -1932,41 +1927,27 @@ class GlobalLocalAdversarialModel(AdversarialModel):
         patch_adv_weight = float(
             getattr(self.opt.training, 'lambda_patch_adv', 0.5)
         )
-        patch_char_conditioning = bool(getattr(
-            self.opt.training, 'patch_char_conditioning', True
-        ))
-        patch_char_min_confidence = float(getattr(
-            self.opt.training, 'patch_char_min_confidence', 0.0
-        ))
         rare_word_ratio = float(getattr(
             self.opt.training, 'rare_word_ratio', 0.15
         ))
         context_weight = float(getattr(self.opt.training, 'lambda_ctx', 0.0))
-        frequency_weight = float(getattr(self.opt.training, 'lambda_frequency', 0.0))
-        if (not (np.isfinite(context_weight) and np.isfinite(frequency_weight))
-                or min(context_weight, frequency_weight) < 0):
-            raise ValueError('appearance loss weights must be finite and non-negative')
+        if not np.isfinite(context_weight) or context_weight < 0:
+            raise ValueError('contextual loss weight must be finite and non-negative')
         num_critic_train = int(self.opt.training.num_critic_train)
         r1_interval = int(getattr(self.opt.training, 'r1_interval', 16))
         if num_critic_train < 1:
             raise ValueError('num_critic_train must be at least 1')
         if r1_interval < 1:
             raise ValueError('r1_interval must be at least 1')
-        if patch_size < 1:
-            raise ValueError('patch_size must be at least 1')
         if min_patch_crops < 1 or max_patch_crops < min_patch_crops:
             raise ValueError(
                 'patch crop bounds must satisfy 1 <= min_patch_crops '
                 '<= max_patch_crops'
             )
-        if patch_char_jitter < 0:
-            raise ValueError('patch_char_jitter must be non-negative')
         if d_aug_translate < 0 or not 0.0 <= d_aug_width_scale < 1.0:
             raise ValueError('invalid discriminator augmentation configuration')
         if patch_adv_weight < 0:
             raise ValueError('lambda_patch_adv must be non-negative')
-        if not 0.0 <= patch_char_min_confidence <= 1.0:
-            raise ValueError('patch_char_min_confidence must be in [0, 1]')
         if not 0.0 <= rare_word_ratio <= 1.0:
             raise ValueError('rare_word_ratio must be in [0, 1]')
 
@@ -2002,50 +1983,10 @@ class GlobalLocalAdversarialModel(AdversarialModel):
             f'DiffAug={"on" if use_d_diffaug else "off"}'
         )
 
-        def prepare_stroke_patches(
-            images, image_lens, labels, label_lens
-        ):
-            # The fourth return value is a soft geometry/ink confidence.  It
-            # prevents approximate word-box alignment from turning StrokePatchD
-            # into a noisy character classifier while retaining the local GAN
-            # signal for every crop.
-            patches, _, character_ids, patch_confidence = (
-                sample_character_patches(
-                    images,
-                    image_lens,
-                    labels,
-                    label_lens,
-                    patch_size=patch_size,
-                    min_crops=min_patch_crops,
-                    max_crops=max_patch_crops,
-                    horizontal_jitter=patch_char_jitter,
-                    return_confidence=True,
-                )
-            )
-            # Preserve actual strokes. Artificial stripe erasure removes the
-            # very defects this critic should distinguish from real handwriting.
-            if patch_char_min_confidence:
-                patch_confidence = torch.where(
-                    patch_confidence >= patch_char_min_confidence,
-                    patch_confidence,
-                    torch.zeros_like(patch_confidence),
-                )
-            if not patch_char_conditioning:
-                character_ids = None
-                patch_confidence = None
-            return patches, character_ids, patch_confidence
-
-        def run_patch_discriminator(groups):
-            patches = torch.cat([group[0] for group in groups], dim=0)
-            char_ids = None
-            char_confidence = None
-            if patch_char_conditioning:
-                char_ids = torch.cat([group[1] for group in groups], dim=0)
-                char_confidence = torch.cat(
-                    [group[2] for group in groups], dim=0
-                )
-            return self.models.P(
-                patches, char_ids, char_confidence=char_confidence
+        def prepare_stroke_patches(images, image_lens):
+            return sample_stroke_patches(
+                images, image_lens, min_crops=min_patch_crops,
+                max_crops=max_patch_crops,
             )
 
         def prepare_global_discriminator_input(images, image_lens):
@@ -2173,24 +2114,21 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                 # Matched adaptive crop policy for every generated path.
                 fake_patch_groups = [
                     prepare_stroke_patches(
-                        fake_imgs.detach(), fake_img_lens, fake_lbs, fake_lb_lens
+                        fake_imgs.detach(), fake_img_lens
                     ),
                     prepare_stroke_patches(
-                        style_imgs.detach(), style_img_lens, fake_lbs, fake_lb_lens
+                        style_imgs.detach(), style_img_lens
                     ),
                     prepare_stroke_patches(
-                        recn_imgs.detach(), recn_img_lens, real_lbs, real_lb_lens
+                        recn_imgs.detach(), recn_img_lens
                     ),
                 ]
-                fake_patch_sizes = [group[0].size(0) for group in fake_patch_groups]
-                p_all = run_patch_discriminator(fake_patch_groups)
-                p_fake, p_style, p_recn = torch.split(
-                    p_all, fake_patch_sizes, dim=0
+                p_fake, p_style, p_recn = run_patch_discriminator(
+                    self.models.P, fake_patch_groups,
+                    score_transform=lambda scores: F.relu(1.0 + scores),
                 )
                 fake_disc_loss_patch = (
-                    torch.mean(F.relu(1.0 + p_fake))
-                    + torch.mean(F.relu(1.0 + p_style))
-                    + torch.mean(F.relu(1.0 + p_recn))
+                    p_fake.mean() + p_style.mean() + p_recn.mean()
                 ) / 3
 
                 # Random crops are local views, not complete word samples. Feeding
@@ -2217,11 +2155,14 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                 # Global D retains its symmetric differentiable augmentation.
                 real_patch_groups = [
                     prepare_stroke_patches(
-                        real_imgs, real_img_lens, real_lbs, real_lb_lens
+                        real_imgs, real_img_lens
                     ),
                 ]
-                real_patch_logits = run_patch_discriminator(real_patch_groups)
-                real_disc_loss_patch = torch.mean(F.relu(1.0 - real_patch_logits))
+                real_patch_penalty = run_patch_discriminator(
+                    self.models.P, real_patch_groups,
+                    score_transform=lambda scores: F.relu(1.0 - scores),
+                )[0]
+                real_disc_loss_patch = real_patch_penalty.mean()
 
                 disc_loss = (
                     real_disc_loss + fake_disc_loss
@@ -2312,21 +2253,17 @@ class GlobalLocalAdversarialModel(AdversarialModel):
 
                     fake_patch_groups = [
                         prepare_stroke_patches(
-                            fake_imgs, fake_img_lens, fake_lbs, fake_lb_lens
+                            fake_imgs, fake_img_lens
                         ),
                         prepare_stroke_patches(
-                            style_imgs, style_img_lens, fake_lbs, fake_lb_lens
+                            style_imgs, style_img_lens
                         ),
                         prepare_stroke_patches(
-                            recn_imgs, recn_img_lens, real_lbs, real_lb_lens
+                            recn_imgs, recn_img_lens
                         ),
                     ]
-                    fake_patch_sizes = [
-                        group[0].size(0) for group in fake_patch_groups
-                    ]
-                    p_all = run_patch_discriminator(fake_patch_groups)
-                    p_fake, p_style, p_recn = torch.split(
-                        p_all, fake_patch_sizes, dim=0
+                    p_fake, p_style, p_recn = run_patch_discriminator(
+                        self.models.P, fake_patch_groups,
                     )
                     adv_loss_patch = -(
                         torch.mean(p_fake)
@@ -2430,14 +2367,6 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                                 target_lengths=real_feat_lens,
                                 input_lengths=fake_feat_lens,
                             )
-
-                    # Optional magnitude-statistics ablation, not a substitute
-                    # for spatial or reference-conditioned feature supervision.
-                    frequency_loss = recn_imgs.new_zeros(())
-                    if frequency_weight > 0:
-                        frequency_loss = self.spectral_distribution_loss(
-                            real_imgs, recn_imgs, real_img_lens, recn_img_lens
-                        )
 
                     # Local tokens are deterministic and have no Gaussian KL.
                     # Retain the former global token's contribution to the
@@ -2544,11 +2473,10 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                           * content_adv_loss
                     )
                     g_context = context_weight * ctx_loss
-                    g_frequency = frequency_weight * frequency_loss
                     g_kl = float(getattr(self.opt.training, 'lambda_kl', 0.1)) * kl_loss
                     g_loss = (
                         g_adv + g_ctc + g_writer + g_recn
-                        + g_style + g_context + g_frequency + g_kl
+                        + g_style + g_context + g_kl
                     )
 
                     g_loss.backward()
@@ -2573,7 +2501,6 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                         'g_style_cycle': style_cycle_loss,
                         'g_content_adv': content_adv_loss,
                         'g_context': g_context,
-                        'g_frequency': g_frequency,
                         'g_kl': g_kl,
                         'fusion_strength': fusion_gate.mean(),
                         'fusion_gate_min': fusion_gate.min(),
@@ -2601,7 +2528,6 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                         f"Adv:{meter_vals['g_adv']:.3f} CTC:{meter_vals['g_ctc']:.3f} Recn:{meter_vals['g_recn']:.3f} "
                         f"Style:{meter_vals['g_style']:.3f} Wid:{meter_vals['g_writer']:.3f} "
                         + (f"Ctx:{meter_vals['g_context']:.3f} " if context_weight > 0 else '')
-                        + (f"Freq:{meter_vals['g_frequency']:.3f} " if frequency_weight > 0 else '')
                         + f"KL:{meter_vals['g_kl']:.3f} | "
                         f"R1:{meter_vals['r1_loss']:.3f} Fuse:{meter_vals['fusion_strength']:.3f}"
                         f"[{meter_vals['fusion_gate_min']:.3f},{meter_vals['fusion_gate_max']:.3f}] "
@@ -2659,8 +2585,6 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                         }
                         if context_weight > 0:
                             wandb_log['loss/g_contextual'] = meter_vals['g_context']
-                        if frequency_weight > 0:
-                            wandb_log['loss/g_frequency'] = meter_vals['g_frequency']
 
                         import wandb as _wandb
                         if _wandb.run:

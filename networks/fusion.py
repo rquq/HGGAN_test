@@ -40,7 +40,7 @@ class StyleConditionedSelfAttention(nn.Module):
         self.ffn_out = nn.Linear(ffn_dim, d_model)
 
         # Global style controls both normalized branches and their residual strength.
-        # It never provides attention keys/values, leaving local style routing to allograph.
+        # It never provides attention keys/values; reference modulation owns local style routing.
         self.style_mod = nn.Linear(style_dim, d_model * 4 + 2)
         self.relative_position_bias = nn.Parameter(
             torch.zeros(nhead, max_seq_len * 2 - 1)
@@ -126,203 +126,56 @@ class StyleConditionedSelfAttention(nn.Module):
         return content_seq
 
 
-class AllographicModulation(nn.Module):
-    """Route distinct local style slots to characters with bounded residual detail."""
+class ReferenceStyleModulation(nn.Module):
+    """Retrieve reference detail from contextual target features, not raw IDs.
 
-    def __init__(self, d_model, routing_dim=16, vocab_size=256,
-                 modulation_limit=0.3, character_gain_limit=0.25,
-                 routing_temperature=0.7, modulation_residual_init=0.5,
-                 modulation_rms_cap=1.0, routing_center_init=0.5,
-                 routing_scale_max=2.0, routing_uniform_mix=0.05):
+    Pre-normalized attention and one learned residual scale replace forced
+    uniform routing, vocabulary-specific gates and stacked amplitude caps.
+    """
+
+    def __init__(self, d_model, modulation_residual_init=0.15):
         super().__init__()
-        if routing_temperature <= 0:
-            raise ValueError('routing_temperature must be positive')
-        if not 0.0 < modulation_residual_init < 1.0:
-            raise ValueError(
-                'modulation_residual_init must be strictly between 0 and 1'
-            )
-        if modulation_rms_cap <= 0:
-            raise ValueError('modulation_rms_cap must be positive')
-        if not 0.0 < routing_center_init < 1.0:
-            raise ValueError(
-                'routing_center_init must be strictly between 0 and 1'
-            )
-        initial_routing_scale = 1.0 / float(routing_temperature)
-        if routing_scale_max <= initial_routing_scale:
-            raise ValueError(
-                'routing_scale_max must exceed the initial inverse temperature'
-            )
-        if not 0.0 <= routing_uniform_mix < 1.0:
-            raise ValueError('routing_uniform_mix must be in [0, 1)')
-        self.vocab_size = vocab_size
-        self.modulation_limit = float(modulation_limit)
-        self.character_gain_limit = float(character_gain_limit)
-        self.routing_temperature = float(routing_temperature)
+        if modulation_residual_init <= 0:
+            raise ValueError('modulation_residual_init must be positive')
         self.modulation_residual_init = float(modulation_residual_init)
-        self.modulation_rms_cap = float(modulation_rms_cap)
-        self.routing_center_init = float(routing_center_init)
-        self.routing_scale_max = float(routing_scale_max)
-        self.routing_uniform_mix = float(routing_uniform_mix)
-        self.warned_out_of_vocab = False
-        self.checked_char_range = False
-
-        # Bias-free projections cannot inject a common vector into every slot.
+        self.content_norm = nn.LayerNorm(d_model, elementwise_affine=False)
+        self.style_norm = nn.LayerNorm(d_model, elementwise_affine=False)
         self.q_proj = nn.Linear(d_model, d_model, bias=False)
         self.k_proj = nn.Linear(d_model, d_model, bias=False)
         self.v_proj = nn.Linear(d_model, d_model, bias=False)
-        self.routing_logit_scale = nn.Parameter(torch.tensor(
-            _logit(initial_routing_scale / self.routing_scale_max)
-        ))
-        self.char_routing_logit_scale = nn.Parameter(torch.tensor(
-            _logit(initial_routing_scale / self.routing_scale_max)
-        ))
-        self.routing_center_logit = nn.Parameter(torch.tensor(
-            _logit(self.routing_center_init)
-        ))
-
+        self.reference_norm = nn.LayerNorm(d_model, elementwise_affine=False)
         self.mod_proj = nn.Sequential(
-            nn.Linear(d_model, d_model),
-            nn.SiLU(),
+            nn.Linear(d_model, d_model), nn.SiLU(),
             nn.Linear(d_model, d_model * 2),
         )
-        self.character_style_norm = nn.LayerNorm(
-            d_model, elementwise_affine=False
-        )
-        self.modulation_gate_logits = nn.Parameter(torch.full(
-            (d_model,), _logit(self.modulation_residual_init)
+        self.modulation_scale = nn.Parameter(torch.full(
+            (d_model,), self.modulation_residual_init
         ))
-
-        self.char_routing_emb = nn.Embedding(vocab_size, routing_dim)
-        self.context_routing_proj = nn.Linear(
-            d_model, routing_dim, bias=False
-        )
-        self.style_routing_proj = nn.Linear(
-            d_model, routing_dim, bias=False
-        )
-        # Decode identical writer evidence differently for each character.
-        # Zero initialization starts the character gain as an identity mapping.
-        self.char_query_norm = nn.LayerNorm(
-            routing_dim, elementwise_affine=False
-        )
-        self.char_style_gate = nn.Linear(routing_dim, d_model, bias=False)
         self.reset_stability_parameters()
 
     def reset_stability_parameters(self):
-        # Small, nonzero modulation learns immediately but cannot begin saturated.
+        for layer in (self.q_proj, self.k_proj, self.v_proj):
+            nn.init.xavier_uniform_(layer.weight)
         nn.init.normal_(self.mod_proj[-1].weight, 0.0, 0.01)
         nn.init.zeros_(self.mod_proj[-1].bias)
-        nn.init.zeros_(self.char_style_gate.weight)
         with torch.no_grad():
-            bounded_scale_logit = _logit(
-                (1.0 / self.routing_temperature)
-                / self.routing_scale_max
-            )
-            self.routing_logit_scale.fill_(bounded_scale_logit)
-            self.char_routing_logit_scale.fill_(bounded_scale_logit)
-            self.routing_center_logit.fill_(
-                _logit(self.routing_center_init)
-            )
-            self.modulation_gate_logits.fill_(
-                _logit(self.modulation_residual_init)
-            )
+            self.modulation_scale.fill_(self.modulation_residual_init)
 
-    def _cap_modulation_rms(self, value):
-        # Do not amplify well-scaled predictions. Only compress a channel
-        # vector after its RMS exceeds the configured safe operating range.
-        rms = value.float().square().mean(dim=-1, keepdim=True).sqrt()
-        divisor = (rms / self.modulation_rms_cap).clamp_min(1.0)
-        return value / divisor.to(dtype=value.dtype)
-
-    def _bounded_routing_scale(self, parameter):
-        # A smooth bound keeps gradients alive near the maximum, unlike clamp.
-        return self.routing_scale_max * torch.sigmoid(parameter)
-
-    def forward(self, content_seq, local_style_seq, char_ids=None, mask=None):
+    def forward(self, content_seq, local_style_seq, mask=None):
         local_style_seq = ensure_dim3(local_style_seq)
-
-        # Blend absolute writer evidence with slot-relative allographic
-        # detail. Full centering discarded useful writer structure, whereas no
-        # centering let a common component dominate every routing key.
-        center_strength = torch.sigmoid(self.routing_center_logit)
-        routing_style = (
-            local_style_seq
-            - center_strength * local_style_seq.mean(dim=1, keepdim=True)
-        )
-
-        # Cosine logits make routing depend on slot direction instead of vector
-        # magnitude, with a learned but bounded sharpness.
-        query = F.normalize(self.q_proj(content_seq), dim=-1, eps=1e-6)
-        key = F.normalize(self.k_proj(routing_style), dim=-1, eps=1e-6)
-        value = self.v_proj(local_style_seq)
-        routing_scale = self._bounded_routing_scale(
-            self.routing_logit_scale
-        )
-        scores = routing_scale * torch.matmul(
-            query, key.transpose(-2, -1)
-        )
-
-        char_query = None
-        if char_ids is not None:
-            # Configuration guarantees the range in normal training. Check once
-            # for diagnostics instead of synchronizing GPU -> CPU every G pass.
-            if not self.checked_char_range:
-                min_char = int(char_ids.detach().min().item())
-                max_char = int(char_ids.detach().max().item())
-                self.checked_char_range = True
-                if min_char < 0 or max_char >= self.vocab_size:
-                    self.warned_out_of_vocab = True
-                    print(
-                        f'[Warning] Character ID range [{min_char}, {max_char}] '
-                        f'exceeds vocab_size={self.vocab_size}; clamping.'
-                    )
-            char_ids = char_ids.clamp(0, self.vocab_size - 1)
-            char_query = (
-                self.char_routing_emb(char_ids)
-                + self.context_routing_proj(content_seq)
-            )
-            normalized_char_query = F.normalize(
-                char_query, dim=-1, eps=1e-6
-            )
-            style_routing = F.normalize(
-                self.style_routing_proj(routing_style), dim=-1, eps=1e-6
-            )
-            char_scale = self._bounded_routing_scale(
-                self.char_routing_logit_scale
-            )
-            scores = scores + char_scale * torch.matmul(
-                normalized_char_query, style_routing.transpose(-2, -1)
-            )
-
-        attention = torch.softmax(scores, dim=-1)
-        if self.routing_uniform_mix:
-            # Preserve a small gradient path to every local slot so rare
-            # allographs do not starve the slots they have not selected yet.
-            attention = (
-                (1.0 - self.routing_uniform_mix) * attention
-                + self.routing_uniform_mix / attention.size(-1)
-            )
-        character_style = self.character_style_norm(
-            torch.matmul(attention, value)
-        )
-        if char_query is not None:
-            character_gain = self.character_gain_limit * torch.tanh(
-                self.char_style_gate(self.char_query_norm(char_query))
-            )
-            character_style = character_style * (1.0 + character_gain)
-
-        scale, shift = self.mod_proj(character_style).chunk(2, dim=-1)
-        scale = self._cap_modulation_rms(scale)
-        shift = self._cap_modulation_rms(shift)
-        scale = self.modulation_limit * torch.tanh(scale)
-        shift = self.modulation_limit * torch.tanh(shift)
-        modulation_strength = torch.sigmoid(
-            self.modulation_gate_logits
-        ).view(1, 1, -1)
-        output = content_seq + modulation_strength * (
-            content_seq * scale + shift
-        )
+        if local_style_seq.size(1) < 1:
+            raise ValueError('reference modulation requires at least one local token')
+        content = self.content_norm(content_seq)
+        style = self.style_norm(local_style_seq)
+        retrieved = F.scaled_dot_product_attention(
+            self.q_proj(content).unsqueeze(1),
+            self.k_proj(style).unsqueeze(1),
+            self.v_proj(style).unsqueeze(1), dropout_p=0.0,
+        ).squeeze(1)
+        scale, shift = self.mod_proj(self.reference_norm(retrieved)).chunk(2, dim=-1)
+        output = content_seq + self.modulation_scale * (content * scale + shift)
         if mask is not None:
-            output = output * mask.unsqueeze(-1).to(output.dtype)
+            output = output.masked_fill(~mask.unsqueeze(-1), 0.0)
         return output
 
 
@@ -330,12 +183,9 @@ class StyleContentAttentionFusion(nn.Module):
     """Coarse-to-fine content/style fusion with one unambiguous job per stage."""
 
     def __init__(self, d_model, style_dim, nhead=4, attn_dim=128,
-                 ffn_dim=None, max_seq_len=32, vocab_size=256,
+                 ffn_dim=None, max_seq_len=32,
                  local_projection_residual_init=0.1,
-                 routing_temperature=0.7, modulation_limit=0.3,
-                 modulation_residual_init=0.5,
-                 modulation_rms_cap=1.0, routing_center_init=0.5,
-                 routing_scale_max=2.0, routing_uniform_mix=0.05):
+                 reference_residual_init=0.15):
         super().__init__()
         if not 0.0 < local_projection_residual_init < 1.0:
             raise ValueError(
@@ -370,15 +220,10 @@ class StyleContentAttentionFusion(nn.Module):
         self.local_residual_gate_logits = nn.Parameter(
             torch.full((d_model,), _logit(0.25))
         )
-        self.allograph_mod = AllographicModulation(
-            d_model, vocab_size=vocab_size,
-            routing_temperature=routing_temperature,
-            modulation_limit=modulation_limit,
-            modulation_residual_init=modulation_residual_init,
-            modulation_rms_cap=modulation_rms_cap,
-            routing_center_init=routing_center_init,
-            routing_scale_max=routing_scale_max,
-            routing_uniform_mix=routing_uniform_mix,
+        # Retain the existing namespace; this feature-only module has a new
+        # parameter schema and is not an exact resume of the former GAN.
+        self.allograph_mod = ReferenceStyleModulation(
+            d_model, modulation_residual_init=reference_residual_init,
         )
         self.reset_stability_parameters()
 
@@ -395,7 +240,7 @@ class StyleContentAttentionFusion(nn.Module):
             )
             self.local_residual_gate_logits.fill_(_logit(0.25))
 
-    def forward(self, content_seq, style_seq, char_ids=None, y_lens=None):
+    def forward(self, content_seq, style_seq, y_lens=None):
         style_seq = ensure_dim3(style_seq)
         if style_seq.size(1) < 2:
             raise ValueError(
@@ -439,7 +284,7 @@ class StyleContentAttentionFusion(nn.Module):
         if mask is not None:
             content_local = content_local * mask.unsqueeze(-1).to(content_local.dtype)
 
-        # Stage 3: the only content-to-style attention; local tokens supply allographs.
+        # Stage 3: contextual target features retrieve local reference detail.
         return self.allograph_mod(
-            content_local, local_style, char_ids=char_ids, mask=mask
+            content_local, local_style, mask=mask
         )

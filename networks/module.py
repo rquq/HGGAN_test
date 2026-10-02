@@ -4,6 +4,7 @@ from torch import nn
 import functools
 from networks.block import Conv2dBlock, ActFirstResBlock, DeepBLSTM, DeepGRU, DeepLSTM, Identity
 from networks.utils import _len2mask, init_weights
+from lib.alphabet import get_alphabet_size
 import torch.nn.functional as F
 
 
@@ -101,7 +102,9 @@ def _valid_backbone_layer(layer, x, lengths, mask_cache=None):
     return _mask_width(x, out_lengths, fill, mask_cache), out_lengths
 
 
-class HeavyCNNAttention(nn.Module):
+class MultiScaleStyleContext(nn.Module):
+    """Multi-scale reference-style context with gated local/global CNN branches."""
+
     def __init__(self, in_dim):
         super().__init__()
         # 1. Global Multi-scale dilated convolutions for global context (slant, spacing, aspect ratio)
@@ -329,10 +332,8 @@ def _gradient_reverse(x, scale):
 
 class StyleEncoder(nn.Module):
     def __init__(self, style_dim=32, in_dim=256, init='N02', num_style_tokens=None,
-                 backbone_channels=(64, 128, 256), n_class=80, content_grl=1.0,
-                 local_query_residual=0.5,
+                 backbone_channels=(64, 128, 256), n_class=None, content_grl=1.0,
                  local_attention_residual_init=0.25,
-                 local_query_anchor_strength=0.5,
                  local_evidence_gate_init=0.75,
                  local_evidence_gate_hidden=64,
                  # These names are kept as aliases because older DEV YAML files
@@ -342,6 +343,8 @@ class StyleEncoder(nn.Module):
                  cross_attn_dropout=0.0, local_attention_gate_init=None,
                  feature_scales=None, **kwargs):
         super(StyleEncoder, self).__init__()
+        if n_class is None:
+            n_class = get_alphabet_size('all')
         if kwargs:
             unknown = ', '.join(sorted(str(key) for key in kwargs))
             raise TypeError(f'Unknown StyleEncoder option(s): {unknown}')
@@ -399,28 +402,18 @@ class StyleEncoder(nn.Module):
             available_scales.index(scale) for scale in feature_scales
         ) if feature_scales is not None else tuple(range(len(backbone_channels)))
         self.content_grl = content_grl
-        self.local_query_residual = float(local_query_residual)
         self.local_attention_residual_init = float(local_attention_residual_init)
-        self.local_query_anchor_strength = float(
-            local_query_anchor_strength
-        )
         self.local_evidence_gate_init = float(local_evidence_gate_init)
         self.local_evidence_gate_hidden = int(local_evidence_gate_hidden)
         if num_style_tokens < 1:
             raise ValueError('num_style_tokens must be at least 1')
-        if self.local_query_residual < 0:
-            raise ValueError('local_query_residual must be non-negative')
         if not 0.0 < self.local_attention_residual_init < 1.0:
             raise ValueError(
                 'local_attention_residual_init must be strictly between 0 and 1'
             )
-        if not 0.0 <= self.local_query_anchor_strength <= 1.0:
+        if not 0.0 < self.local_evidence_gate_init < 1.0:
             raise ValueError(
-                'local_query_anchor_strength must be in [0, 1]'
-            )
-        if not 0.5 < self.local_evidence_gate_init < 1.0:
-            raise ValueError(
-                'local_evidence_gate_init must be strictly between 0.5 and 1'
+                'local_evidence_gate_init must be strictly between 0 and 1'
             )
         if self.local_evidence_gate_hidden < 1:
             raise ValueError('local_evidence_gate_hidden must be positive')
@@ -439,7 +432,7 @@ class StyleEncoder(nn.Module):
         )
         self.mu = nn.Linear(in_dim, style_dim)
         self.logvar = nn.Linear(in_dim, style_dim)
-        self.sequence_model = HeavyCNNAttention(in_dim)
+        self.sequence_model = MultiScaleStyleContext(in_dim)
 
         # Build every trainable projection before the optimizer is created. The old
         # forward-time replacement silently left new parameters unoptimised.
@@ -462,21 +455,7 @@ class StyleEncoder(nn.Module):
             nn.init.orthogonal_(style_query_init[0])
             style_query_init.mul_(0.02 * (in_dim ** 0.5))
         self.style_queries = nn.Parameter(style_query_init)
-        # Keep spatial-attention queries separated throughout long training.
-        # The trainable component still adapts, while the fixed copy prevents
-        # the partial query collapse measured in the epoch-50 checkpoint.
-        self.register_buffer(
-            'style_query_anchors', style_query_init.detach().clone()
-        )
-
-        # A fixed orthogonal code gives every local slot a permanent identity.
-        # Writer evidence is still learned; the code only prevents all slots from
-        # converging to the same direction after attention and projection.
-        slot_anchors = torch.empty(1, query_count, style_dim)
-        if query_count:
-            nn.init.orthogonal_(slot_anchors[0])
-            slot_anchors.mul_(style_dim ** 0.5)
-        self.register_buffer('local_slot_anchors', slot_anchors)
+        # Slot queries are learned after orthogonal initialization.
 
         attention_gate_logit = torch.logit(torch.tensor(
             self.local_attention_residual_init
@@ -510,7 +489,7 @@ class StyleEncoder(nn.Module):
         nn.init.constant_(
             self.local_evidence_gate[-1].bias,
             torch.logit(torch.tensor(
-                2.0 * self.local_evidence_gate_init - 1.0
+                self.local_evidence_gate_init
             )).item(),
         )
         nn.init.constant_(self.logvar.weight, 0.)
@@ -634,17 +613,9 @@ class StyleEncoder(nn.Module):
         key_padding_mask = torch.cat(padding_masks, dim=1) if padding_masks else None
 
         batch_size = img.size(0)
-        style_queries = (
-            self.style_queries
-            + self.local_query_anchor_strength * self.style_query_anchors
-        ).expand(batch_size, -1, -1)
+        style_queries = self.style_queries.expand(batch_size, -1, -1)
         if style_queries.size(1):
-            pe_queries = get_1d_sinusoidal_embeddings(
-                style_queries.size(1), self._in_dim, style_queries.device
-            )
-            style_queries = self.style_query_norm(
-                style_queries + pe_queries.unsqueeze(0)
-            )
+            style_queries = self.style_query_norm(style_queries)
             local_attended, _ = self.style_cross_attn(
                 query=style_queries,
                 key=style_keys,
@@ -687,10 +658,9 @@ class StyleEncoder(nn.Module):
                 torch.abs(normalized_local - normalized_global),
                 normalized_variation,
             ], dim=-1)
-            # Keep at least half of the local visual evidence. This lower
-            # bound prevents local suppression; it does not prevent the gate
-            # from approaching one or guarantee diverse learned local tokens.
-            local_reliability = 0.5 + 0.5 * torch.sigmoid(
+            # Learned visual evidence can select any mixture, including a
+            # global fallback for an uninformative local reference.
+            local_reliability = torch.sigmoid(
                 self.local_evidence_gate(evidence_descriptor)
             )
         else:
@@ -699,35 +669,9 @@ class StyleEncoder(nn.Module):
             )
         global_mu = self.mu(global_style)
 
-        # Keep writer/style conditioning in the range learned by GBlocks. The
-        # bound is inactive for normal references and compresses only anomalous
-        # short-crop vectors.
-        safe_norm_cap = 9.5
-        g_norm = global_mu.norm(dim=-1, keepdim=True)
-        global_mu = global_mu * torch.clamp(
-            safe_norm_cap / (g_norm + 1e-6), max=1.0
-        )
-
         if local_style.size(1):
             local_data_mu = self.mu(local_style)
-            # Match the fixed code to each token's learned RMS. This makes the
-            # anti-collapse residual scale-aware without backpropagating through
-            # the scale estimate or overpowering writer-specific evidence.
-            local_data_rms = local_data_mu.detach().square().mean(
-                dim=-1, keepdim=True
-            ).sqrt().clamp_min(0.05)
-            local_identity = self.local_slot_anchors.expand(
-                batch_size, -1, -1
-            ).to(dtype=local_data_mu.dtype)
-            local_mu_raw = (
-                local_data_mu
-                + self.local_query_residual * local_data_rms * local_identity
-            )
-            local_mu = global_mu + local_reliability * (local_mu_raw - global_mu)
-            l_norm = local_mu.norm(dim=-1, keepdim=True)
-            local_mu = local_mu * torch.clamp(
-                safe_norm_cap / (l_norm + 1e-6), max=1.0
-            )
+            local_mu = global_mu + local_reliability * (local_data_mu - global_mu)
         else:
             local_mu = self.mu(local_style)
         style_tokens_mu = torch.cat([global_mu, local_mu], dim=1)

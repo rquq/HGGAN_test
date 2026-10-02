@@ -312,6 +312,8 @@ def yaml2config(yml_path):
         return d
 
     cfg = to_munch(data)
+    from lib.path_config import set_source_polarity
+    set_source_polarity(getattr(cfg, 'dataset_source_polarity', 'white'))
     return cfg
 
 

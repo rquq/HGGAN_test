@@ -5,11 +5,11 @@ import numpy as np
 #-\'.ü!"#%&()*+,/:;?
 Alphabets = {
     #'!#&():;?*%'
-    'all': '` ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789\'-"/,.+_!#&():;?',# n_class: 80
-    'iam_word': '` ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789\'-"/,.+_!#&():;?', # n_class: 80
-    'iam_line': '` ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789\'-"/,.+_!#&():;?', # n_class: 80
-    'cvl_word': '` ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789\'-"/,.+_!#&():;?', # n_class: 80
-    'custom': '` ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789\'-"/,.+_!#&():;?',
+    'all': '` ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789\'-"/,.+_!#&():;?*',# n_class: 81
+    'iam_word': '` ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789\'-"/,.+_!#&():;?*', # n_class: 81
+    'iam_line': '` ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789\'-"/,.+_!#&():;?*', # n_class: 81
+    'cvl_word': '` ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789\'-"/,.+_!#&():;?*', # n_class: 81
+    'custom': '` ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789\'-"/,.+_!#&():;?*',
     # 'cvl_word': '` ABDEFGHILNPRSTUVWYZabcdefghiklmnopqrstuvwxyz\'-_159', # n_class: 52
     'rimes_word': '` ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789%\'-/Éàâçèéêëîïôùû' # n_class: 81
 }
@@ -46,6 +46,16 @@ class strLabelConverter(object):
             # NOTE: 0 is reserved for 'blank' required by wrap_ctc
             self.dict[char] = i
 
+    def _encode_word(self, text):
+        normalized = text.lower() if self._ignore_case else text
+        unknown = sorted(set(normalized).difference(self.dict))
+        if unknown:
+            raise ValueError(
+                f'Character(s) {unknown!r} are outside the configured alphabet; '
+                'extend the alphabet and matching model vocabulary explicitly.'
+            )
+        return [self.dict[char] for char in normalized]
+
     def encode(self, text, max_len=None):
         """Support batch or single str.
         Args:
@@ -55,20 +65,14 @@ class strLabelConverter(object):
             torch.IntTensor [n]: length of each text.
         """
         if isinstance(text, str):
-            text = [
-                self.dict.get(char.lower() if self._ignore_case else char, 0)
-                for char in text
-            ]
-            return text
+            return self._encode_word(text)
 
         length = []
         result = []
         results = []
         for item in text:
             length.append(len(item))
-            for char in item:
-                index = self.dict.get(char.lower() if self._ignore_case else char, 0)
-                result.append(index)
+            result.extend(self._encode_word(item))
             results.append(result)
             result = []
 
