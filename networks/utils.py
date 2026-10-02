@@ -426,7 +426,7 @@ def adaptive_crop_count(valid_width, patch_size=32, min_crops=4, max_crops=8):
 def sample_stroke_patches(
     images, image_lens, min_crops=4, max_crops=8, fill_value=-1.0,
 ):
-    """Return half-height and full-height square crop batches with word counts.
+    """Return half-height square crop batches with per-word counts.
 
     Crop positions are stratified across valid horizontal starts and alternate
     upper/lower bands. No character boxes, ink thresholds, or labels are used.
@@ -444,7 +444,7 @@ def sample_stroke_patches(
     height = images.size(-2)
     slots = torch.arange(max_crops, device=images.device)
     scales = []
-    for size in (max(1, height // 2), height):
+    for size in (max(1, height // 2),):
         counts = ((widths + size - 1) // size).clamp(min_crops, max_crops)
         rows, indices = (slots[None, :] < counts[:, None]).nonzero(as_tuple=True)
         n = rows.numel()

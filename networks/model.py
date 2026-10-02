@@ -2027,7 +2027,7 @@ class GlobalLocalAdversarialModel(AdversarialModel):
             f'floor={getattr(opt.training, "min_lr_ratio", 0.001):.3f}x; '
             f'D/P:G={num_critic_train}:1; '
             f'patch G weight={patch_adv_weight:.3g}; '
-            f'crops=H/2+H ({min_patch_crops}-{max_patch_crops}/scale); '
+            f'crops=H/2 ({min_patch_crops}-{max_patch_crops}/word); '
             f'DiffAug={"on" if use_d_diffaug else "off"}'
         )
 
