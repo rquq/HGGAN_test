@@ -3,6 +3,7 @@ multi_gpu: false
 gpus: [0]
 model: 'gl_adversarial_model'
 dataset: 'custom'
+dataset_source_polarity: white
 seed: 123456
 img_height: 64
 char_width: 32
@@ -16,7 +17,7 @@ training:
   ckpt_dir: 'ckpts'
   lexicon: './data/english_words.txt'
   max_word_len: 20
-  n_class: 80
+  n_class: 81
   capitalize_ratio: 0.5
   blank_ratio: 0.
   sort_input: true
@@ -53,7 +54,7 @@ GenModel:
   resolution: 64
   G_kernel_size: 3
   G_attn: '0'
-  n_class: 80
+  n_class: 81
   embed_dim: 120
   embed_pad_idx: 0
   embed_max_norm: 1.0
@@ -106,7 +107,7 @@ OcrModel:
   init: 'none'
   dropout: 0.
   # ctc config
-  n_class: 80
+  n_class: 81
   rnn_depth: 2
   bidirectional: true
 

@@ -3,6 +3,7 @@ multi_gpu: false
 gpus: [0]
 model: 'identifier_model'
 dataset: 'iam_word'
+dataset_source_polarity: white
 seed: 123456
 img_height: 32
 finetune: false
@@ -21,7 +22,7 @@ training:
   teacher_ema: true  # true: validate/export EMA; false: current trained weights
   teacher_ema_beta: 0.999  # Used only when teacher_ema is true
   ckpt_dir: 'ckpts'
-  n_class: 80
+  n_class: 81
   sort_input: true
   resume: ~
   pretrained_backbone: './pretrained/ocr_iam_train32.pth'

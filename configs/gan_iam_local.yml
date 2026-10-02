@@ -3,6 +3,7 @@ multi_gpu: false
 gpus: [0]
 model: 'gl_adversarial_model'
 dataset: 'iam_word'
+dataset_source_polarity: white
 seed: 123456
 img_height: 64
 char_width: 32
@@ -57,7 +58,7 @@ training:
   ckpt_dir: 'ckpts'
   lexicon: './data/english_words.txt'
   max_word_len: 20
-  n_class: 80
+  n_class: 81
   capitalize_ratio: 0.5
   blank_ratio: 0.
   rare_word_ratio: 0.15
@@ -65,14 +66,10 @@ training:
   num_critic_train: 4
   # Slightly elevated patch adversarial pressure to sharpen cursive ligatures and reduce KID
   lambda_patch_adv: 0.45
-  patch_size: 32
   min_patch_crops: 4
   max_patch_crops: 8
   # Keep character-centered crops close enough to the intended allograph while
   # retaining small translation tolerance for real handwriting alignment.
-  patch_char_jitter: 4
-  patch_char_conditioning: true
-  patch_char_min_confidence: 0.25
   # Mild word-safe DiffAug is applied to both real and fake global-D inputs.
   d_diffaug: true
   d_aug_translate: 4
@@ -98,9 +95,8 @@ training:
   lambda_style_cycle: 1.0
   lambda_content_adv: 0.02
   lambda_kl: 0.1
-  # Use bounded reference-feature matching; frequency-only is an optional ablation.
+  # Use bounded reference-feature matching.
   lambda_ctx: 0.1
-  lambda_frequency: 0.0
   grad_clip: 5.0
   # Halve R1 per critic step and apply it half as often: same average R1
   # regularization per generator update, with less repeated second-order work.
@@ -171,19 +167,13 @@ GenModel:
   style_dim: 32
   fusion_gate_init: 0.25
   local_projection_residual_init: 0.1
-  allograph_routing_temperature: 0.7
-  allograph_routing_center_init: 0.5
-  allograph_routing_scale_max: 2.0
-  allograph_routing_uniform_mix: 0.05
-  allograph_modulation_limit: 0.3
-  allograph_residual_init: 0.5
-  allograph_modulation_rms_cap: 1.0
+  reference_residual_init: 0.15
   bottom_width: 4
   bottom_height: 4
   resolution: 64
   G_kernel_size: 3
   G_attn: '0'
-  n_class: 80
+  n_class: 81
   embed_dim: 120
   embed_pad_idx: 0
   embed_max_norm: 1.0
@@ -228,7 +218,6 @@ PatchDiscModel:
   init: 'N02'
   D_param: 'SN'
   input_nc: 1
-  n_class: 80
 
 OcrModel:
   resolution: 16
@@ -238,7 +227,7 @@ OcrModel:
   init: 'none'
   dropout: 0.
   # ctc config
-  n_class: 80
+  n_class: 81
   rnn_depth: 2
   bidirectional: true
 
@@ -257,11 +246,9 @@ EncModel:
   in_dim: 256
   num_style_tokens: 8
   backbone_channels: [64, 128, 256]
-  n_class: 80
+  n_class: 81
   content_grl: 1.0
-  local_query_residual: 0.5
   local_attention_residual_init: 0.25
-  local_query_anchor_strength: 0.5
   local_evidence_gate_init: 0.75
   local_evidence_gate_hidden: 64
   init: 'none'
