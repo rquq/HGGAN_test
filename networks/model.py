@@ -2533,7 +2533,7 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                         getattr(self.opt.training, 'grad_clip', 5.0),
                     )
                     generator = self.unwrap_model(self.models.G)
-                    fusion_scales = generator.style_content_mix.residual_scales.detach()
+                    fusion_scales = generator.fusion_scales.detach()
                     self.averager_meters.update_many({
                         'g_total': g_loss,
                         'g_adv': g_adv,

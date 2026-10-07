@@ -11,10 +11,10 @@ def _mask_tokens(sequence, mask):
     return sequence.masked_fill(~mask.unsqueeze(-1), 0.0)
 
 
-class StyleConditionedSelfAttention(nn.Module):
-    """Mix target positions, conditioned by the global writer style."""
+class ContentSelfAttention(nn.Module):
+    """Mix target positions without reference-style conditioning."""
 
-    def __init__(self, d_model, style_dim, nhead=4, attn_dim=128,
+    def __init__(self, d_model, nhead=4, attn_dim=128,
                  max_seq_len=32):
         super().__init__()
         if nhead < 1 or attn_dim < 1 or attn_dim % nhead:
@@ -25,8 +25,6 @@ class StyleConditionedSelfAttention(nn.Module):
         self.head_dim = attn_dim // nhead
         self.max_seq_len = max_seq_len
         self.content_norm = nn.LayerNorm(d_model, elementwise_affine=False)
-        self.style_norm = nn.LayerNorm(style_dim, elementwise_affine=False)
-        self.style_mod = nn.Linear(style_dim, d_model * 2)
         self.qkv = nn.Linear(d_model, attn_dim * 3, bias=False)
         self.attn_out = nn.Linear(attn_dim, d_model, bias=False)
         self.relative_position_bias = nn.Parameter(
@@ -34,17 +32,13 @@ class StyleConditionedSelfAttention(nn.Module):
         )
 
     def reset_stability_parameters(self):
-        nn.init.normal_(self.style_mod.weight, 0.0, 0.01)
-        nn.init.zeros_(self.style_mod.bias)
         nn.init.xavier_uniform_(self.qkv.weight)
         nn.init.xavier_uniform_(self.attn_out.weight)
         nn.init.zeros_(self.relative_position_bias)
 
-    def forward(self, content_seq, global_style, mask=None):
+    def forward(self, content_seq, mask=None):
         batch_size, length, _ = content_seq.shape
-        shift, scale = self.style_mod(self.style_norm(global_style)).chunk(2, dim=-1)
         conditioned = self.content_norm(content_seq)
-        conditioned = conditioned * (1.0 + scale.unsqueeze(1)) + shift.unsqueeze(1)
         qkv = self.qkv(conditioned).view(
             batch_size, length, 3, self.nhead, self.head_dim
         ).permute(2, 0, 3, 1, 4)
@@ -65,51 +59,80 @@ class StyleConditionedSelfAttention(nn.Module):
         return _mask_tokens(self.attn_out(attended), mask)
 
 
-class ReferenceStyleAttention(nn.Module):
-    """Retrieve local reference evidence independently in each attention head.
+class SpatialStyleRefinement(nn.Module):
+    """Refine early spatial G features with local evidence relative to global.
 
-    Target identity and neighbours are already represented in content queries.
-    Local tokens stay in their native style dimension until K/V projection.
+    Every valid spatial location is a query; local slots are the only keys.
+    A direct learned residual preserves the feature path without a strength cap.
     """
 
-    def __init__(self, d_model, style_dim, nhead=4, attn_dim=128):
+    def __init__(self, d_model, style_dim, nhead=4, attn_dim=128,
+                 residual_init=0.25):
         super().__init__()
         if nhead < 1 or attn_dim < 1 or attn_dim % nhead:
             raise ValueError('attn_dim must be positive and divisible by nhead')
+        if d_model < 1 or style_dim < 1 or residual_init <= 0:
+            raise ValueError('feature/style dimensions and residual_init must be positive')
+        self.d_model = d_model
+        self.residual_init = float(residual_init)
         self.nhead = nhead
         self.head_dim = attn_dim // nhead
-        self.content_norm = nn.LayerNorm(d_model, elementwise_affine=False)
+        self.feature_norm = nn.LayerNorm(d_model, elementwise_affine=False)
         self.style_norm = nn.LayerNorm(style_dim, elementwise_affine=False)
         self.q_proj = nn.Linear(d_model, attn_dim, bias=False)
         self.k_proj = nn.Linear(style_dim, attn_dim, bias=False)
         self.v_proj = nn.Linear(style_dim, attn_dim, bias=False)
         self.out_proj = nn.Linear(attn_dim, d_model, bias=False)
+        self.reference_scale = nn.Parameter(torch.full((d_model,), self.residual_init))
+        self.reset_stability_parameters()
 
     def reset_stability_parameters(self):
         for layer in (self.q_proj, self.k_proj, self.v_proj, self.out_proj):
             nn.init.xavier_uniform_(layer.weight)
+        with torch.no_grad():
+            self.reference_scale.fill_(self.residual_init)
 
-    def forward(self, content_seq, local_style_seq, mask=None):
-        batch_size, length, _ = content_seq.shape
+    def forward(self, feature, style_seq, x_lens=None):
+        if feature.ndim != 4 or feature.size(1) != self.d_model:
+            raise ValueError('spatial style refinement requires BCHW features with matching channels')
+        style_seq = ensure_dim3(style_seq)
+        if style_seq.size(0) != feature.size(0) or style_seq.size(1) < 2:
+            raise ValueError('spatial refinement requires one global and at least one local token per image')
+        batch_size, channels, height, width = feature.shape
+        spatial_seq = feature.permute(0, 2, 3, 1).reshape(batch_size, height * width, channels)
+        mask = None
+        if x_lens is not None:
+            lengths = x_lens.to(feature.device).long().clamp(1, width)
+            width_mask = torch.arange(width, device=feature.device)[None, :] < lengths[:, None]
+            mask = width_mask[:, None, :].expand(-1, height, -1).reshape(batch_size, height * width)
+        spatial_seq = _mask_tokens(spatial_seq, mask)
+        length = spatial_seq.size(1)
+        global_style, local_style_seq = style_seq[:, 0], style_seq[:, 1:]
         style = self.style_norm(local_style_seq)
-        query = self.q_proj(self.content_norm(content_seq)).view(
+        # Subtract in the same space as the existing value projection. Do not
+        # normalize the difference again: weak evidence must remain weak.
+        value_style = style - self.style_norm(global_style).unsqueeze(1)
+        query = self.q_proj(self.feature_norm(spatial_seq)).view(
             batch_size, length, self.nhead, self.head_dim
         ).transpose(1, 2)
         key = self.k_proj(style).view(
             batch_size, style.size(1), self.nhead, self.head_dim
         ).transpose(1, 2)
-        value = self.v_proj(style).view(
+        value = self.v_proj(value_style).view(
             batch_size, style.size(1), self.nhead, self.head_dim
         ).transpose(1, 2)
         attended = F.scaled_dot_product_attention(
             query, key, value, dropout_p=0.0, is_causal=False
         )
         attended = attended.transpose(1, 2).reshape(batch_size, length, -1)
-        return _mask_tokens(self.out_proj(attended), mask)
+        refined = _mask_tokens(
+            spatial_seq + self.reference_scale * self.out_proj(attended), mask
+        )
+        return refined.reshape(batch_size, height, width, channels).permute(0, 3, 1, 2).contiguous()
 
 
 class LocalGatedFeedForward(nn.Module):
-    """Joint content/style transformation with neighbouring-position context."""
+    """Content transformation with neighbouring-position context."""
 
     def __init__(self, d_model, hidden_dim):
         super().__init__()
@@ -138,8 +161,8 @@ class LocalGatedFeedForward(nn.Module):
         return _mask_tokens(transformed, mask)
 
 
-class StyleContentAttentionFusion(nn.Module):
-    """Target context -> reference retrieval -> joint local mixing.
+class ContentContext(nn.Module):
+    """Target self-attention and local mixing before constructing the G seed.
 
     Each pre-normalized sublayer has one direct learnable residual scale.
     Nonzero initialization enables immediate learning, without sigmoid
@@ -147,7 +170,7 @@ class StyleContentAttentionFusion(nn.Module):
     The same topology serves every supported image height.
     """
 
-    def __init__(self, d_model, style_dim, nhead=4, attn_dim=128,
+    def __init__(self, d_model, nhead=4, attn_dim=128,
                  ffn_dim=None, max_seq_len=32, residual_init=0.25):
         super().__init__()
         if residual_init <= 0:
@@ -156,35 +179,27 @@ class StyleContentAttentionFusion(nn.Module):
         if hidden_dim < 1:
             raise ValueError('ffn_dim must be positive')
         self.residual_init = float(residual_init)
-        self.content_context = StyleConditionedSelfAttention(
-            d_model, style_dim, nhead=nhead, attn_dim=attn_dim,
+        self.content_attention = ContentSelfAttention(
+            d_model, nhead=nhead, attn_dim=attn_dim,
             max_seq_len=max_seq_len,
-        )
-        self.reference_attention = ReferenceStyleAttention(
-            d_model, style_dim, nhead=nhead, attn_dim=attn_dim,
         )
         self.local_mixer = LocalGatedFeedForward(d_model, hidden_dim)
         self.context_scale = nn.Parameter(torch.full((d_model,), self.residual_init))
-        self.reference_scale = nn.Parameter(torch.full((d_model,), self.residual_init))
         self.local_scale = nn.Parameter(torch.full((d_model,), self.residual_init))
         self.reset_stability_parameters()
 
     @property
     def residual_scales(self):
-        return torch.stack((self.context_scale, self.reference_scale, self.local_scale))
+        return torch.stack((self.context_scale, self.local_scale))
 
     def reset_stability_parameters(self):
-        self.content_context.reset_stability_parameters()
-        self.reference_attention.reset_stability_parameters()
+        self.content_attention.reset_stability_parameters()
         self.local_mixer.reset_stability_parameters()
         with torch.no_grad():
-            for scale in (self.context_scale, self.reference_scale, self.local_scale):
+            for scale in (self.context_scale, self.local_scale):
                 scale.fill_(self.residual_init)
 
-    def forward(self, content_seq, style_seq, y_lens=None):
-        style_seq = ensure_dim3(style_seq)
-        if style_seq.size(1) < 2:
-            raise ValueError('fusion requires one global token and at least one local token')
+    def forward(self, content_seq, y_lens=None):
         if content_seq.size(1) < 1:
             raise ValueError('fusion requires at least one target position')
         mask = None
@@ -194,13 +209,8 @@ class StyleContentAttentionFusion(nn.Module):
             mask = positions.unsqueeze(0) < lengths.unsqueeze(1)
         content_seq = _mask_tokens(content_seq, mask)
         content_seq = _mask_tokens(
-            content_seq + self.context_scale * self.content_context(
-                content_seq, style_seq[:, 0], mask=mask
-            ), mask,
-        )
-        content_seq = _mask_tokens(
-            content_seq + self.reference_scale * self.reference_attention(
-                content_seq, style_seq[:, 1:], mask=mask
+            content_seq + self.context_scale * self.content_attention(
+                content_seq, mask=mask
             ), mask,
         )
         return _mask_tokens(

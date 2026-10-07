@@ -7,7 +7,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from . import BigGAN_layers as layers
-from .fusion import StyleContentAttentionFusion
+from .fusion import ContentContext, SpatialStyleRefinement
 from networks.utils import init_weights, _len2mask
 
 # Architectures for G
@@ -152,9 +152,14 @@ class Generator(nn.Module):
 
         self.filter_linear = self.which_linear(self.embed_dim,
                                         self.arch['in_channels'][0] * (self.bottom_width * self.bottom_height))
-        self.style_content_mix = StyleContentAttentionFusion(
-            self.embed_dim, self.style_dim, nhead=fusion_nhead,
+        self.content_context = ContentContext(
+            self.embed_dim, nhead=fusion_nhead,
             attn_dim=fusion_attn_dim, ffn_dim=fusion_ffn_dim,
+            residual_init=fusion_residual_init,
+        )
+        self.spatial_style = SpatialStyleRefinement(
+            self.arch['out_channels'][0], self.style_dim,
+            nhead=fusion_nhead, attn_dim=fusion_attn_dim,
             residual_init=fusion_residual_init,
         )
 
@@ -166,18 +171,10 @@ class Generator(nn.Module):
         self.blocks = []
         for index in range(len(self.arch['out_channels'])):
             upsample_scale = self.arch['upsample'][index]
-            # Replace only middle-stage conv2; keep conv1, style conditioning,
-            # upsampling and the GBlock shortcut identical to the baseline.
-            conv2 = self.which_conv
-            if index in (1, 2):
-                conv2 = functools.partial(
-                    layers.StarConv2d, which_conv=self.which_conv,
-                    spectral_norm=self.G_param == 'SN', eps=self.SN_eps,
-                )
             self.blocks += [[layers.GBlock(in_channels=self.arch['in_channels'][index],
                                            out_channels=self.arch['out_channels'][index],
                                            which_conv1=self.which_conv,
-                                           which_conv2=conv2,
+                                           which_conv2=self.which_conv,
                                            which_bn=self.which_bn,
                                            activation=self.activation,
                                            upsample=(functools.partial(
@@ -204,7 +201,8 @@ class Generator(nn.Module):
             init_weights(self, self.init)
         # General initialization touches fusion Linear weights; restore its
         # identity-like nonzero residual handoffs afterwards.
-        self.style_content_mix.reset_stability_parameters()
+        self.content_context.reset_stability_parameters()
+        self.spatial_style.reset_stability_parameters()
 
     def forward(self, z, y, y_lens):
         # Distribution is a reusable sampler container, not an activation
@@ -213,14 +211,12 @@ class Generator(nn.Module):
         if type(z) is not torch.Tensor:
             z = z.as_subclass(torch.Tensor)
 
-        # Only the explicit global token may bypass character-level fusion.
-        # Local tokens must travel through the aligned fusion path.
+        # Global style conditions every GBlock. Local evidence is retrieved
+        # only after the first block has formed an early spatial representation.
         ys = self.bssp(z[:, 0])
 
         content = self.text_embedding(y).float().to(y.device)
-        y_mixed = self.style_content_mix(
-            content, z, y_lens=y_lens
-        )
+        y_mixed = self.content_context(content, y_lens=y_lens)
         token_positions = torch.arange(y.size(1), device=y.device).unsqueeze(0)
         valid_tokens = (token_positions < y_lens.unsqueeze(1)).unsqueeze(-1)
         y_mixed = y_mixed * valid_tokens.to(y_mixed.dtype)
@@ -252,6 +248,8 @@ class Generator(nn.Module):
                         h, y=ys[index], x_lens=stage_input_lens,
                         out_x_lens=stage_output_lens,
                     )
+            if index == 0:
+                h = self.spatial_style(h, z, x_lens=stage_output_lens)
             # Conditional normalization and convolutions can populate padded
             # columns. Clear them after each stage so those activations cannot
             # feed back across the valid word boundary in a later convolution.
@@ -287,8 +285,15 @@ class Generator(nn.Module):
 
         return output
 
+    @property
+    def fusion_scales(self):
+        return torch.cat((
+            self.content_context.residual_scales.flatten(),
+            self.spatial_style.reference_scale,
+        ))
+
     def fusion_strength(self):
-        return self.style_content_mix.residual_scales.mean()
+        return self.fusion_scales.mean()
 
     def _info_attention(self):
         attn_index = -1

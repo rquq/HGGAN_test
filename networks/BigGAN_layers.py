@@ -468,39 +468,11 @@ class bn(nn.Module):
 
 
 # Generator blocks
-class StarConv2d(nn.Module):
-    """Star-style replacement for a same-channel generator convolution.
-
-    Two learned pointwise projections interact multiplicatively, following
-    Rewrite the Stars (CVPR 2024). Keep the existing GBlock normalization and
-    residual; this mixer adds neither a second residual nor a strength gate.
-    """
-
-    def __init__(self, in_channels, out_channels, which_conv=nn.Conv2d,
-                 spectral_norm=False, eps=1e-12):
-        super().__init__()
-        if in_channels != out_channels:
-            raise ValueError('StarConv2d replaces only same-channel convolutions')
-        hidden_channels = out_channels * 2
-        if spectral_norm:
-            self.spatial = SNDepthwiseConv2d(
-                in_channels, kernel_size=5, padding=2, eps=eps,
-            )
-        else:
-            self.spatial = nn.Conv2d(
-                in_channels, in_channels, kernel_size=5, padding=2,
-                groups=in_channels,
-            )
-        self.value = which_conv(in_channels, hidden_channels, kernel_size=1, padding=0)
-        self.gate = which_conv(in_channels, hidden_channels, kernel_size=1, padding=0)
-        self.project = which_conv(hidden_channels, out_channels, kernel_size=1, padding=0)
-
-    def forward(self, x):
-        x = self.spatial(x)
-        return self.project(self.value(x) * F.silu(self.gate(x)))
-
-
-# Kernel/padding and normalization factories are selected by Generator.
+# Note that this class assumes the kernel size and padding (and any other
+# settings) have been selected in the main generator module and passed in
+# through the which_conv arg. Similar rules apply with which_bn (the input
+# size [which is actually the number of channels of the conditional info] must
+# be preselected)
 class GBlock(nn.Module):
     def __init__(self, in_channels, out_channels,
                  which_conv1=nn.Conv2d, which_conv2=nn.Conv2d, which_bn=bn, activation=None,
