@@ -109,7 +109,7 @@ class _StyleContextBlock(nn.Module):
         super().__init__()
         hidden_dim = in_dim * 2
         self.depthwise = nn.Conv1d(
-            in_dim, in_dim, kernel_size=7, padding=3 * dilation,
+            in_dim, in_dim, kernel_size=7, padding=0,
             dilation=dilation, groups=in_dim,
         )
         # Channel normalization at each position is independent of batch padding.
@@ -124,7 +124,17 @@ class _StyleContextBlock(nn.Module):
         invalid = ~valid_mask[:, None, :].bool() if valid_mask is not None else None
         if invalid is not None:
             x = x.masked_fill(invalid, 0.0)
-        context = self.depthwise(x)
+        padding = self.depthwise.dilation[0] * (self.depthwise.kernel_size[0] - 1) // 2
+        if valid_mask is None:
+            context_input = F.pad(x, (padding, padding), mode='replicate')
+        else:
+            # Extend each sample's actual feature boundary, not the padded
+            # canvas edge. Valid positions are a left-aligned prefix.
+            last_valid = valid_mask.long().sum(dim=-1).clamp_min(1) - 1
+            positions = torch.arange(-padding, x.size(-1) + padding, device=x.device)
+            indices = torch.minimum(positions.clamp_min(0)[None, :], last_valid[:, None])
+            context_input = x.gather(2, indices[:, None, :].expand(-1, x.size(1), -1))
+        context = self.depthwise(context_input)
         context = self.norm(context.transpose(1, 2)).transpose(1, 2)
         value, gate = self.expand(context).chunk(2, dim=1)
         context = self.project(value * F.silu(gate))

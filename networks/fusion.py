@@ -69,7 +69,8 @@ class ReferenceStyleAttention(nn.Module):
     """Retrieve local reference evidence independently in each attention head.
 
     Target identity and neighbours are already represented in content queries.
-    Local tokens stay in their native style dimension until K/V projection.
+    Keys match normalized local tokens. Values carry local deviations from
+    the normalized global style, so a global fallback adds no local correction.
     """
 
     def __init__(self, d_model, style_dim, nhead=4, attn_dim=128):
@@ -89,16 +90,19 @@ class ReferenceStyleAttention(nn.Module):
         for layer in (self.q_proj, self.k_proj, self.v_proj, self.out_proj):
             nn.init.xavier_uniform_(layer.weight)
 
-    def forward(self, content_seq, local_style_seq, mask=None):
+    def forward(self, content_seq, local_style_seq, global_style, mask=None):
         batch_size, length, _ = content_seq.shape
         style = self.style_norm(local_style_seq)
+        # Subtract in the same space as the existing value projection. Do not
+        # normalize the difference again: weak evidence must remain weak.
+        value_style = style - self.style_norm(global_style).unsqueeze(1)
         query = self.q_proj(self.content_norm(content_seq)).view(
             batch_size, length, self.nhead, self.head_dim
         ).transpose(1, 2)
         key = self.k_proj(style).view(
             batch_size, style.size(1), self.nhead, self.head_dim
         ).transpose(1, 2)
-        value = self.v_proj(style).view(
+        value = self.v_proj(value_style).view(
             batch_size, style.size(1), self.nhead, self.head_dim
         ).transpose(1, 2)
         attended = F.scaled_dot_product_attention(
@@ -200,7 +204,7 @@ class StyleContentAttentionFusion(nn.Module):
         )
         content_seq = _mask_tokens(
             content_seq + self.reference_scale * self.reference_attention(
-                content_seq, style_seq[:, 1:], mask=mask
+                content_seq, style_seq[:, 1:], style_seq[:, 0], mask=mask
             ), mask,
         )
         return _mask_tokens(

@@ -453,3 +453,12 @@ Các kiểm tra này không phải full training test, không benchmark T4 và k
 | 31/08 15:41 | [4a9f0be](https://github.com/rquq/HGGAN_test/commit/4a9f0be9feccbc1a37d978a5caef99f7cae6660d) | Đổi critic 1→2 ở GAN configs; tắt IS ở GAN32/64. Không còn giữ critic=1 của ngày 30/08. |
 
 Chuỗi phát triển có ba bước lớn: **30/08 đưa texture refinement vào DEV và mở hỗ trợ x32; 31/08 chỉnh data/config/runtime cho đa resolution; 06/09 sửa phần còn sai và tinh chỉnh short-reference, sampling, patch conditioning, metrics cùng tốc độ.** Vì vậy khi giải thích một lần chất lượng tăng/giảm, cần xét cả teacher, data geometry và critic update budget thay vì gán hết cho texture branch.
+
+## 18. Cập nhật cấu hình MAIN IAM-32 ngày 07/10/2026
+
+- `configs/gan_iam_32.yml` dành cho refinement từ `best_fid_2.5464_main.pth` (epoch 74), chạy đến epoch 90. Giữ `training.pretrained_ckpt: ''` trong cấu hình; Kaggle notebook cung cấp đường checkpoint khi chạy.
+- Base LR của G/D/P cùng bằng `2e-5`; linear decay bắt đầu tại epoch 74, kéo dài 16 epochs, floor ratio `0.25`. Smoke check bằng scheduler/resume helper thực tế xác nhận epoch 75 dùng `1.875e-5`, floor `5e-6`.
+- `rare_word_ratio` tăng từ `0.15` lên `0.25`, chỉ dùng rare-word sampler từ corpus thật; bật CER và WER. Giữ nguyên kiến trúc, loss weights, EMA, batch size và critic ratio.
+- Đã strict-load EMA G/E và checkpoint B/R, sinh ảnh native `(1, 1, 32, 112)` cho `Machine`; OCR đọc đúng `Machine`. Chưa chạy training hay full validation sau thay đổi; chưa có bằng chứng rằng cấu hình mới cải thiện metric.
+- Checkpoint lưu Adam first/second moments, không lưu gradient tức thời hoặc lịch sử gradient norm. Phân tích tensor và optimizer moments không thay thế gradient diagnostics của training.
+

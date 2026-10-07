@@ -20,11 +20,13 @@ inference:
 
 training:
   dset_split: 'trnval'
-  epochs: 100
+  # Refine the epoch-74 IAM-32 checkpoint through epoch 90; preserve optimizer/EMA state.
+  epochs: 90
   lr_policy: 'linear'
-  start_decay_epoch: 36
-  n_epochs_decay: 48
-  min_lr_ratio: 0.15
+  # Resume-aware decay: epoch 75 uses 1.875e-5; epochs 86-90 use 5e-6.
+  start_decay_epoch: 74
+  n_epochs_decay: 16
+  min_lr_ratio: 0.25
   batch_size: 8
   eval_batch_size: 8
   num_workers: 4
@@ -33,9 +35,9 @@ training:
   persistent_workers: true
   prefetch_factor: 3
   sample_nrow: 4
-  lr: 2.0e-4
-  d_lr: 2.0e-4
-  patch_d_lr: 2.0e-4
+  lr: 2.0e-5
+  d_lr: 2.0e-5
+  patch_d_lr: 2.0e-5
   adam_b1: 0.5
   adam_b2: 0.999
   sample_iter_val: 500
@@ -50,7 +52,8 @@ training:
   n_class: 81
   capitalize_ratio: 0.5
   blank_ratio: 0.
-  rare_word_ratio: 0.15
+  # Increase exposure to real corpus rare-glyph tokens, without fabricated strings.
+  rare_word_ratio: 0.25
   sort_input: true
   num_critic_train: 2
   lambda_patch_adv: 0.45
@@ -98,8 +101,9 @@ valid:
   validate_hwd: true
   validate_cmmd: false
   validate_cmmd_every_n_epochs: 4
-  validate_cer: false
-  validate_wer: false
+  # Track readability alongside image-distribution metrics during refinement.
+  validate_cer: true
+  validate_wer: true
   validate_is_gen: false
   validate_is_org: false
   validate_psnr: false
