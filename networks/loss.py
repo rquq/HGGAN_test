@@ -233,6 +233,62 @@ def _global_style(style):
     return style if style.dim() == 2 else style[:, 0]
 
 
+def global_style_reconstruction_loss(
+    pred: torch.Tensor, target: torch.Tensor, num_style_tokens: int
+) -> torch.Tensor:
+    """Apply the existing mean L1 to global style, retaining its all-token scale."""
+    if (
+        isinstance(num_style_tokens, bool)
+        or not isinstance(num_style_tokens, int)
+        or num_style_tokens <= 0
+    ):
+        raise ValueError('num_style_tokens must be a positive integer')
+    if (
+        pred.ndim != 3
+        or target.ndim != 3
+        or pred.shape != target.shape
+        or pred.size(0) < 1
+        or pred.size(1) not in (1, num_style_tokens)
+        or pred.size(2) < 1
+    ):
+        raise ValueError(
+            'pred and target must have matching shape (B, 1 or N, D)'
+        )
+    return F.l1_loss(pred[:, :1], target[:, :1]) / num_style_tokens
+
+
+def global_content_adversarial_loss(
+    logits: torch.Tensor, labels: torch.Tensor, num_style_tokens: int
+) -> torch.Tensor:
+    """Apply the existing bag-of-character BCE to global logits at all-token scale."""
+    if (
+        isinstance(num_style_tokens, bool)
+        or not isinstance(num_style_tokens, int)
+        or num_style_tokens <= 0
+    ):
+        raise ValueError('num_style_tokens must be a positive integer')
+    if (
+        logits.ndim != 3
+        or logits.size(0) < 1
+        or logits.size(1) != 1
+        or logits.size(2) < 1
+    ):
+        raise ValueError('logits must have shape (B, 1, C)')
+    if labels.ndim != 2 or labels.size(0) != logits.size(0):
+        raise ValueError('labels must have shape (B, L) matching logits batch size')
+
+    content_targets = torch.zeros_like(logits)
+    content_indices = labels[:, None, :].expand(-1, 1, -1)
+    content_indices = content_indices.clamp(0, logits.size(2) - 1)
+    content_targets.scatter_(2, content_indices, 1.0)
+    content_targets[..., 0] = 0.0
+    positive_fraction = content_targets.mean().detach().clamp(1e-4, 0.5)
+    positive_weight = ((1.0 - positive_fraction) / positive_fraction).clamp(max=10.0)
+    return F.binary_cross_entropy_with_logits(
+        logits, content_targets, pos_weight=positive_weight
+    ) / num_style_tokens
+
+
 
 
 def supervised_contrastive_style_loss(styles, writer_ids, temperature=0.1):

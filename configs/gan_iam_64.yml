@@ -21,7 +21,7 @@ inference:
 
 training:
   dset_split: 'trnval'
-  epochs: 100
+  epochs: 80
   lr_policy: 'linear'
   start_decay_epoch: 36
   n_epochs_decay: 48
@@ -71,6 +71,8 @@ training:
   lambda_ctc_style_final: 0.20
   ctc_style_decay_start_epoch: 8
   ctc_style_decay_end_epoch: 28
+  # Keep the 8-token baseline's global-loss scale when changing local slots.
+  style_loss_normalization_tokens: 8
   lambda_info: 1.0
   lambda_wid: 0.5
   lambda_recn: 10.0
@@ -233,14 +235,11 @@ EncModel:
   style_dim: 32
   in_dim: 256
   init: 'none'
-  num_style_tokens: 8
-  num_local_queries: 7
+  num_style_tokens: 5
+  num_local_queries: 4
   query_dim: 256
   heads: 4
   cross_attn_dropout: 0.0
-  local_attention_residual_init: 0.5
-  local_evidence_gate_init: 0.75
-  local_evidence_gate_hidden: 64
   feature_scales: [1, 2, 4]
 
 
