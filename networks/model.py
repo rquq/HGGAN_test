@@ -18,14 +18,14 @@ import torch.nn.functional as F
 from metric.val_metrics import calculate_fid_kid_is
 from metric.mssim_psnr import calculate_mssim_psnr
 from networks.utils import _info, set_requires_grad, get_scheduler, idx_to_words, rescale_images, rescale_images2, \
-                            words_to_images, ctc_greedy_decoder, sample_stroke_patches, run_patch_discriminator, augment_word_batch, frozen_bn, restore_scheduler_state
+                            words_to_images, ctc_greedy_decoder, sample_stroke_patches, run_patch_discriminator, augment_word_batch, frozen_bn, restore_scheduler_state, center_style_prior
 from networks.BigGAN_networks import Generator, Discriminator, PatchDiscriminator
 from networks.module import Recognizer, WriterIdentifier, StyleEncoder, StyleBackbone
 from lib.datasets import get_dataset, get_collect_fn, Hdf5Dataset
 from lib.alphabet import strLabelConverter, get_lexicon, get_true_alphabet, Alphabets
 from lib.utils import draw_image, get_logger, AverageMeterManager, option_to_string, AverageMeter, plot_heatmap, write_wandb_log
 from networks.rand_dist import prepare_z_dist, prepare_y_dist
-from networks.loss import recn_l1_loss, CXLoss, KLloss, r1_reg
+from networks.loss import recn_l1_loss, CXLoss, KLloss, r1_reg, global_style_reconstruction_loss, global_content_adversarial_loss
 
 
 class EMA(object):
@@ -1002,7 +1002,7 @@ class AdversarialModel(BaseModel):
 
         with torch.no_grad():
             self.eval_z.sample_()
-            eval_z_in = self.eval_z
+            eval_z_in = center_style_prior(self.eval_z)
 
             recn_imgs = None
             if 'E' in self.models:
@@ -1102,10 +1102,10 @@ class AdversarialModel(BaseModel):
                         enc_z = self.models.E(style_refs, style_ref_lens, self.models.B)
                     else:
                         num_tokens = getattr(self.opt.EncModel, 'num_style_tokens', 8)
-                        enc_z = torch.randn(
+                        enc_z = center_style_prior(torch.randn(
                             style_lb_lens.size(0), num_tokens, self.models.G.style_dim,
                             device=device,
-                        )
+                        ))
 
                     fake_batch['style_imgs'] = self.models.G(enc_z, content_lbs, content_lb_lens)
                     fake_batch['style_img_lens'] = fake_batch['lb_lens'] * self.opt.char_width
@@ -1572,8 +1572,8 @@ class AdversarialModel(BaseModel):
 
                 num_tokens = getattr(self.opt.EncModel, 'num_style_tokens', 8)
                 style_dim = getattr(self.opt.EncModel, 'style_dim', 32)
-                style0 = torch.randn((1, num_tokens, style_dim))
-                style1 = torch.randn(style0.size())
+                style0 = center_style_prior(torch.randn((1, num_tokens, style_dim)))
+                style1 = center_style_prior(torch.randn(style0.size()))
 
                 styles = [torch.lerp(style0, style1, i / (interp_num - 1)) for i in range(interp_num)]
                 styles = torch.cat(styles, dim=0).float().to(self.device)
@@ -1666,7 +1666,7 @@ class AdversarialModel(BaseModel):
                 fake_lb_lens = fake_lb_lens.repeat(nrow, ).to(self.device)
 
                 rand_z.sample_()
-                rand_styles = rand_z.unsqueeze(1).repeat(1, ncol, 1, 1).view(nrow * ncol, rand_z.size(1), -1)
+                rand_styles = center_style_prior(rand_z).unsqueeze(1).repeat(1, ncol, 1, 1).view(nrow * ncol, rand_z.size(1), -1)
                 gen_imgs = self.models.G(rand_styles, fake_lbs, fake_lb_lens)
                 gen_imgs = (1 - gen_imgs).squeeze(1).cpu().numpy() * 127
                 plt.figure()
@@ -2113,7 +2113,7 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                     fake_lbs, fake_lb_lens = fake_lbs.to(device).detach(), fake_lb_lens.to(device).detach()
 
                     self.z.sample_()
-                    z_in = self.z
+                    z_in = center_style_prior(self.z)
 
                     # B is frozen and in eval mode. Cache only its real-image
                     # features for this batch; E must run again with gradients
@@ -2256,7 +2256,7 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                     fake_lbs, fake_lb_lens = fake_lbs.to(device).detach(), fake_lb_lens.to(device).detach()
 
                     self.z.sample_()
-                    z_in = self.z
+                    z_in = center_style_prior(self.z)
 
                     # Keep reference strokes intact for style encoding.
                     if self.vae_mode:
@@ -2349,7 +2349,8 @@ class GlobalLocalAdversarialModel(AdversarialModel):
 
                     ### Style Reconstruction, Transfer Cycle, and Disentanglement ###
                     styles = self.models.E(
-                        fake_imgs, fake_lb_lens * self.opt.char_width, self.models.B
+                        fake_imgs, fake_lb_lens * self.opt.char_width, self.models.B,
+                        global_only=True,
                     )
                     transferred_styles, style_img_feats, style_backbone_feat = (
                         self.models.E(
@@ -2358,28 +2359,23 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                             self.models.B,
                             ret_feats=True,
                             ret_backbone_feat=True,
+                            global_only=True,
                         )
                     )
-                    info_loss = torch.mean(torch.abs(styles - z_in.detach()))
+                    encoder = self.unwrap_model(self.models.E)
+                    info_loss = global_style_reconstruction_loss(
+                        styles, z_in[:, :1].detach(), encoder.num_style_tokens
+                    )
                     real_style_for_loss = mu if self.vae_mode else enc_z
-                    style_cycle_loss = F.l1_loss(
-                        transferred_styles, real_style_for_loss.detach()
+                    style_cycle_loss = global_style_reconstruction_loss(
+                        transferred_styles, real_style_for_loss[:, :1].detach(),
+                        encoder.num_style_tokens,
                     )
 
-                    encoder = self.unwrap_model(self.models.E)
                     content_code = mu if self.vae_mode else enc_z
                     content_logits = encoder.predict_content(content_code, reverse=True)
-                    content_targets = torch.zeros_like(content_logits)
-                    content_indices = real_lbs[:, None, :].expand(
-                        -1, content_logits.size(1), -1
-                    )
-                    content_indices = content_indices.clamp(0, content_logits.size(2) - 1)
-                    content_targets.scatter_(2, content_indices, 1.0)
-                    content_targets[..., 0] = 0.0
-                    positive_fraction = content_targets.mean().detach().clamp(1e-4, 0.5)
-                    content_pos_weight = ((1.0 - positive_fraction) / positive_fraction).clamp(max=10.0)
-                    content_adv_loss = F.binary_cross_entropy_with_logits(
-                        content_logits, content_targets, pos_weight=content_pos_weight
+                    content_adv_loss = global_content_adversarial_loss(
+                        content_logits, real_lbs, encoder.num_style_tokens
                     )
 
                     ### Content Restruction ###

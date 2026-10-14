@@ -107,11 +107,9 @@ class SpatialStyleRefinement(nn.Module):
             mask = width_mask[:, None, :].expand(-1, height, -1).reshape(batch_size, height * width)
         spatial_seq = _mask_tokens(spatial_seq, mask)
         length = spatial_seq.size(1)
-        global_style, local_style_seq = style_seq[:, 0], style_seq[:, 1:]
+        local_style_seq = style_seq[:, 1:]
         style = self.style_norm(local_style_seq)
-        # Subtract in the same space as the existing value projection. Do not
-        # normalize the difference again: weak evidence must remain weak.
-        value_style = style - self.style_norm(global_style).unsqueeze(1)
+        value_style = local_style_seq
         query = self.q_proj(self.feature_norm(spatial_seq)).view(
             batch_size, length, self.nhead, self.head_dim
         ).transpose(1, 2)

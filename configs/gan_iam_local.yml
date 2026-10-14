@@ -249,9 +249,6 @@ EncModel:
   backbone_channels: [64, 128, 256]
   n_class: 81
   content_grl: 1.0
-  local_attention_residual_init: 0.25
-  local_evidence_gate_init: 0.75
-  local_evidence_gate_hidden: 64
   init: 'none'
 
 

@@ -232,11 +232,7 @@ EncModel:
   query_dim: 256
   heads: 4
   cross_attn_dropout: 0.0
-  local_attention_residual_init: 0.5
-  local_evidence_gate_init: 0.75
-  local_evidence_gate_hidden: 64
-  # All three backbone maps keep old 32px checkpoints shape-compatible.  A
-  # future speed ablation may shorten this list to select shallow maps only.
+  # All three backbone maps contribute to the shared multiscale evidence path.
   feature_scales: [1, 2, 4]
 
 
