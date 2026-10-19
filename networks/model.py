@@ -1003,7 +1003,7 @@ class GlobalLocalAdversarialModel(AdversarialModel):
             except Exception:
                 pass
             if branchname in [None, 'main', 'master', 'HEAD']:
-                if folder_branch in ['main', 'dev', 'random_crop_recog', 'classic_optimized', 'HiGANplus', 'higanplus']:
+                if folder_branch in ['main', 'dev', 'alpha', 'classic_optimized', 'HiGANplus', 'higanplus']:
                     branchname = folder_branch
             if not branchname:
                 branchname = 'classic_optimized'
