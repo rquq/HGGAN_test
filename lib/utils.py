@@ -216,7 +216,7 @@ def init_wandb_run(opt, project='HiGANplus'):
         folder_branch = os.path.basename(os.path.abspath(os.getcwd()))
         if not branch_name or branch_name in ('HEAD', 'main', 'master'):
             if folder_branch in (
-                'main', 'dev', 'random_crop_recog', 'classic_optimized',
+                'main', 'dev', 'alpha', 'classic_optimized',
                 'HiGANplus', 'higanplus',
             ):
                 branch_name = folder_branch
