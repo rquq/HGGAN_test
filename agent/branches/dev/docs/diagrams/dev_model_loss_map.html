@@ -1,0 +1,224 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>DEV architecture and exact loss map</title>
+<style>body{margin:0;background:#fffefa;color:#293440;font-family:Arial,sans-serif}main{max-width:2000px;margin:auto}svg{display:block;width:100%;height:auto}details{margin:24px 3%;line-height:1.6}a{color:#5b4b84}</style></head><body><main><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2000 2352" width="2000" height="2352" role="img" aria-labelledby="dev-model-loss-map-title dev-model-loss-map-desc">
+<title id="dev-model-loss-map-title">DEV architecture and training loss map</title>
+<desc id="dev-model-loss-map-desc">A shared handwriting generator with explicit module paths, targets, loss weights, frozen teachers and gradient destinations for reconstruction, recognition, style, distribution regularization and adversarial training.</desc>
+<defs>
+<marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8 Z" fill="#596775"/></marker>
+<marker id="arrow-accent" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8 Z" fill="#ad6688"/></marker>
+<marker id="arrow-link" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8 Z" fill="#729783"/></marker>
+</defs>
+<rect width="2000" height="2352" fill="#fffefa"/>
+<text x="48" y="56" font-family="DejaVu Sans, Arial, sans-serif" font-size="32" font-weight="600" fill="#293440" text-anchor="start">DEV · Architecture &amp; exact loss connections</text>
+<text x="48" y="92" font-family="DejaVu Sans, Arial, sans-serif" font-size="20" font-weight="400" fill="#596775" text-anchor="start">Prediction → objective ← comparison target. Each panel states which parameters receive gradients.</text>
+<text x="1952" y="56" font-family="DejaVu Sans, Arial, sans-serif" font-size="16" font-weight="400" fill="#596775" text-anchor="end">4753021 · GAN64 CONFIG</text>
+<text x="48" y="136" font-family="DejaVu Sans, Arial, sans-serif" font-size="20" font-weight="600" fill="#293440" text-anchor="start">01  SHARED FORWARD PATH</text>
+<path d="M288 248 H340" fill="none" stroke="#596775" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M760 248 H872" fill="none" stroke="#596775" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M1472 248 H1564" fill="none" stroke="#596775" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M1172 136 V168" fill="none" stroke="#596775" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="1172" y="120" font-family="DejaVu Sans, Arial, sans-serif" font-size="16" font-weight="400" fill="#596775" text-anchor="middle">target text t or reference text c</text>
+<rect x="48" y="196" width="240" height="104" rx="8" fill="#f0f2f3" stroke="#bac3c8" stroke-width="1.5"/>
+<text x="168.0" y="242.0" font-family="DejaVu Sans, Arial, sans-serif" font-size="20" font-weight="600" fill="#293440" text-anchor="middle">Original reference x</text>
+<text x="168.0" y="270.0" font-family="DejaVu Sans, Arial, sans-serif" font-size="20" font-weight="400" fill="#293440" text-anchor="middle">text c · writer w</text>
+<rect x="340" y="176" width="420" height="144" rx="8" fill="#e8f5ee" stroke="#bac3c8" stroke-width="1.5"/>
+<text x="550.0" y="228.0" font-family="DejaVu Sans, Arial, sans-serif" font-size="20" font-weight="600" fill="#293440" text-anchor="middle">B frozen → E trainable</text>
+<text x="550.0" y="256.0" font-family="DejaVu Sans, Arial, sans-serif" font-size="20" font-weight="400" fill="#293440" text-anchor="middle">8 style tokens: 1 global + 7 local</text>
+<text x="550.0" y="284.0" font-family="DejaVu Sans, Arial, sans-serif" font-size="20" font-weight="400" fill="#293440" text-anchor="middle">q = N(μ, diag(exp(logvar)))</text>
+<text x="816" y="220" font-family="DejaVu Sans, Arial, sans-serif" font-size="16" font-weight="400" fill="#596775" text-anchor="middle">s ~ q</text>
+<rect x="872" y="168" width="600" height="152" rx="8" fill="#f8e7ee" stroke="#bac3c8" stroke-width="1.5"/>
+<text x="1172.0" y="224.0" font-family="DejaVu Sans, Arial, sans-serif" font-size="20" font-weight="600" fill="#293440" text-anchor="middle">Shared G</text>
+<text x="1172.0" y="252.0" font-family="DejaVu Sans, Arial, sans-serif" font-size="20" font-weight="400" fill="#293440" text-anchor="middle">Text embedding → 3-stage fusion → GBlocks</text>
+<text x="1172.0" y="280.0" font-family="DejaVu Sans, Arial, sans-serif" font-size="20" font-weight="400" fill="#293440" text-anchor="middle">+ texture refinement → tanh</text>
+<rect x="1564" y="176" width="388" height="144" rx="8" fill="#eeebf8" stroke="#bac3c8" stroke-width="1.5"/>
+<text x="1758.0" y="228.0" font-family="DejaVu Sans, Arial, sans-serif" font-size="20" font-weight="600" fill="#293440" text-anchor="middle">Random: F = G(z, t)</text>
+<text x="1758.0" y="256.0" font-family="DejaVu Sans, Arial, sans-serif" font-size="20" font-weight="400" fill="#293440" text-anchor="middle">Transfer: S = G(s, t)</text>
+<text x="1758.0" y="284.0" font-family="DejaVu Sans, Arial, sans-serif" font-size="20" font-weight="400" fill="#293440" text-anchor="middle">Reconstruction: C = G(s, c)</text>
+<text x="48" y="364" font-family="DejaVu Sans, Arial, sans-serif" font-size="20" font-weight="400" fill="#293440" text-anchor="start">x = original-width reference; r = the same word resized to the model’s per-character width.</text>
+<text x="48" y="400" font-family="DejaVu Sans, Arial, sans-serif" font-size="20" font-weight="400" fill="#293440" text-anchor="start">z ~ N(0, I) bypasses B/E. Eμ denotes deterministic re-encoding; μ is the mean of the original reference.</text>
+<text x="48" y="456" font-family="DejaVu Sans, Arial, sans-serif" font-size="20" font-weight="600" fill="#293440" text-anchor="start">02  GENERATOR / ENCODER OBJECTIVES</text>
+<text x="1952" y="456" font-family="DejaVu Sans, Arial, sans-serif" font-size="16" font-weight="400" fill="#596775" text-anchor="end">Weights: gan_iam_64.yml · “sg” = stop-gradient</text>
+<rect x="48" y="488" width="928" height="240" rx="8" fill="#fffefa" stroke="#ccd2d5" stroke-width="1.5"/>
+<text x="72" y="524" font-family="DejaVu Sans, Arial, sans-serif" font-size="24" font-weight="600" fill="#293440" text-anchor="start">Readability · random + transfer</text>
+<text x="952" y="524" font-family="DejaVu Sans, Arial, sans-serif" font-size="16" font-weight="400" fill="#596775" text-anchor="end">λrand 1→0.4; λstyle 0.5→0.08</text>
+<path d="M464 600 H504" fill="none" stroke="#596775" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M680 600 H640" fill="none" stroke="#596775" stroke-width="2" marker-end="url(#arrow)"/>
+<rect x="72" y="560" width="392" height="80" rx="8" fill="#e8f5ee" stroke="#bac3c8" stroke-width="1.5"/>
+<text x="268.0" y="594.0" font-family="DejaVu Sans, Arial, sans-serif" font-size="20" font-weight="600" fill="#293440" text-anchor="middle">F → R   and   S → R</text>
+<text x="268.0" y="622.0" font-family="DejaVu Sans, Arial, sans-serif" font-size="20" font-weight="400" fill="#293440" text-anchor="middle">R is frozen; CTC log probabilities</text>
+<rect x="504" y="568" width="136" height="64" rx="8" fill="#fff0df" stroke="#bac3c8" stroke-width="1.5"/>
+<text x="572.0" y="608.0" font-family="DejaVu Sans, Arial, sans-serif" font-size="20" font-weight="600" fill="#293440" text-anchor="middle">CTC</text>
+<rect x="680" y="560" width="272" height="80" rx="8" fill="#f0f2f3" stroke="#bac3c8" stroke-width="1.5"/>
+<text x="816.0" y="594.0" font-family="DejaVu Sans, Arial, sans-serif" font-size="20" font-weight="600" fill="#293440" text-anchor="middle">Sampled text t</text>
+<text x="816.0" y="622.0" font-family="DejaVu Sans, Arial, sans-serif" font-size="20" font-weight="400" fill="#293440" text-anchor="middle">valid text / image lengths</text>
+<text x="72" y="676" font-family="DejaVu Sans, Arial, sans-serif" font-size="20" font-weight="400" fill="#293440" text-anchor="start">CTC(R(F), t) + CTC(R(S), t), with separate weights; no CTC on C.</text>
+<text x="72" y="708" font-family="DejaVu Sans, Arial, sans-serif" font-size="16" font-weight="600" fill="#596278" text-anchor="start">Updates: G for both branches; E through transfer S. R stays frozen.</text>
+<rect x="1024" y="488" width="928" height="240" rx="8" fill="#fffefa" stroke="#ccd2d5" stroke-width="1.5"/>
+<text x="1048" y="524" font-family="DejaVu Sans, Arial, sans-serif" font-size="24" font-weight="600" fill="#293440" text-anchor="start">Writer identity · transfer</text>
+<text x="1928" y="524" font-family="DejaVu Sans, Arial, sans-serif" font-size="16" font-weight="400" fill="#596775" text-anchor="end">weight 0.5</text>
+<path d="M1440 600 H1480" fill="none" stroke="#596775" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M1656 600 H1616" fill="none" stroke="#596775" stroke-width="2" marker-end="url(#arrow)"/>
+<rect x="1048" y="560" width="392" height="80" rx="8" fill="#e8f5ee" stroke="#bac3c8" stroke-width="1.5"/>
+<text x="1244.0" y="594.0" font-family="DejaVu Sans, Arial, sans-serif" font-size="20" font-weight="600" fill="#293440" text-anchor="middle">S → B → W</text>
+<text x="1244.0" y="622.0" font-family="DejaVu Sans, Arial, sans-serif" font-size="20" font-weight="400" fill="#293440" text-anchor="middle">B and W are frozen</text>
+<rect x="1480" y="568" width="136" height="64" rx="8" fill="#fff0df" stroke="#bac3c8" stroke-width="1.5"/>
+<text x="1548.0" y="608.0" font-family="DejaVu Sans, Arial, sans-serif" font-size="20" font-weight="600" fill="#293440" text-anchor="middle">CE</text>
+<rect x="1656" y="560" width="272" height="80" rx="8" fill="#f0f2f3" stroke="#bac3c8" stroke-width="1.5"/>
+<text x="1792.0" y="594.0" font-family="DejaVu Sans, Arial, sans-serif" font-size="20" font-weight="600" fill="#293440" text-anchor="middle">Writer ID w</text>
+<text x="1792.0" y="622.0" font-family="DejaVu Sans, Arial, sans-serif" font-size="20" font-weight="400" fill="#293440" text-anchor="middle">of reference x</text>
+<text x="1048" y="676" font-family="DejaVu Sans, Arial, sans-serif" font-size="20" font-weight="400" fill="#293440" text-anchor="start">Cross-entropy compares writer logits to the reference writer label.</text>
+<text x="1048" y="708" font-family="DejaVu Sans, Arial, sans-serif" font-size="16" font-weight="600" fill="#596278" text-anchor="start">Updates: G + E through S. No writer-teacher parameter updates.</text>
+<rect x="48" y="752" width="928" height="240" rx="8" fill="#fffefa" stroke="#ccd2d5" stroke-width="1.5"/>
+<text x="72" y="788" font-family="DejaVu Sans, Arial, sans-serif" font-size="24" font-weight="600" fill="#293440" text-anchor="start">Pixel reconstruction</text>
+<text x="952" y="788" font-family="DejaVu Sans, Arial, sans-serif" font-size="16" font-weight="400" fill="#596775" text-anchor="end">λrec 10→2.5</text>
+<path d="M464 864 H504" fill="none" stroke="#596775" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M680 864 H640" fill="none" stroke="#596775" stroke-width="2" marker-end="url(#arrow)"/>
+<rect x="72" y="824" width="392" height="80" rx="8" fill="#f8e7ee" stroke="#bac3c8" stroke-width="1.5"/>
+<text x="268.0" y="858.0" font-family="DejaVu Sans, Arial, sans-serif" font-size="20" font-weight="600" fill="#293440" text-anchor="middle">C = G(s, c)</text>
+<text x="268.0" y="886.0" font-family="DejaVu Sans, Arial, sans-serif" font-size="20" font-weight="400" fill="#293440" text-anchor="middle">same writer, same reference text</text>
+<rect x="504" y="832" width="136" height="64" rx="8" fill="#fff0df" stroke="#bac3c8" stroke-width="1.5"/>
+<text x="572.0" y="872.0" font-family="DejaVu Sans, Arial, sans-serif" font-size="20" font-weight="600" fill="#293440" text-anchor="middle">L1</text>
+<rect x="680" y="824" width="272" height="80" rx="8" fill="#f0f2f3" stroke="#bac3c8" stroke-width="1.5"/>
+<text x="816.0" y="858.0" font-family="DejaVu Sans, Arial, sans-serif" font-size="20" font-weight="600" fill="#293440" text-anchor="middle">Real image r</text>
+<text x="816.0" y="886.0" font-family="DejaVu Sans, Arial, sans-serif" font-size="20" font-weight="400" fill="#293440" text-anchor="middle">width-normalized target</text>
+<text x="72" y="940" font-family="DejaVu Sans, Arial, sans-serif" font-size="20" font-weight="400" fill="#293440" text-anchor="start">Mean absolute pixel error over valid widths; padded tails are masked.</text>
+<text x="72" y="972" font-family="DejaVu Sans, Arial, sans-serif" font-size="16" font-weight="600" fill="#596278" text-anchor="start">Updates: G + E through encoded style s.</text>
+<rect x="1024" y="752" width="928" height="240" rx="8" fill="#fffefa" stroke="#ccd2d5" stroke-width="1.5"/>
+<text x="1048" y="788" font-family="DejaVu Sans, Arial, sans-serif" font-size="24" font-weight="600" fill="#293440" text-anchor="start">Contextual style · transfer</text>
+<text x="1928" y="788" font-family="DejaVu Sans, Arial, sans-serif" font-size="16" font-weight="400" fill="#596775" text-anchor="end">weight 0.1</text>
+<path d="M1440 864 H1480" fill="none" stroke="#596775" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M1656 864 H1616" fill="none" stroke="#596775" stroke-width="2" marker-end="url(#arrow)"/>
+<rect x="1048" y="824" width="392" height="80" rx="8" fill="#e8f5ee" stroke="#bac3c8" stroke-width="1.5"/>
+<text x="1244.0" y="858.0" font-family="DejaVu Sans, Arial, sans-serif" font-size="20" font-weight="600" fill="#293440" text-anchor="middle">S → shared backbone B</text>
+<text x="1244.0" y="886.0" font-family="DejaVu Sans, Arial, sans-serif" font-size="20" font-weight="400" fill="#293440" text-anchor="middle">multi-scale features Bℓ(S)</text>
+<rect x="1480" y="832" width="136" height="64" rx="8" fill="#fff0df" stroke="#bac3c8" stroke-width="1.5"/>
+<text x="1548.0" y="872.0" font-family="DejaVu Sans, Arial, sans-serif" font-size="20" font-weight="600" fill="#293440" text-anchor="middle">CX</text>
+<rect x="1656" y="824" width="272" height="80" rx="8" fill="#f0f2f3" stroke="#bac3c8" stroke-width="1.5"/>
+<text x="1792.0" y="858.0" font-family="DejaVu Sans, Arial, sans-serif" font-size="20" font-weight="600" fill="#293440" text-anchor="middle">Original x → B</text>
+<text x="1792.0" y="886.0" font-family="DejaVu Sans, Arial, sans-serif" font-size="20" font-weight="400" fill="#293440" text-anchor="middle">features Bℓ(x)</text>
+<text x="1048" y="940" font-family="DejaVu Sans, Arial, sans-serif" font-size="20" font-weight="400" fill="#293440" text-anchor="start">Sumℓ CX(Bℓ(x), Bℓ(S)); valid-width feature matching, not pixel L1.</text>
+<text x="1048" y="972" font-family="DejaVu Sans, Arial, sans-serif" font-size="16" font-weight="600" fill="#596278" text-anchor="start">Updates: G + E through S. B is frozen; reference features are constant.</text>
+<rect x="48" y="1016" width="928" height="240" rx="8" fill="#fffefa" stroke="#ccd2d5" stroke-width="1.5"/>
+<text x="72" y="1052" font-family="DejaVu Sans, Arial, sans-serif" font-size="24" font-weight="600" fill="#293440" text-anchor="start">Random latent recovery</text>
+<text x="952" y="1052" font-family="DejaVu Sans, Arial, sans-serif" font-size="16" font-weight="400" fill="#596775" text-anchor="end">weight 1.0</text>
+<path d="M464 1128 H504" fill="none" stroke="#596775" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M680 1128 H640" fill="none" stroke="#596775" stroke-width="2" marker-end="url(#arrow)" stroke-dasharray="6 4"/>
+<rect x="72" y="1088" width="392" height="80" rx="8" fill="#eeebf8" stroke="#bac3c8" stroke-width="1.5"/>
+<text x="268.0" y="1122.0" font-family="DejaVu Sans, Arial, sans-serif" font-size="20" font-weight="600" fill="#293440" text-anchor="middle">F → B → Eμ</text>
+<text x="268.0" y="1150.0" font-family="DejaVu Sans, Arial, sans-serif" font-size="20" font-weight="400" fill="#293440" text-anchor="middle">re-encode the random-style image</text>
+<rect x="504" y="1096" width="136" height="64" rx="8" fill="#fff0df" stroke="#bac3c8" stroke-width="1.5"/>
+<text x="572.0" y="1136.0" font-family="DejaVu Sans, Arial, sans-serif" font-size="20" font-weight="600" fill="#293440" text-anchor="middle">L1</text>
+<rect x="680" y="1088" width="272" height="80" rx="8" fill="#f0f2f3" stroke="#bac3c8" stroke-width="1.5" stroke-dasharray="6 4"/>
+<text x="816.0" y="1122.0" font-family="DejaVu Sans, Arial, sans-serif" font-size="20" font-weight="600" fill="#293440" text-anchor="middle">sg(z)</text>
+<text x="816.0" y="1150.0" font-family="DejaVu Sans, Arial, sans-serif" font-size="20" font-weight="400" fill="#293440" text-anchor="middle">original random tokens</text>
+<text x="72" y="1204" font-family="DejaVu Sans, Arial, sans-serif" font-size="20" font-weight="400" fill="#293440" text-anchor="start">mean |Eμ(B(F)) − sg(z)|</text>
+<text x="72" y="1236" font-family="DejaVu Sans, Arial, sans-serif" font-size="16" font-weight="600" fill="#596278" text-anchor="start">Updates: G + E in the re-encoding path. B stays frozen.</text>
+<rect x="1024" y="1016" width="928" height="240" rx="8" fill="#fffefa" stroke="#ccd2d5" stroke-width="1.5"/>
+<text x="1048" y="1052" font-family="DejaVu Sans, Arial, sans-serif" font-size="24" font-weight="600" fill="#293440" text-anchor="start">Transfer style cycle</text>
+<text x="1928" y="1052" font-family="DejaVu Sans, Arial, sans-serif" font-size="16" font-weight="400" fill="#596775" text-anchor="end">weight 1.0</text>
+<path d="M1440 1128 H1480" fill="none" stroke="#596775" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M1656 1128 H1616" fill="none" stroke="#596775" stroke-width="2" marker-end="url(#arrow)" stroke-dasharray="6 4"/>
+<rect x="1048" y="1088" width="392" height="80" rx="8" fill="#eeebf8" stroke="#bac3c8" stroke-width="1.5"/>
+<text x="1244.0" y="1122.0" font-family="DejaVu Sans, Arial, sans-serif" font-size="20" font-weight="600" fill="#293440" text-anchor="middle">S → B → Eμ</text>
+<text x="1244.0" y="1150.0" font-family="DejaVu Sans, Arial, sans-serif" font-size="20" font-weight="400" fill="#293440" text-anchor="middle">re-encode the transferred image</text>
+<rect x="1480" y="1096" width="136" height="64" rx="8" fill="#fff0df" stroke="#bac3c8" stroke-width="1.5"/>
+<text x="1548.0" y="1136.0" font-family="DejaVu Sans, Arial, sans-serif" font-size="20" font-weight="600" fill="#293440" text-anchor="middle">L1</text>
+<rect x="1656" y="1088" width="272" height="80" rx="8" fill="#f0f2f3" stroke="#bac3c8" stroke-width="1.5" stroke-dasharray="6 4"/>
+<text x="1792.0" y="1122.0" font-family="DejaVu Sans, Arial, sans-serif" font-size="20" font-weight="600" fill="#293440" text-anchor="middle">sg(μ)</text>
+<text x="1792.0" y="1150.0" font-family="DejaVu Sans, Arial, sans-serif" font-size="20" font-weight="400" fill="#293440" text-anchor="middle">reference posterior mean</text>
+<text x="1048" y="1204" font-family="DejaVu Sans, Arial, sans-serif" font-size="20" font-weight="400" fill="#293440" text-anchor="start">mean |Eμ(B(S)) − sg(μ)|; the target is μ, not the sampled s.</text>
+<text x="1048" y="1236" font-family="DejaVu Sans, Arial, sans-serif" font-size="16" font-weight="600" fill="#596278" text-anchor="start">Updates: G + E (source and re-encoding). Only the target μ is stopped.</text>
+<rect x="48" y="1280" width="928" height="240" rx="8" fill="#fffefa" stroke="#ccd2d5" stroke-width="1.5"/>
+<text x="72" y="1316" font-family="DejaVu Sans, Arial, sans-serif" font-size="24" font-weight="600" fill="#293440" text-anchor="start">Style prior regularization</text>
+<text x="952" y="1316" font-family="DejaVu Sans, Arial, sans-serif" font-size="16" font-weight="400" fill="#596775" text-anchor="end">weight 0.1</text>
+<path d="M464 1392 H504" fill="none" stroke="#596775" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M680 1392 H640" fill="none" stroke="#596775" stroke-width="2" marker-end="url(#arrow)"/>
+<rect x="72" y="1352" width="392" height="80" rx="8" fill="#eeebf8" stroke="#bac3c8" stroke-width="1.5"/>
+<text x="268.0" y="1386.0" font-family="DejaVu Sans, Arial, sans-serif" font-size="20" font-weight="600" fill="#293440" text-anchor="middle">x → B → E: μ, logvar</text>
+<text x="268.0" y="1414.0" font-family="DejaVu Sans, Arial, sans-serif" font-size="20" font-weight="400" fill="#293440" text-anchor="middle">encoded posterior q(s | x)</text>
+<rect x="504" y="1360" width="136" height="64" rx="8" fill="#fff0df" stroke="#bac3c8" stroke-width="1.5"/>
+<text x="572.0" y="1400.0" font-family="DejaVu Sans, Arial, sans-serif" font-size="20" font-weight="600" fill="#293440" text-anchor="middle">KL</text>
+<rect x="680" y="1352" width="272" height="80" rx="8" fill="#f0f2f3" stroke="#bac3c8" stroke-width="1.5"/>
+<text x="816.0" y="1386.0" font-family="DejaVu Sans, Arial, sans-serif" font-size="20" font-weight="600" fill="#293440" text-anchor="middle">N(0, I)</text>
+<text x="816.0" y="1414.0" font-family="DejaVu Sans, Arial, sans-serif" font-size="20" font-weight="400" fill="#293440" text-anchor="middle">standard normal prior</text>
+<text x="72" y="1468" font-family="DejaVu Sans, Arial, sans-serif" font-size="20" font-weight="400" fill="#293440" text-anchor="start">½ mean[μ² + exp(logvar) − 1 − logvar], averaged over tokens/dims.</text>
+<text x="72" y="1500" font-family="DejaVu Sans, Arial, sans-serif" font-size="16" font-weight="600" fill="#596278" text-anchor="start">Updates: E only. This loss does not pass through G.</text>
+<rect x="1024" y="1280" width="928" height="240" rx="8" fill="#fffefa" stroke="#ccd2d5" stroke-width="1.5"/>
+<text x="1048" y="1316" font-family="DejaVu Sans, Arial, sans-serif" font-size="24" font-weight="600" fill="#293440" text-anchor="start">Content disentanglement</text>
+<text x="1928" y="1316" font-family="DejaVu Sans, Arial, sans-serif" font-size="16" font-weight="400" fill="#596775" text-anchor="end">weight 0.02</text>
+<path d="M1440 1392 H1480" fill="none" stroke="#596775" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M1656 1392 H1616" fill="none" stroke="#596775" stroke-width="2" marker-end="url(#arrow)"/>
+<rect x="1048" y="1352" width="392" height="80" rx="8" fill="#eeebf8" stroke="#bac3c8" stroke-width="1.5"/>
+<text x="1244.0" y="1386.0" font-family="DejaVu Sans, Arial, sans-serif" font-size="20" font-weight="600" fill="#293440" text-anchor="middle">μ → GRL → probe Q</text>
+<text x="1244.0" y="1414.0" font-family="DejaVu Sans, Arial, sans-serif" font-size="20" font-weight="400" fill="#293440" text-anchor="middle">Q is a trainable head inside E</text>
+<rect x="1480" y="1360" width="136" height="64" rx="8" fill="#fff0df" stroke="#bac3c8" stroke-width="1.5"/>
+<text x="1548.0" y="1400.0" font-family="DejaVu Sans, Arial, sans-serif" font-size="20" font-weight="600" fill="#293440" text-anchor="middle">BCE</text>
+<rect x="1656" y="1352" width="272" height="80" rx="8" fill="#f0f2f3" stroke="#bac3c8" stroke-width="1.5"/>
+<text x="1792.0" y="1386.0" font-family="DejaVu Sans, Arial, sans-serif" font-size="20" font-weight="600" fill="#293440" text-anchor="middle">Multi-hot glyphs of c</text>
+<text x="1792.0" y="1414.0" font-family="DejaVu Sans, Arial, sans-serif" font-size="20" font-weight="400" fill="#293440" text-anchor="middle">blank class excluded</text>
+<text x="1048" y="1468" font-family="DejaVu Sans, Arial, sans-serif" font-size="20" font-weight="400" fill="#293440" text-anchor="start">Weighted BCE: Q learns glyph presence; GRL reverses its gradient to E.</text>
+<text x="1048" y="1500" font-family="DejaVu Sans, Arial, sans-serif" font-size="16" font-weight="600" fill="#596278" text-anchor="start">Updates: Q normally, E representation in reverse. No G path.</text>
+<text x="48" y="1576" font-family="DejaVu Sans, Arial, sans-serif" font-size="20" font-weight="600" fill="#293440" text-anchor="start">03  ADVERSARIAL OBJECTIVES · DIFFERENT D/P AND G UPDATE PHASES</text>
+<rect x="48" y="1616" width="600" height="380" rx="8" fill="#fffefa" stroke="#ccd2d5" stroke-width="1.5"/>
+<text x="72" y="1652" font-family="DejaVu Sans, Arial, sans-serif" font-size="24" font-weight="600" fill="#293440" text-anchor="start">Global discriminator D</text>
+<path d="M204 1760 V1776 Q204 1784 212 1784 H252 Q260 1784 260 1792 V1808" fill="none" stroke="#596775" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M492 1760 V1776 Q492 1784 484 1784 H444 Q436 1784 436 1792 V1808" fill="none" stroke="#596775" stroke-width="2" marker-end="url(#arrow)"/>
+<rect x="72" y="1680" width="264" height="80" rx="8" fill="#e8f5ee" stroke="#bac3c8" stroke-width="1.5"/>
+<text x="204.0" y="1714.0" font-family="DejaVu Sans, Arial, sans-serif" font-size="16" font-weight="600" fill="#293440" text-anchor="middle">Real r → A → D</text>
+<text x="204.0" y="1742.0" font-family="DejaVu Sans, Arial, sans-serif" font-size="16" font-weight="400" fill="#293440" text-anchor="middle">real score a</text>
+<rect x="360" y="1680" width="264" height="80" rx="8" fill="#f0f2f3" stroke="#bac3c8" stroke-width="1.5" stroke-dasharray="6 4"/>
+<text x="492.0" y="1714.0" font-family="DejaVu Sans, Arial, sans-serif" font-size="16" font-weight="600" fill="#293440" text-anchor="middle">sg(F, S, C) → A → D</text>
+<text x="492.0" y="1742.0" font-family="DejaVu Sans, Arial, sans-serif" font-size="16" font-weight="400" fill="#293440" text-anchor="middle">fake scores b</text>
+<rect x="164" y="1808" width="368" height="56" rx="8" fill="#fff0df" stroke="#bac3c8" stroke-width="1.5"/>
+<text x="348.0" y="1844.0" font-family="DejaVu Sans, Arial, sans-serif" font-size="16" font-weight="600" fill="#293440" text-anchor="middle">Hinge: real ≥ +1, fake ≤ −1</text>
+<text x="72" y="1896" font-family="DejaVu Sans, Arial, sans-serif" font-size="20" font-weight="400" fill="#293440" text-anchor="start">L_D = mean[1 − a]₊ + mean[1 + b]₊</text>
+<text x="72" y="1928" font-family="DejaVu Sans, Arial, sans-serif" font-size="20" font-weight="600" fill="#293440" text-anchor="start">G step: Ladv,D = −mean D(A(F, S, C))</text>
+<text x="72" y="1964" font-family="DejaVu Sans, Arial, sans-serif" font-size="16" font-weight="400" fill="#596775" text-anchor="start">D step: update D only. G step: gradients through frozen D.</text>
+<text x="72" y="1988" font-family="DejaVu Sans, Arial, sans-serif" font-size="16" font-weight="400" fill="#596775" text-anchor="start">A = word-safe DiffAug; local crops never enter global D.</text>
+<rect x="700" y="1616" width="600" height="380" rx="8" fill="#fffefa" stroke="#ccd2d5" stroke-width="1.5"/>
+<text x="724" y="1652" font-family="DejaVu Sans, Arial, sans-serif" font-size="24" font-weight="600" fill="#293440" text-anchor="start">StrokePatchD · P</text>
+<path d="M856 1760 V1776 Q856 1784 864 1784 H904 Q912 1784 912 1792 V1808" fill="none" stroke="#596775" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M1144 1760 V1776 Q1144 1784 1136 1784 H1096 Q1088 1784 1088 1792 V1808" fill="none" stroke="#596775" stroke-width="2" marker-end="url(#arrow)"/>
+<rect x="724" y="1680" width="264" height="80" rx="8" fill="#e8f5ee" stroke="#bac3c8" stroke-width="1.5"/>
+<text x="856.0" y="1714.0" font-family="DejaVu Sans, Arial, sans-serif" font-size="16" font-weight="600" fill="#293440" text-anchor="middle">r and A(r) → crop → P</text>
+<text x="856.0" y="1742.0" font-family="DejaVu Sans, Arial, sans-serif" font-size="16" font-weight="400" fill="#293440" text-anchor="middle">real patch score a</text>
+<rect x="1012" y="1680" width="264" height="80" rx="8" fill="#f0f2f3" stroke="#bac3c8" stroke-width="1.5" stroke-dasharray="6 4"/>
+<text x="1144.0" y="1714.0" font-family="DejaVu Sans, Arial, sans-serif" font-size="16" font-weight="600" fill="#293440" text-anchor="middle">sg(F, S, C) → crop → P</text>
+<text x="1144.0" y="1742.0" font-family="DejaVu Sans, Arial, sans-serif" font-size="16" font-weight="400" fill="#293440" text-anchor="middle">fake patch scores b</text>
+<rect x="816" y="1808" width="368" height="56" rx="8" fill="#fff0df" stroke="#bac3c8" stroke-width="1.5"/>
+<text x="1000.0" y="1844.0" font-family="DejaVu Sans, Arial, sans-serif" font-size="16" font-weight="600" fill="#293440" text-anchor="middle">Hinge: real ≥ +1, fake ≤ −1</text>
+<text x="724" y="1896" font-family="DejaVu Sans, Arial, sans-serif" font-size="20" font-weight="400" fill="#293440" text-anchor="start">L_P = mean[1 − a]₊ + mean[1 + b]₊</text>
+<text x="724" y="1928" font-family="DejaVu Sans, Arial, sans-serif" font-size="20" font-weight="600" fill="#293440" text-anchor="start">G step: Ladv,P = −mean P(crops(F, S, C))</text>
+<text x="724" y="1964" font-family="DejaVu Sans, Arial, sans-serif" font-size="16" font-weight="400" fill="#596775" text-anchor="start">P step: update P only. G step: 0.45 × Ladv,P.</text>
+<text x="724" y="1988" font-family="DejaVu Sans, Arial, sans-serif" font-size="16" font-weight="400" fill="#596775" text-anchor="start">32×32; 4–8 / image; character IDs + soft confidence.</text>
+<rect x="1352" y="1616" width="600" height="380" rx="8" fill="#fffefa" stroke="#ccd2d5" stroke-width="1.5"/>
+<text x="1376" y="1652" font-family="DejaVu Sans, Arial, sans-serif" font-size="24" font-weight="600" fill="#293440" text-anchor="start">R1 · global D only</text>
+<path d="M1652 1760 V1808" fill="none" stroke="#596775" stroke-width="2" marker-end="url(#arrow)"/>
+<rect x="1456" y="1680" width="392" height="80" rx="8" fill="#e8f5ee" stroke="#bac3c8" stroke-width="1.5"/>
+<text x="1652.0" y="1714.0" font-family="DejaVu Sans, Arial, sans-serif" font-size="16" font-weight="600" fill="#293440" text-anchor="middle">Real r → A → D</text>
+<text x="1652.0" y="1742.0" font-family="DejaVu Sans, Arial, sans-serif" font-size="16" font-weight="400" fill="#293440" text-anchor="middle">differentiate the score with respect to r</text>
+<rect x="1404" y="1808" width="496" height="56" rx="8" fill="#fff0df" stroke="#bac3c8" stroke-width="1.5"/>
+<text x="1652.0" y="1844.0" font-family="DejaVu Sans, Arial, sans-serif" font-size="20" font-weight="600" fill="#293440" text-anchor="middle">R1 = ½ mean ‖∇r D(A(r))‖²</text>
+<text x="1376" y="1896" font-family="DejaVu Sans, Arial, sans-serif" font-size="20" font-weight="400" fill="#293440" text-anchor="start">Penalizes input gradients toward zero.</text>
+<text x="1376" y="1928" font-family="DejaVu Sans, Arial, sans-serif" font-size="20" font-weight="600" fill="#293440" text-anchor="start">Applied every 32 steps: 0.01 × 32 × R1</text>
+<text x="1376" y="1964" font-family="DejaVu Sans, Arial, sans-serif" font-size="16" font-weight="400" fill="#596775" text-anchor="start">Updates: D only; no R1 on P or G.</text>
+<text x="1376" y="1988" font-family="DejaVu Sans, Arial, sans-serif" font-size="16" font-weight="400" fill="#596775" text-anchor="start">A regularizer, not an image-to-image comparison.</text>
+<rect x="48" y="2032" width="1904" height="160" rx="8" fill="#f3f4f5" stroke="#c6cdd2" stroke-width="1.5"/>
+<text x="72" y="2068" font-family="DejaVu Sans, Arial, sans-serif" font-size="20" font-weight="600" fill="#293440" text-anchor="start">HOW THE OBJECTIVES COMBINE</text>
+<text x="72" y="2104" font-family="DejaVu Sans, Arial, sans-serif" font-size="20" font-weight="400" fill="#293440" text-anchor="start">G/E step: Ladv,D + 0.45 Ladv,P + λrand Lctc,F + λstyle Lctc,S + 0.5 Lwriter + λrec Lrec</text>
+<text x="72" y="2136" font-family="DejaVu Sans, Arial, sans-serif" font-size="20" font-weight="400" fill="#293440" text-anchor="start">                 + Llatent + Lcycle + 0.1 Lcontext + 0.1 LKL + 0.02 Lprobe (with GRL).</text>
+<text x="72" y="2168" font-family="DejaVu Sans, Arial, sans-serif" font-size="20" font-weight="400" fill="#293440" text-anchor="start">D/P step: L_D + L_P + scheduled R1. Fake images are detached. G/E optimizer runs every 2 D/P batches.</text>
+<text x="48" y="2228" font-family="DejaVu Sans, Arial, sans-serif" font-size="20" font-weight="400" fill="#293440" text-anchor="start">Frozen D/P pass gradients to G for F/S/C, and to E through S/C. B/R/W are frozen but remain differentiable.</text>
+<text x="48" y="2264" font-family="DejaVu Sans, Arial, sans-serif" font-size="20" font-weight="400" fill="#596775" text-anchor="start">Linear weight transitions: CTC random epochs 10–20; CTC transfer 8–28; reconstruction 24–42.</text>
+<text x="48" y="2300" font-family="DejaVu Sans, Arial, sans-serif" font-size="16" font-weight="400" fill="#596775" text-anchor="start">B: backbone · E: style encoder · R: OCR · W: writer classifier · Q: content probe · [u]₊ = max(u, 0)</text>
+<text x="48" y="2332" font-family="DejaVu Sans, Arial, sans-serif" font-size="16" font-weight="400" fill="#596775" text-anchor="start">Each generated family is averaged equally in adversarial losses; real P averages clean and augmented groups. FID/KID/HWD are evaluation metrics, not training losses.</text>
+</svg>
+<details><summary>Implementation details and source evidence</summary>
+<p>The diagram follows GlobalLocalAdversarialModel.train in networks/model.py, loss definitions in networks/loss.py, StyleEncoder in networks/module.py and configs/gan_iam_64.yml. All weights and schedules shown are from the current DEV GAN64 configuration. The overview figure remains available separately.</p>
+<p>Real reference x is batch.org_imgs; real reconstruction/discriminator target r is batch.style_imgs, rescaled to char_width × label_length. E uses original-width x. The encoder’s posterior has 8 tokens of 32 dimensions; sampled s is used for transfer/reconstruction while its mean μ is the detached style-cycle target. Re-encoding uses E in deterministic, non-VAE mode.</p>
+<p>CTC uses frozen R with zero_infinity=True and mean reduction. It receives random/transfer images directly in the internal model polarity, not inverted displays. Writer CE is only on transfer. W uses B’s already-computed transfer features. Contextual loss compares width-masked B features at selected scales, with valid-width clipping; E projections are not part of these feature tensors.</p>
+<p>The content probe Q operates on every style token and predicts the reference transcription’s multi-hot character presence, excluding blank. Its BCE uses a positive-class weight from batch prevalence, capped at 10. Q minimizes this objective while gradient reversal makes the upstream encoder oppose the same prediction. Q parameters belong to E and are optimized by the G/E optimizer.</p>
+<p>For global D, fake loss is an equal average over F/S/C and real loss uses A(r). For P, fake groups F/S/C are averaged equally; real groups r and A(r) are averaged equally. P uses character-aligned approximate crops, optional patch masking, character IDs and confidence. The 0.45 patch coefficient scales G’s patch objective, not P’s own hinge objective. Low confidence attenuates only character projection, not the unconditional critic score.</p>
+<p>During the D/P phase, generated images are detached. During the G/E phase, D, P, R, W and B weights are frozen, but their image derivatives remain active. The style-cycle target μ is stopped; gradients still reach E via its source-style path through S and via re-encoding. KL and content-probe losses only update E/Q and have no G path. No Gram or contrastive loss contributes to the current GAN total.</p>
+<p>CTC random weight interpolates 1.0→0.4 over epochs 10–20; CTC transfer 0.5→0.08 over 8–28; reconstruction 10→2.5 over 24–42. Other weights shown remain fixed. R1 is multiplied by lambda_r1 × interval to compensate its every-32-step application. The native R1 function includes the ½ factor.</p>
+<p>Source snapshot: DEV 4753021, checked 11 September 2026. Pure documentation; no model or training changes. Typeface: offline DejaVu Sans / Arial.</p>
+</details></main></body></html>

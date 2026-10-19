@@ -1,0 +1,140 @@
+{
+  "64": {
+    "strict_state_loading": "passed",
+    "input": [
+      2,
+      1,
+      64,
+      192
+    ],
+    "backbone_output": [
+      2,
+      256,
+      12
+    ],
+    "backbone_maps": [
+      [
+        2,
+        64,
+        16,
+        51
+      ],
+      [
+        2,
+        128,
+        8,
+        26
+      ],
+      [
+        2,
+        256,
+        3,
+        12
+      ]
+    ],
+    "recognizer_output": [
+      2,
+      12,
+      80
+    ],
+    "length_scale": 16,
+    "style_tokens": [
+      2,
+      8,
+      32
+    ],
+    "generated": [
+      2,
+      1,
+      64,
+      192
+    ],
+    "writer": [
+      2,
+      339
+    ],
+    "patch_logits": [
+      2,
+      1,
+      4,
+      4
+    ],
+    "tail_mask": "passed",
+    "texture_gain": 0.044416919350624084,
+    "synthetic_probe_texture_mean_abs": 0.03171708807349205,
+    "synthetic_probe_texture_max_abs": 0.37648770213127136,
+    "note": "Random input probe; texture magnitude here is NOT a real-image quality ablation.",
+    "global_D_second_derivative": "passed",
+    "patch_D_second_derivative": "passed",
+    "frozen_teacher_input_gradient": "passed"
+  },
+  "32": {
+    "strict_state_loading": "passed",
+    "input": [
+      2,
+      1,
+      32,
+      96
+    ],
+    "backbone_output": [
+      2,
+      256,
+      12
+    ],
+    "backbone_maps": [
+      [
+        2,
+        64,
+        16,
+        51
+      ],
+      [
+        2,
+        128,
+        8,
+        26
+      ],
+      [
+        2,
+        256,
+        3,
+        12
+      ]
+    ],
+    "recognizer_output": [
+      2,
+      12,
+      80
+    ],
+    "length_scale": 8,
+    "style_tokens": [
+      2,
+      8,
+      32
+    ],
+    "generated": [
+      2,
+      1,
+      32,
+      96
+    ],
+    "writer": [
+      2,
+      339
+    ],
+    "patch_logits": [
+      2,
+      1,
+      2,
+      2
+    ],
+    "tail_mask": "passed",
+    "texture_gain": 0.04337117075920105,
+    "synthetic_probe_texture_mean_abs": 0.04224148765206337,
+    "synthetic_probe_texture_max_abs": 0.427066832780838,
+    "note": "Random input probe; texture magnitude here is NOT a real-image quality ablation.",
+    "global_D_second_derivative": "passed",
+    "patch_D_second_derivative": "passed",
+    "frozen_teacher_input_gradient": "passed"
+  }
+}

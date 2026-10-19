@@ -1,0 +1,1089 @@
+--- PAGE 1 ---
+Handwriting Transformers
+Ankan Kumar Bhunia1 Salman Khan1,2 Hisham Cholakkal1 Rao Muhammad Anwer1
+Fahad Shahbaz Khan1,3 Mubarak Shah4
+1Mohamed bin Zayed University of AI, UAE 2Australian National University, Australia
+3Link¨oping University, Sweden 4University of Central Florida, USA
+Abstract
+We propose a novel transformer-based styled handwrit-
+ten text image generation approach, HWT, that strives to
+learn both style-content entanglement as well as global
+and local writing style patterns. The proposed HWT cap-
+tures the long and short range relationships within the style
+examples through a self-attention mechanism, thereby en-
+coding both global and local style patterns. Further, the
+proposed transformer-based HWT comprises an encoder-
+decoder attention that enables style-content entanglement
+by gathering the style representation of each query char-
+acter. To the best of our knowledge, we are the ﬁrst to in-
+troduce a transformer-based generative network for styled
+handwritten text generation.
+Our proposed HWT generates realistic styled handwrit-
+ten text images and signiﬁcantly outperforms the state-of-
+the-art demonstrated through extensive qualitative, quanti-
+tative and human-based evaluations. The proposed HWT
+can handle arbitrary length of text and any desired writ-
+ing style in a few-shot setting. Further, our HWT general-
+izes well to the challenging scenario where both words and
+writing style are unseen during training, generating realis-
+tic styled handwritten text images.
+1. Introduction
+Generating realistic synthetic handwritten text images,
+from typed text, that is versatile in terms of both writ-
+ing style and lexicon is a challenging problem. Automatic
+handwritten text generation can be beneﬁcial for people
+having disabilities or injuries that prevent them from writ-
+ing, translating a note or a memo from one language to an-
+other by adapting an author’s writing style or gathering ad-
+ditional data for training deep learning-based handwritten
+text recognition models. Here, we investigate the problem
+of realistic handwritten text generation of unconstrained
+text sequences with arbitrary length and diverse calligraphic
+attributes representing writing styles of a writer.
+Generative Adversarial Networks (GANs) [8] have been
+Figure 1: Comparison of HWT (c) with GANwriting [14]
+(d) and Davis et al. [5] (e) in imitating the desired unseen
+writing style (a) for given query text (b). While [14, 5]
+capture global writing styles ( e.g., slant), they struggle to
+imitate local style patterns ( e.g., character style, ligatures).
+HWT (c) imitates both global and local styles, leading to
+a more realistic styled handwritten text image generation.
+For instance, style of ‘n’ (red line) appearing in (a) is mim-
+icked by HWT, for a different word including same char-
+acter ‘ n’. Similarly, a group of characters in ‘ thought’
+and ‘personalities’ (blue and magenta lines) are styled
+in a way that matches with words (‘ throughout’ and
+‘qualities’) sharing some common characters in (a).
+Furthermore, HWT preserves cursive patterns and connec-
+tivity of all characters in word ‘also’ (green line).
+investigated for ofﬂine handwritten text image generation
+[4, 3, 14, 7, 5]. These methods strive to directly synthe-
+arXiv:2104.03964v1  [cs.CV]  8 Apr 2021
+
+--- PAGE 2 ---
+size text images by using ofﬂine handwriting images during
+training, thereby extracting useful features, such as writing
+appearance (e.g., ink width, writing slant) and line thickness
+changes. Alonso et al. [3] propose a generative architec-
+ture that is conditioned on input content strings, thereby not
+restricted to a particular pre-deﬁned vocabulary. However,
+their approach is trained on isolated ﬁxed-sized word im-
+ages and struggles to produce high quality arbitrarily long
+text along with suffering from style collapse. Fogelet al. [7]
+introduce a ScrabbleGAN approach, where the generated
+image width is made proportional to the input text length.
+ScrabbleGAN is shown to achieve impressive results with
+respect to the content. However, both [3, 7] do not adapt to
+a speciﬁc author’s writing style.
+Recently, GAN-based approaches [5, 14] have been in-
+troduced for the problem of styled handwritten text image
+generation. These methods take into account both content
+and style, when generating ofﬂine handwritten text images.
+Davis et al. [5] propose an approach based on StyleGAN
+[15] and learn generated handwriting image width based on
+style and input text. The GANwriting framework [14] con-
+ditions handwritten text generation process to both textual
+content and style features in a few-shot setup.
+In this work, we distinguish two key issues that impede
+the quality of styled handwritten text image generation in
+the existing GAN-based methods [5, 14]. First, both style
+and content are loosely connected as their representative
+features are processed separately and later concatenated.
+While such a scheme enables entanglement between style
+and content at the word/line-level, it does not explicitly en-
+force style-content entanglement at the character-level. Sec-
+ond, although these approaches capture global writing style
+(e.g., ink width, slant), they do not explicitly encode local
+style patterns ( e.g., character style, ligatures). As a result
+of these issues, they struggle to accurately imitate local cal-
+ligraphic style patterns from reference style examples (see
+Fig. 1). Here, we look into an alternative approach that ad-
+dresses both these issues in a single generative architecture.
+1.1. Contributions
+We introduce a new styled handwritten text genera-
+tion approach built upon transformers, termed Handwriting
+Transformers (HWT), that comprises an encoder-decoder
+network. The encoder network utilizes a multi-headed self-
+attention mechanism to generate a self-attentive style fea-
+ture sequence of a writer. This feature sequence is then
+input to the decoder network that consists of multi-headed
+self- and encoder-decoder attention to generate character-
+speciﬁc style attributes, given a set of query word strings.
+Consequently, the resulting output is fed to a convolutional
+decoder to generate ﬁnal styled handwritten text image.
+Moreover, we improve the style consistency of the gen-
+erated text by constraining the decoder output through a
+loss term whose objective is to re-generate style feature se-
+quence of a writer at the encoder.
+Our HWT imitates the style of a writer for a given query
+content through self- and encoder-decoder attention that
+emphasizes relevant self-attentive style features with re-
+spect to each character in that query. This enables us to cap-
+ture style-content entanglement at the character-level. Fur-
+thermore, the self-attentive style feature sequence generated
+by our encoder captures both the global ( e.g., ink width,
+slant ) and local styles (e.g., character style, ligatures) of a
+writer within the feature sequence.
+We validate our proposed HWT by conducting extensive
+qualitative, quantitative and human-based evaluations. In
+the human-based evaluation, our proposed HWT was pre-
+ferred 81% of the time over recent styled handwritten text
+generation methods [5, 14], achieving human plausibility in
+terms of the writing style mimicry. Following GANwrit-
+ing [14], we evaluate our HWT on all the four settings on
+the IAM handwriting dataset. On the extreme setting of
+out-of-vocabulary and unseen styles (OOV-U), where both
+query words and writing styles are never seen during train-
+ing, the proposed HWT outperforms GANwriting [14] with
+an absolute gain of 16.5 in terms of Fr `echet Inception Dis-
+tance (FID) thereby demonstrating our generalization capa-
+bilities. Further, our qualitative analysis suggest that HWT
+performs favorably against existing works, generating real-
+istic styled handwritten text images (see Fig. 1).
+2. Related Work
+Deep learning-based handwritten text generation ap-
+proaches can be roughly divided into stroke-based online
+and image-based ofﬂine methods. Online handwritten text
+generation methods [9, 2] typically require temporal data
+acquired from stroke-by-stroke recording of real handwrit-
+ten examples (vector form) using a digital stylus pen. On
+the other hand, recent generative ofﬂine handwritten text
+generation methods [4, 3, 14, 7] aim to directly generate
+text by performing training on ofﬂine handwriting images.
+Graves [9] proposes an approach based on Recurrent
+Neural Network (RNN) with Long-Term Memory (LSTM)
+cells, which enables predicting future stroke points from
+previous pen positions and an input text. Aksan et al. [4]
+propose a method based on conditional Variational RNN
+(VRNN), where the input is split into two separate latent
+variables to represent content and style. However, their ap-
+proach tends to average out particular styles across writers,
+thereby reducing details [17]. In a subsequent work [1], the
+VRNN module is substituted by Stochastic Temporal CNNs
+which is shown to provide more consistent generation of
+handwriting. Kotani et al . [17] propose an online hand-
+writing stroke representation approach to represent latent
+style information by encoding writer-, character- and writer-
+character-speciﬁc style changes within an RNN model.
+
+--- PAGE 3 ---
+Other than sequential methods, several recent works
+have investigated ofﬂine handwritten text image generation
+using GANs. Haines et al. [11] introduce an approach to
+generate new text in a distinct style inferred from source im-
+ages. Their model requires a certain degree of human inter-
+vention during character segmentation and is limited to gen-
+erating characters that are in the source images. The work of
+[4] utilize CycleGAN [24] to synthesize images of isolated
+handwritten characters of Chinese language. Alonso et al.
+[3] propose an approach, where handwritten text generation
+is conditioned by character sequences. However, their ap-
+proach suffers from style collapse hindering the diversity of
+synthesized images. Fogel et al. [7] propose an approach,
+called ScrabbleGAN, that synthesizes handwritten word us-
+ing a fully convolutional architecture. Here, the characters
+generated have similar receptive ﬁeld width. A conversion
+model is introduced by [20] that approximates online hand-
+writing from ofﬂine samples followed by using style trans-
+fer technique to the online data. This approach relies on
+conversion model’s performance.
+Few recent GAN-based works [5, 14] investigate the
+problem of ofﬂine styled handwritten text image generation.
+Davis et al . [5] propose an approach, where handwritten
+text generation is conditioned on both text and style, cap-
+turing global handwriting style variations. Kang et al. [14]
+propose a method, called GANwriting, that conditions text
+generation on extracting style features in a few-shot setup
+and textual content of a predeﬁned ﬁxed length.
+Our Approach: Similar to GANwriting [14], we also in-
+vestigate the problem of styled handwritten text generation
+in a few-shot setting, where a limited number of style exam-
+ples are available for each writer. Different from GANwrit-
+ing, our approach possesses the ﬂexibility to generate styled
+text of arbitrary length. In addition, existing works [5, 14]
+only capture style-content entanglement at the word/line-
+level. In contrast, our transformer-based approach enables
+style-content entanglement both at the word and character-
+level. While [5, 14] focuses on capturing the writing style
+at the global level, the proposed method strives to imitate
+both global and local writing style.
+3. Proposed Approach
+Motivation: To motivate our proposed HWT method,
+we ﬁrst distinguish two desirable characteristics to be con-
+sidered when designing an approach for styled handwritten
+text generation with varying length and any desired style in
+a few-shot setting, without using character-level annotation.
+Style-Content Entanglement: As discussed earlier, both
+style and content are loosely connected in recently intro-
+duced GAN-based works [14, 5] with separate processing
+of style and content features, which are later concatenated.
+Such a scheme does not explicitly encode style-content en-
+tanglement at the character-level. Moreover, there are sep-
+arate components for style, content modeling followed by
+a generator for decoding stylized outputs. In addition to
+style-content entanglement at word/line level, an entangle-
+ment between style and content at the character-level is ex-
+pected to aid in imitating the character-speciﬁc writing style
+along with generalizing to out-of-vocabulary content. Fur-
+ther, such a tight integration between style and content leads
+to a cohesive architecture design.
+Global and Local Style Imitation: While the previous req-
+uisite focuses on connecting style and content, the second
+desirable characteristic aims at modeling both the global as
+well as local style features for a given calligraphic style. Re-
+cent generative methods for styled handwritten text genera-
+tion [14, 5] typically capture the writing style at the global
+level (e.g., ink width, slant). However, the local style pat-
+terns (e.g., character style, ligatures) are not explicitly taken
+into account while imitating the style of a given writer. We
+argue that both global and local style patterns are desired to
+be imitated for accurate styled text image generation.
+3.1. Approach Overview
+Problem Formulation: We aim to learn the complex
+handwriting style characteristics of a particular writer i ∈
+W, where W includes a total of M writers. We are given
+a set of P handwritten word images, X s
+i = {xij}P
+j=1, as
+few-shot calligraphic style examples of each writer. The
+superscript ‘s’ in X s
+i denotes use of the set as a source of
+handwriting style which is transferred to the target images
+˜X t
+i with new textual content but consistent style properties.
+The textual content is represented as a set of input query
+word strings A = {aj}Q
+j=1, where each word string aj
+comprises an arbitrary number of characters from permitted
+characters set C. The set C includes alphabets, numerical
+digits and punctuation marks etc. Given a query text string
+aj ∈ A from an unconstrained set of vocabulary and X s
+i ,
+our model strives to generate new images ˜X t
+i with the same
+text aj in the writing style of a desired writeri.
+Overall Architecture: Fig. 2 presents an overview of
+our proposed HWT approach, where a conditional genera-
+tor Gθ synthesizes handwritten text images, a discrimina-
+tor Dψ ensures realistic generation of handwriting styles,
+a recognizer Rφ aids in textual content preservation, and a
+style classiﬁerSη ensures satisfactory transfer of the calli-
+graphic styles. The focus of our design is the introduction of
+a transformer-based generative network for unconstrained
+styled handwritten text image generation. Our generatorGθ
+is designed in consideration to the desirable characteristics
+listed earlier leveraging the impressive learning capabilities
+of transformer models. To meticulously imitate a handwrit-
+ing style, a model is desired to learn style-content entangle-
+ment as well as global and local style patterns.
+To this end, we introduce a transformer-based handwrit-
+ing generation model, which enables us to capture the long
+
+--- PAGE 4 ---
+Figure 2: Overall architecture of our Handwriting Transformers (HWT) to generate styled handwritten text images˜X t
+i . HWT
+comprises a conditional generator having an encoderTE and a decoder networkTD. Both the encoder and decoder networks
+constitute a hybrid convolution and multi-head self-attention design, which combines the strengths of CNN and transformer-
+based models i.e., highly expressive relationship modeling while working with limited handwriting style example images.
+Resultantly, our design seamlessly achieves style-content entanglement that encodes relationships between textual content
+and writer’s style along with learning both global and local style patterns for given inputs (X s
+i and A).
+and short range contextual relationships within the style ex-
+amples X s
+i by utilizing a self-attention mechanism. In this
+way, both the global and local style patterns are encoded.
+Additionally, our transformer-based model comprises an
+encoder-decoder attention that allows style-content entan-
+glement by inferring the style representation for each query
+character. A direct applicability of transformer-based de-
+sign is infeasible in our few-shot setting due to its large data
+requirements and quadratic complexity. To circumvent this
+issue, our proposed architecture design utilizes the expres-
+sivity of a transformer within the CNN feature space.
+The main idea of the proposed HWT method is simple
+but effective. A transformer-based encoder TE is ﬁrst used
+to model self-attentive style context that is later used by
+a decoder TD to generate query text in a speciﬁc writer’s
+style. We deﬁne learnable embedding vectorqc ∈ R512 for
+each character c of the permissible character set C. For ex-
+ample, we represent the query word ‘deep’ as a sequence of
+its respective character embeddings Qdeep = {qd... qp}.
+We refer them as query embeddings. Such a character-wise
+representation of the query words and the transformer-based
+sequence processing helps our model to generate handwrit-
+ten words of variable length, and also qualiﬁes it to pro-
+duce out-of-vocabulary words more efﬁciently. Moreover,
+it avoids averaging out individual character-speciﬁc styles
+in order to maintain the overall (global and local) writing
+style. The character-wise style interpolation and transfer is
+ensured by the self- and encoder-decoder attention in the
+transformer module that infers the style representation of
+each query character based on a set of handwritten samples
+provided as input. We describe the proposed generative ar-
+chitecture in Sec. 3.2 and the loss objectives in Sec. 3.3.
+3.2. Generative Network
+The generator Gθ includes two main components: an
+encoder network TE : X s
+i → Z and a decoder network
+TD : ( Z, A) → ˜X t
+i . The encoder produces a sequence
+of feature embeddings Z ∈ RN×d (termed as style fea-
+ture sequence) from a given set of style examples X s
+i . The
+decoder takes Z as an input and converts the input word
+strings aj ∈ A to realistic handwritten images ˜X t
+i with
+same style as the given examples X s
+i of a writer i. Both
+the encoder and decoder networks constitute a hybrid de-
+sign based on convolution and multi-head self-attention net-
+works. This design choice combines the strengths of CNNs
+and transformer models i.e., highly expressive relationship
+modeling while working with limited handwriting images.
+Its worth mentioning that a CNN-only design would strug-
+gle to model long-term relations within sequences while an
+architecture based solely on transformer networks would
+demand large amount of data and longer training times [16].
+EncoderTE . The encoder aims at modelling both global
+
+--- PAGE 5 ---
+and local calligraphic style attributes (i.e., slant, skew, char-
+acter shapes, ligatures, ink widths etc.) from the style ex-
+amples X s
+i . Before feeding style images to the highly ex-
+pressive transformer architecture, we need to represent the
+style examples as a sequence. A straightforward way would
+be to ﬂatten the image pixels into a 1D vector [6]. How-
+ever, given the quadratic complexity of transformer models
+and their large data requirements, we ﬁnd this to be infea-
+sible. Instead, we use a CNN backbone network to obtain
+sequences of convolutional features from the style images.
+First, we use a ResNet18 [12] model to generate lower-
+resolution activation maps hij ∈ Rh×w×d for each style
+image xij. Then, we ﬂatten the spatial dimension of hij
+to obtain a sequence of feature maps of size n ×d, where
+n =h ×w. Each vector in the feature sequence represents
+a region in the original image and can be considered as the
+image descriptor for that particular region. After that, we
+concatenate the feature sequence vectors extracted from all
+style images together to obtain a single tensor Hi ∈ RN×d,
+whereN =n ×P .
+The next step includes modeling the global and local
+compositions between all entities of the obtained feature se-
+quence Z. A transformer-based encoder is employed for
+that purpose. The encoder has L layers, where each layer
+has a standard architecture that consists of a multi-headed
+self-attention module and a Multi-layer Perceptron (MLP)
+block. At each layerl, the multi-headed self-attention maps
+the input sequence from the previous layer H l−1 into a
+triplet (key K, query Q, value V ) of intermediate repre-
+sentations given by,
+Q = H l−1W Q, K = H l−1WK, V = H l−1WV,
+where WQ ∈ RN×dq, WK ∈ RN×dk and WV ∈ RN×dv
+are the learnable wight matrix for query, key and value re-
+spectively. For each head, the process is represented as,
+Oj = softmax
+(QK T
+√dk
+)
+V ∈ RN×dv, j ∈ {1,..,J }.
+(1)
+The concatenation of allJ head outputs O = [O1,..., OJ ]
+is then fed through an MLP layer to obtain the output fea-
+ture sequence H l for the layer l. This update procedure is
+repeated for a total ofL layers, resulting in the ﬁnal feature
+sequence Z ∈ RN×d. To retain information regarding the
+order of input sequences being supplied, we add ﬁxed posi-
+tional encodings [23] to the input of each attention layer.
+Decoder TD. The initial stage in the decoder uses the
+standard architecture of the transformer that consists of
+multi-headed self- and encoder-decoder attention mecha-
+nisms. Unlike the self-attention, the encoder-decoder at-
+tention derives the key and value vectors from the output of
+the encoder, whereas the query vectors come from the de-
+coder layer itself. For anmj character word aj ∈ A (length
+Figure 3: Visualization of encoder-decoder attention maps
+at the last layer of the transformer decoder. The attention
+maps are computed for each character in the query word
+(‘statistical’) which are then mapped to spatial regions
+(heat maps) in the example style images. Here, heat maps
+corresponding to the four different query characters ‘t’, ‘i’,
+‘c’ and ‘ l’ are shown. For instance, the top-left attention
+map corresponding to the character ‘t’, highlights multiple
+image regions containing the character ‘t’.
+mj being variable depending on the word), the query em-
+bedding Qaj = {qck }mj
+k=1 is used as a learnt positional en-
+coding to each attention layer of the decoder. Intuitively,
+each query embedding learns to look up regions of interest
+in the style images to infer the style attributes of all query
+characters (see Fig. 3). Over multiple consecutive decoding
+layers, these output embeddings accumulate style informa-
+tion, producing a ﬁnal output Faj = {fck }mj
+k=1 ∈ Rmj×d.
+We process the entire query embedding in parallel at each
+decoder layer. We add a randomly sampled noise vector
+N (0, 1) to the outputFaj in order to model the natural vari-
+ation of individual handwriting. For an m-character word,
+we concatenate thesemj embedding vectors and pass them
+through a linear layer, resulting in an mj × 8192 matrix.
+After reshaping it to a dimension of 512 × 4 × 4mj, we
+pass it through a CNN decoder having four residual blocks
+followed by a tanh activation layer to obtain ﬁnal output
+images (styled hand written text images).
+3.3. Training and Loss Objectives
+Our training algorithm follows the traditional GAN
+paradigm, where a discriminator network Dψ is employed
+to tell apart the samples generated from generator Gθ from
+the real ones. As the generated word images are of varying
+width, the proposed discriminator Dψ is also designed to
+be convolutional in nature. We use the hinge version of the
+adversarial loss [18] deﬁned as,
+Ladv =E [max (1 −Dψ(X s
+i, 0))] +
+E [max (1 +Dψ(Gθ(X s
+i, A)), 0)]. (2)
+While Dψ promotes real-looking images, it does not pre-
+serve the content or the calligraphic styles. To preserve the
+textual content in the generated samples we use a handwrit-
+ten recognizer network Rφ that examines whether the gen-
+
+--- PAGE 6 ---
+erated samples are actually real text. The recognizer Rφ
+is inspired by CRNN [21]. The CTC loss [10] is used to
+compare the recognizer output to the query words that were
+given as input toGθ. RecognizerRφ is only optimized with
+real, labelled, handwritten samples, but it is used to encour-
+ageGθ to produce readable text with accurate content. The
+loss is deﬁned as,
+LR = Ex∼{X s
+i , ˜X t
+i }
+[
+−
+∑
+log (p (yr|Rφ (x)))
+]
+. (3)
+Here,yr is the transcription string of x ∼
+{
+X s
+i, ˜X t
+i
+}
+.
+A style classiﬁer network Sη is employed to guide the
+networkGθ in producing samples conditioned to a partic-
+ular writing style. The network Sη attempts to predict the
+writer of a given handwritten image. The cross-entropy ob-
+jective is applied as a loss function. Sη is trained only on
+the real samples using the loss given below,
+LS = Ex∼{X s
+i , ˜X t
+i }
+[
+−
+∑
+yilog (Sη (x))
+]
+. (4)
+An important feature of our design is to utilize a cycle
+loss that ensures the encoded style features have cycle con-
+sistency. This loss function enforces the decoder to preserve
+the style information in the decoding process, such that the
+original style feature sequence can be reconstructed from
+the generated image. Given the generated word images ˜X t
+i ,
+we use the encoder TE to reconstruct the style feature se-
+quence ˜Z. The cycle loss Lc minimizes the error between
+the style feature sequence Z and its reconstruction ˜Z by
+means of aL1 distance metric,
+Lc = E
+[TE (X s
+i ) −TE ( ˜X t
+i )
+
+1
+]
+. (5)
+The cycle loss imposes a regularization to the decoder for
+consistently imitating the writing style in the generated
+styled text images. Overall, we train our HWT model in
+an end-to-end manner with the following loss objective,
+Ltotal =Ladv +LS +LR +Lc. (6)
+We observe balancing the gradients of the network Sη and
+Rφ is helpful in the training with our loss formulation. Fol-
+lowing [3], we normalize the ∇Sη and ∇Rφ to have the
+same standard deviation (σ) as adversarial loss gradients,
+∇Sη ←α
+(σD
+σS
+.∇Sη
+)
+, ∇Rφ ←α
+(σD
+σR
+.∇Rφ
+)
+. (7)
+Here, α is a hyper-parameter that is ﬁxed to 1 during the
+training of our model.
+4. Experiments
+We perform extensive experiments on IAM handwrit-
+ing dataset [19]. It consists of 9862 text lines with around
+Table 1: Comparison of the HWT with GANwriting [14]
+and Davis et al . [5] in terms of FID scores computed be-
+tween the generated text images and real text images of the
+IAM dataset. Our HWT performs favorably against [14, 5]
+in all four settings: In-V ocabulary words and seen style
+(IV-S), In-V ocabulary words and unseen style (IV-U), Out-
+of-vocabulary content and seen style (OOV-S) and Out-of-
+vocabulary content and unseen style (OOV-U). On the chal-
+lenging setting of OOV-U, HWT achieves an absolute gain
+of 16.5 in FID score, compared to GANwriting [14]. Best
+results are in bold.
+IV-S↓ IV-U↓ OOV-S↓ OOV-U↓
+GANwriting [14] 120.07 124.30 125.87 130.68
+Daviset al. [5] 118.56 128.75 127.11 136.67
+HWT (Ours) 106.97 108.84 109.45 114.10
+62,857 English words, written by 500 different writers. For
+thorough evaluation, we reserve an exclusive subset of 160
+writers for testing, while images from the remaining 340
+writers are used for our model training. In all our exper-
+iments, we resize images to a ﬁxed height of 64 pixels,
+while maintaining the aspect ratio of original image. For
+training, we use P = 15 style example images, as in [14].
+Both the transformer encoder and transformer decoder net-
+works employ three attention layers (L = 3) and each atten-
+tion layer applies multi-headed attention having 8 attention
+heads (J = 8 ). We set the embedding size d to 512. In
+all experiments, we train our model for 4k epochs with a
+batch size of 8 on a single V100 GPU. Adam optimizer is
+employed during training with a learning rate of 0.0002.
+4.1. Styled Handwritten Text Generation
+We ﬁrst evaluate (Tab. 1) our approach for styled hand-
+written text image generation, where both style and content
+are desired to be imitated in the generated text image. Fol-
+lowing [14], we use Fr `echet Inception Distance (FID) [13]
+evaluation metric for comparison. The FID metric is mea-
+sured by computing the distance between the Inception-v3
+features extracted from generated and real samples for each
+writer and then averaging across all writers. We evaluate
+our HWT with GANwriting [14] and Davis et al . [5] in
+four different settings: In-V ocabulary words and seen styles
+(IV-S), In-V ocabulary words and unseen styles (IV-U), Out-
+of-V ocabulary words and seen styles (OOV-S), and Out-
+of-V ocabulary words and unseen styles (OOV-U). Among
+these settings, most challenging one is the OOV-U, where
+both words and writing styles are never seen during training.
+For OOV-S and OOV-U settings, we use a set of 400 words
+that are distinct from IAM dataset transcription, as in [14].
+In all four settings, the transcriptions of real samples and
+generated samples are different. Tab. 1 shows that HWT
+performs favorably against both existing methods [14, 5].
+Fig 4 presents the qualitative comparison of HWT with
+
+--- PAGE 7 ---
+Figure 4: Qualitative comparison of our HWT (second column) with GANwriting [14] (third column) and Davis et al. [5]
+(fourth column). We use the same textual content ’No two people can write precisely the same way just like no two people
+can have the same ﬁngerprints’ for all three methods. The ﬁrst column shows the style examples from different writers.
+Davis et al. [5] captures the global style, e.g. slant, but struggles to mimic the character-speciﬁc style details. On the other
+hand, since GANwriting [14] is limited to a ﬁxed length query words, it is unable to complete the provided textual content.
+Our HWT better mimics global and local style patterns, generating more realistic handwritten text images.
+[14, 5] for styled handwritten text generation. We present
+results for different writers, whose example style images are
+shown in the ﬁrst column. For all the three methods, we use
+the same textual content. While Davis et al. [5] follows the
+leftward slant of the last style example from the top, their
+approach struggles to capture character-level styles and cur-
+sive patterns (e.g. see the word ‘ the’). On the other hand,
+GANwriting [14] struggles to follow leftward slant of the
+last style example from the top and character-level styles.
+Our HWT better imitates both the global and local style pat-
+terns in these generated example text images.
+4.2. Handwritten Text Generation
+Here, we evaluate the quality of the handwritten text im-
+age generated by our HWT. For a fair comparison with the
+recently introduced ScrabbleGAN [7] and Davis et al. [5],
+we report our results in the same evaluation settings as used
+by [7, 5]. Tab. 2 presents the comparison with [7, 5] in
+terms of FID and geometric-score (GS). Our HWT achieves
+favourable performance, compared to both approaches in
+terms of both FID and GS scores. Different from Tab. 1, the
+results reported here in Tab. 2 indicates the quality of the
+generated images, compared with the real examples in the
+IAM dataset, while ignoring style imitation capabilities.
+4.3. Ablation study
+We perform multiple ablation studies on the IAM dataset
+to validate the impact of different components in our frame-
+Table 2: Handwritten text image generation quality com-
+parison of our proposed HWT with ScrabbleGAN [7]
+and Davis et al . [5] on the IAM dataset. Results are re-
+ported in terms of FID and GS by following the same eval-
+uation settings, as in [7, 5]. Our HWT performs favorably
+against these methods in terms of both FID and GS. Best
+results are in bold.
+FID ↓ GS ↓
+ScrabbleGAN [7] 20.72 2.56 × 10−2
+Davis et al. [5] 20.65 4.88 × 10−2
+HWT (Ours) 19.40 1.01 × 10−2
+work. Tab. 3 shows the impact of integrating transformer
+encoder (Enc), transformer decoder (Dec) and cycle loss
+(CL) to the baseline (Base). Our baseline neither uses trans-
+former modules nor utilizes cycle loss. It only employs
+a CNN encoder to obtain style features, whereas the con-
+tent features are extracted from the one-hot representation
+of query words. Both content and style features are passed
+through a CNN decoder to generate styled handwritten text
+images. While the baseline is able to generate realistic text
+images, it has a limited ability to mimic the given writer’s
+style leading to inferior FID score (row 1). The introduc-
+tion of the transformer encoder into the baseline (row 2)
+leads to an absolute gain of 5.6 in terms of FID score,
+highlighting the importance of our transformer-based self-
+attentive feature sequence in the generator encoder. We ob-
+
+--- PAGE 8 ---
+Table 3: Impact of integrating transformer encoder
+(Enc), transformer decoder (Dec) and cycle loss (CL) to
+the baseline (Base) on the OOV-U settings of IAM dataset.
+Results are reported in terms of FID score. Best results are
+reported in bold. On right, we show the effect of each com-
+ponent when generating two example words ‘freedom’ and
+‘precise’ mimicking two given writing styles.
+FID ↓ Style Example
+Base 134.45
+Base + Enc 128.80
+Base + Dec 124.81
+Base + Enc + Dec 116.50
+Base + Enc + Dec + CL 114.10
+serve here that the generated sample still lacks details in
+terms of character-speciﬁc style patterns. When integrat-
+ing the transformer decoder into the baseline (row 3), we
+observe a signiﬁcant gain of 9.6 in terms of FID score. No-
+tably, we observe a signiﬁcant improvement (17.9 in FID)
+when integrating both transformer encoder and decoder to
+the baseline (row 4). This indicates the importance of self-
+and encoder-decoder attention for achieving realistic styled
+handwritten text image generation. The performance is fur-
+ther improved by the introduction of cycle loss to our ﬁnal
+HWT architecture (row 4).
+As described earlier (Sec. 3.2), HWT strives for style-
+content entanglement at character-level by feeding query
+character embeddings to the transformer decoder network.
+Here, we evaluate the effect of character-level content en-
+coding (conditioning) by replacing it with word-level con-
+ditioning. We obtain the word-level embeddings, by using
+an MLP that aims to obtain string representation of each
+query word. These embeddings are used as conditional in-
+put to the transformer decoder. Table 4 suggests that HWT
+beneﬁts from character-level conditioning that ensures ﬁner
+control of text style. The performance of word-level condi-
+tioning is limited to mimicking the global style, whereas our
+character-level approach ensures locally realistic as well as
+globally consistent style patterns.
+4.4. Human Evaluation
+Here, we present results of our two user studies on 100
+human participantsto evaluate whether the proposed HWT
+achieves human plausibility in terms of the style mimicry.
+First, a User preference study compares styled text im-
+ages generated by our method with GANwriting [14] and
+Davis et al. [5]. Second, a User plausibility study that eval-
+uates the proximity of the synthesized samples generated by
+our method to the real samples. In both studies, synthesized
+samples are generated using unseen writing styles of test set
+Table 4: Comparison between word and character-level
+conditioning on IAM dataset. Results are reported in terms
+of FID score. Our character-level conditioning performs fa-
+vorably, compared to its word-level counterpart. Best re-
+sults are reported in bold. On the right, we show the effect
+of word and character-level conditioning, when generating
+two example words ‘symbols’ and ‘same’ mimicking two
+given writing styles.
+FID ↓ Style Example
+Word-level 126.87
+Character-level 114.10
+writers of IAM dataset, and for textual content we use sen-
+tences from Stanford Sentiment Treebank [22] dataset.
+For User preference study , each participant is shown
+the real handwritten paragraph of a person and synthesized
+handwriting samples of that person using HWT, Davis et
+al. [5] and GANwriting [14], randomly organized. The par-
+ticipants were asked to mark the best method for mimicking
+the real handwriting style. In total, we have collected 1000
+responses. The results of this study shows that our proposed
+HWT was preferred 81% of the time over the other two
+methods.
+For User plausibility study , each participant is shown
+a person’s actual handwriting, followed by six samples,
+where each of these samples is either genuine or synthesized
+handwriting of the same person. Participants are asked
+to identify whether a given handwritten sample is genuine
+or not (forged/synthesized) by looking at the examples of
+the person’s real handwriting. Thus, each participant pro-
+vides 60 responses, thereby we collect 6000 responses for
+100 participants. For this study, only 48.1% of the images
+have been correctly classiﬁed, thereby showing a compara-
+ble performance to a random choice in a two-class problem.
+5. Conclusion
+We introduced a transformer-based styled handwritten
+text image generation approach, HWT, that comprises a
+conditional generator having an encoder-decoder network.
+Our HWT captures the long and short range contextual re-
+lationships within the writing style example through a self-
+attention mechanism, thereby encoding both global and lo-
+cal writing style patterns. In addition, HWT utilizes an
+encoder-decoder attention that enables style-content entan-
+glement at the character-level by inferring the style repre-
+sentation for each query character. Qualitative, quantitative
+and human-based evaluations show that our HWT produces
+realistic styled handwritten text images with varying length
+and any desired writing style.
+
+--- PAGE 9 ---
+References
+[1] Emre Aksan and Otmar Hilliges. Stcn: Stochastic temporal
+convolutional networks. arXiv preprint arXiv:1902.06568 ,
+2019. 2
+[2] Emre Aksan, Fabrizio Pece, and Otmar Hilliges. Deepwrit-
+ing: Making digital ink editable via deep generative model-
+ing. In CHI, pages 1–14, 2018. 2
+[3] Eloi Alonso, Bastien Moysset, and Ronaldo Messina. Ad-
+versarial generation of handwritten text images conditioned
+on sequences. In ICDAR, pages 481–486. IEEE, 2019. 1, 2,
+3, 6
+[4] Bo Chang, Qiong Zhang, Shenyi Pan, and Lili Meng. Gen-
+erating handwritten chinese characters using cyclegan. In
+WACV, pages 199–207. IEEE, 2018. 1, 2, 3
+[5] Brian Davis, Chris Tensmeyer, Brian Price, Curtis Wiging-
+ton, Bryan Morse, and Rajiv Jain. Text and style conditioned
+gan for generation of ofﬂine handwriting lines. BMVC, 2020.
+1, 2, 3, 6, 7, 8, 5, 9, 10, 11, 12, 13
+[6] Alexey Dosovitskiy, Lucas Beyer, Alexander Kolesnikov,
+Dirk Weissenborn, Xiaohua Zhai, Thomas Unterthiner,
+Mostafa Dehghani, Matthias Minderer, Georg Heigold, Syl-
+vain Gelly, et al. An image is worth 16x16 words: Trans-
+formers for image recognition at scale. arXiv preprint
+arXiv:2010.11929, 2020. 5
+[7] Sharon Fogel, Hadar Averbuch-Elor, Sarel Cohen, Shai Ma-
+zor, and Roee Litman. Scrabblegan: semi-supervised vary-
+ing length handwritten text generation. In CVPR, pages
+4324–4333, 2020. 1, 2, 3, 7
+[8] Ian J Goodfellow, Jean Pouget-Abadie, Mehdi Mirza, Bing
+Xu, David Warde-Farley, Sherjil Ozair, Aaron Courville, and
+Yoshua Bengio. Generative adversarial networks. arXiv
+preprint arXiv:1406.2661, 2014. 1
+[9] Alex Graves. Generating sequences with recurrent neural
+networks. arXiv preprint arXiv:1308.0850, 2013. 2
+[10] Alex Graves, Santiago Fern ´andez, Faustino Gomez, and
+J¨urgen Schmidhuber. Connectionist temporal classiﬁcation:
+labelling unsegmented sequence data with recurrent neural
+networks. In ICML, pages 369–376, 2006. 6
+[11] Tom SF Haines, Oisin Mac Aodha, and Gabriel J Brostow.
+My text in your handwriting. TOG, 35(3):1–18, 2016. 3
+[12] Kaiming He, Xiangyu Zhang, Shaoqing Ren, and Jian Sun.
+Deep residual learning for image recognition. In CVPR,
+pages 770–778, 2016. 5
+[13] Martin Heusel, Hubert Ramsauer, Thomas Unterthiner,
+Bernhard Nessler, and Sepp Hochreiter. Gans trained by a
+two time-scale update rule converge to a local nash equilib-
+rium. arXiv preprint arXiv:1706.08500, 2017. 6
+[14] Lei Kang, Pau Riba, Yaxing Wang, Marc ¸al Rusi ˜nol, Ali-
+cia Forn ´es, and Mauricio Villegas. Ganwriting: Content-
+conditioned generation of styled handwritten word images.
+In ECCV, pages 273–289. Springer, 2020. 1, 2, 3, 6, 7, 8, 5,
+9, 10, 11, 12
+[15] Tero Karras, Samuli Laine, and Timo Aila. A style-based
+generator architecture for generative adversarial networks. In
+CVPR, pages 4401–4410, 2019. 2
+[16] Salman Khan, Muzammal Naseer, Munawar Hayat,
+Syed Waqas Zamir, Fahad Shahbaz Khan, and Mubarak
+Shah. Transformers in vision: A survey. arXiv preprint
+arXiv:2101.01169, 2021. 4
+[17] Atsunobu Kotani, Stefanie Tellex, and James Tompkin. Gen-
+erating handwriting via decoupled style descriptors. In
+ECCV, pages 764–780. Springer, 2020. 2
+[18] Jae Hyun Lim and Jong Chul Ye. Geometric gan. arXiv
+preprint arXiv:1705.02894, 2017. 5
+[19] U-V Marti and Horst Bunke. The iam-database: an english
+sentence database for ofﬂine handwriting recognition. IJ-
+DAR, 5(1):39–46, 2002. 6
+[20] Martin Mayr, Martin Stumpf, Anguelos Nikolaou, Math-
+ias Seuret, Andreas Maier, and Vincent Christlein.
+Spatio-temporal handwriting imitation. arXiv preprint
+arXiv:2003.10593, 2020. 3
+[21] Baoguang Shi, Xiang Bai, and Cong Yao. An end-to-end
+trainable neural network for image-based sequence recog-
+nition and its application to scene text recognition. PAMI,
+39(11):2298–2304, 2016. 6
+[22] Richard Socher, Alex Perelygin, Jean Wu, Jason Chuang,
+Christopher D Manning, Andrew Y Ng, and Christopher
+Potts. Recursive deep models for semantic compositional-
+ity over a sentiment treebank. In EMNLP, pages 1631–1642,
+2013. 8, 1
+[23] Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszko-
+reit, Llion Jones, Aidan N. Gomez, undeﬁnedukasz Kaiser,
+and Illia Polosukhin. Attention is all you need. InNIPS, page
+6000–6010, Red Hook, NY , USA, 2017. Curran Associates
+Inc. 5
+[24] Jun-Yan Zhu, Taesung Park, Phillip Isola, and Alexei A
+Efros. Unpaired image-to-image translation using cycle-
+consistent adversarial networks. In ICCV, pages 2223–2232,
+2017. 3
+
+--- PAGE 10 ---
+Handwriting Transformers
+Supplementary Material
+In this supplementary material, we present additional hu-
+man study details, additional qualitative results, and addi-
+tional ablation study results. In Sec. 1, we provide details of
+human study experiments. Sec. 2 presents the additional vi-
+sualisation results of transformer encoder-decoder attention
+maps. Sec. 3 shows qualitative comparison of our proposed
+HWT. Sec. 4 shows the interpolations between two differ-
+ent calligraphic styles on the IAM dataset. Finally, Sec. 5
+presents additional ablation results.
+1. Human Study Additional Details
+Here, we present results of our two user studies on 100
+human participants to evaluate the human plausibility in
+terms of style mimicry of our proposed HWT. In both these
+user studies, the forged samples are generated using unseen
+writing styles of test set writers of IAM dataset, and for
+textual content we use sentences from Stanford Sentiment
+Treebank [22] dataset.
+User Preference Study: Fig. 1 shows the interface for the
+User preference study experiment, which compares styled
+text images. In this study, each participant is shown a
+real handwritten text image of a person and the synthe-
+sized handwriting text images of that person using our pro-
+posed HWT, Davis et al . [5] and GANwriting [14]. We
+randomly present generated results of these methods to the
+user. Then, the user can compare the real image and the
+generated images side by side on the same screen and with-
+out any time restriction to give the answer. Each participant
+is required to provide response for a total of ten questions.
+Overall, we have collected 1000 responses from 100 partic-
+ipants. Table 1 shows the results of User preference study.
+Davis et al. [5] and GANwriting [14] were preferred 9% (90
+responses out of the total 1000) and 10% (100 responses
+out of the total 1000), respectively. Our proposed HWT
+was preferred 81% (810 responses out of the total 1000 re-
+sponses) over the other two existing methods.
+User Plausibility Study: Fig. 2 shows the interface for the
+User plausibility study , which evaluates the proximity of
+the synthesized samples generated by our proposed HWT
+to the real samples. Here, each participant is shown a per-
+son’s actual handwriting, followed by six samples, where
+each of these samples is either genuine or synthesized hand-
+writing of the same person. Participants are asked to iden-
+tify whether a given handwritten sample is genuine or not
+(forged/synthesized) with no time limit restriction to an-
+swer the question. In total, we collect 6000 responses for
+100 human participants as each one provides 60 responses.
+Table 1: User preference study in comparison to GANwrit-
+ing [14] and Davis et al. [5]. The result shows that our pro-
+posed HWT was preferred 81% of the time over the other
+two compared methods.
+Total
+Responses
+User
+Preferences
+GANwriting [14]
+1000
+100
+Davis et al. [5] 90
+HWT (Ours) 810
+Table 2: Confusion matrix (%) obtained from User plausi-
+bility study. Only 48.1% of the images were correctly clas-
+siﬁed, indicating an output comparable to a random choice
+in a two-class problem.
+Actual Predicted
+Real Fake
+Real 24.9 25.1
+Fake 26.8 23.2
+The study revealed that the generated images produced by
+our proposed HWT were deemed plausible. Table 2 shows
+the confusion matrix of the human assessments. For this
+particular study, only 48.1% of the images have been cor-
+rectly classiﬁed, which indicates a comparable performance
+to random choice in a two-class problem.
+2. Additional Visualizations of Transformer
+Encoder-Decoder Attention
+Fig. 3 shows the visualization of attention maps obtained
+using encoder-decoder of our approach (HWT) at the last
+layer of the transformer decoder. We compute the attention
+matrices for four different words: ‘ laughs’, ‘ because’,
+‘inside’, and ‘ fashion’. Note that the attention maps
+generated by our model focus on the relevant regions of in-
+terest in the style examples for each query character. For in-
+stance, to infer character-speciﬁc style attributes of a given
+character ‘h’ in the query word ‘ laughs’, the model gives
+priority to multiple image regions containing the charac-
+ter ‘h’. Note that if the query character isn’t found in the
+style examples, the model attempts to ﬁnd similar charac-
+ters. For example, to obtain character representation of ‘ u’
+in the query word ‘ laughs’, the attention algorithm high-
+lights image regions containing similar characters (e.g. ‘n’).
+
+--- PAGE 11 ---
+Figure 1: Screenshot of the Interface used inUser preference studyexperiment. Each participant is shown the real handwritten
+text image (on the left side) of a person and synthesized handwriting text images (on the right side) of that person generated
+using three different methods. Participants have to mark the best method for mimicking the real handwriting style.
+3. Additional Qualitative Comparison
+Figs. 4-21 show qualitative comparison between our pro-
+posed HWT with [14, 5] for styled handwritten text gener-
+ation. Note that we use the same textual content for all the
+examples ﬁgures for all the three methods to ensure a fair
+comparison. The ﬁrst row in each ﬁgure presents the dif-
+ferent writers example style images. The rest of the rows
+correspond to our HWT and [14, 5] respectively. The qual-
+itative results suggest that our method is promising at im-
+itating character-level patterns, while the other two meth-
+ods struggle to retain character-speciﬁc details. The success
+of the other two methods is limited to capturing only the
+global patterns (e.g., slant, ink widths). In some cases, these
+methods even struggle to capture global styles. In Fig. 6,
+Fig. 16 and Fig. 18, Davis et al. [5] suffer to capture the
+slant. Whereas, in Fig. 16 and Fig. 20, the ink width of the
+images generated by this method is not consistent with the
+style examples. On the other hand, since GANwriting [14]
+is limited to a ﬁxed length query words, it is unable to com-
+plete few words that exceed the limit.
+Figs. 22-23 show qualitative results using the same text
+as in the style examples to compare our proposed HWT with
+[14, 5]. Figs. 24-26 show examples, where we aim to gener-
+ate arbitrarily long words. The results show that our model
+is capable of consistently imitating the styles of the given
+style example, even for arbitrarily long words. Note that
+GANwriting [14] struggles to generate long words.
+4. Latent Space Interpolations
+Fig. 27 shows interpolations between two different cal-
+ligraphic styles on the IAM dataset. To interpolate by λ
+between two writers A and B, we compute the weighted
+averageZAB =λZA + (1 −λ)ZB, while keeping the tex-
+tual contents ﬁxed. Here, ZA andZB are the style feature
+sequences obtained from encoder TE. It is worth mention-
+ing that our models produce images seamlessly by adjust-
+ing from one style to other, which indicates that our model
+generalizes in the latent space rather than memorizing any
+trivial writing patterns.
+5. Additional Ablation Results
+Fig. 28 presents additional qualitative results that show
+the impact of integrating transformer encoder (Enc), trans-
+former decoder (Dec) and cycle loss (CL) to the baseline
+(Base). Fig. 29 shows additional qualitative comparisons
+between word-level and character-level conditioning.
+
+--- PAGE 12 ---
+Figure 2: Screenshot of the Interface used in User plausibility study experiment. Each participant is shown a person’s actual
+handwriting (on the left side), followed by six samples (on the right side), where three out of these samples are genuine and
+the rest are synthesized. Participants have to classify each sample as genuine or forgery by looking at the real image.
+
+
+--- PAGE 13 ---
+Figure 3: Additional visualization results of encoder-decoder attention maps at the last layer of the transformer decoder. The
+attention maps are computed for four different query words: ‘ laughs’, ‘because’, ‘inside’, and ‘fashion’. Heat maps
+corresponding to all characters (including repetitions, as the letter ‘ i’ appears twice in ‘ inside’) of these query words are
+shown in the ﬁgure.
+
+
+--- PAGE 14 ---
+Figure 4: Additional qualitative comparisons of our proposed HWT with GANwriting [14] and Davis et al. [5], when gener-
+ating the same text ‘With more character development this might have been an eerie thriller with better payoffs it could have
+been a thinking’.
+Figure 5: Additional qualitative comparisons of our proposed HWT with GANwriting [14] and Davis et al. [5], when gen-
+erating the same text ‘Its not helpful to listen to extremist namecalling regardless of whether you think Kissinger was a
+calculating’.
+Figure 6: Additional qualitative comparisons of our proposed HWT with GANwriting [14] and Davis et al. [5], when gen-
+erating the same text ‘Shaky closeups of turkeyonrolls stubbly chins liver spots red noses and the ﬁlmmakers new bobbed do
+draw easy chuckles but’.
+
+
+--- PAGE 15 ---
+Figure 7: Additional qualitative comparisons of our proposed HWT with GANwriting [14] and Davis et al. [5], when gen-
+erating the same text ‘This ﬁlm was made by and for those folks who collect the serial killer cards and are fascinated by the
+mere suggestion’.
+Figure 8: Additional qualitative comparisons of our proposed HWT with GANwriting [14] and Davis et al. [5], when gener-
+ating the same text ‘Its a drawling slobbering lovable runon sentence of a ﬁlm a Southern Gothic with the emotional arc of
+its raw blues’.
+Figure 9: Additional qualitative comparisons of our proposed HWT with GANwriting [14] and Daviset al. [5], when generat-
+ing the same text‘LRB W RRB hile long on amiable monkeys and worthy environmentalism Jane Goodalls Wild Chimpanzees
+is short’.
+
+
+--- PAGE 16 ---
+Figure 10: Additional qualitative comparisons of our proposed HWT with GANwriting [14] and Davis et al. [5], when gen-
+erating the same text ‘For close to two hours the audience is forced to endure three terminally depressed mostly inarticulate
+hyper dysfunctional’
+Figure 11: Additional qualitative comparisons of our proposed HWT with GANwriting [14] and Davis et al . [5], when
+generating the same text ‘Claude Chabrols camera has a way of gently swaying back and forth as it cradles its characters
+veiling tension beneath’.
+Figure 12: Additional qualitative comparisons of our proposed HWT with GANwriting [14] and Davis et al . [5], when
+generating the same text ‘Though the plot is predictable the movie never feels formulaic because the attention is on the
+nuances of the’.
+
+
+--- PAGE 17 ---
+Figure 13: Additional qualitative comparisons of our proposed HWT with GANwriting [14] and Davis et al . [5], when
+generating the same text ‘A comingofage tale from New Zealand whose boozy languid air is balanced by a rich visual clarity
+and deeply felt’.
+Figure 14: Additional qualitative comparisons of our proposed HWT with GANwriting [14] and Davis et al . [5], when
+generating the same text ‘Unfortunately Kapur modernizes AEW. Masons story to suit the sensibilities of a young American
+a decision that plucks The’.
+Figure 15: Additional qualitative comparisons of our proposed HWT with GANwriting [14] and Davis et al . [5], when
+generating the same text ‘Unless Bob Crane is someone of particular interest to you this ﬁlms impressive performances and
+adept direction are’.
+
+
+--- PAGE 18 ---
+Figure 16: Additional qualitative comparisons of our proposed HWT with GANwriting [14] and Davis et al . [5], when
+generating the same text ‘Afﬁrms the gifts of all involved starting with Spielberg and going right through the ranks of the
+players oncamera and off’.
+Figure 17: Additional qualitative comparisons of our proposed HWT with GANwriting [14] and Davis et al . [5], when
+generating the same text ‘Though this rude and crude ﬁlm does deliver a few gut-busting laughs its digs at modern society
+are all things we ve seen’.
+Figure 18: Additional qualitative comparisons of our proposed HWT with GANwriting [14] and Davis et al . [5], when
+generating the same text ‘You ll laugh at either the obviousness of it all or its stupidity or maybe even its inventiveness but
+the point is’.
+
+
+--- PAGE 19 ---
+Figure 19: Additional qualitative comparisons of our proposed HWT with GANwriting [14] and Davis et al . [5], when
+generating the same text ‘Writerdirector s Mehta s effort has tons of charm and the whimsy is in the mixture the intoxicating
+masala of cultures’.
+Figure 20: Additional qualitative comparisons of our proposed HWT with GANwriting [14] and Davis et al . [5], when
+generating the same text ‘While easier to sit through than most of Jaglom s selfconscious and gratingly irritating ﬁlms it s’.
+Figure 21: Additional qualitative comparisons of our proposed HWT with GANwriting [14] and Davis et al . [5], when
+generating the same text ‘The connected stories of Breitbart and Hanussen are actually fascinating but the ﬁlmmaking in
+Invincible is such that the’.
+
+
+--- PAGE 20 ---
+Figure 22: Reconstruction results using the proposed HWT in comparison to GANwriting [14] and Davis et al. [5]. We use
+the same text as in the style examples to generate handwritten images.
+
+
+--- PAGE 21 ---
+Figure 23: Reconstruction results using the proposed HWT in comparison to GANwriting [14] and Davis et al. [5].
+
+
+--- PAGE 22 ---
+Figure 24: Handwritten text image generation of arbitrarily long words. We generate the 21-letter word
+‘Incomprehensibilities’ in three different styles and compare the results with Davis et al. [5].
+Figure 25: Handwritten text image generation of arbitrarily long words. We generate the 30-letter word
+‘Pseudopseudohypoparathyroidism’ in three different styles and compare the results with Davis et al. [5].
+Figure 26: Handwritten text image generation of arbitrarily long words. We generate the 28-letter word
+‘Antidisestablishmentarianism’ in three different styles and compare the results with Davis et al. [5].
+
+
+--- PAGE 23 ---
+Figure 27: Latent space interpolations between calligraphic styles on the IAM dataset. The ﬁrst and last image in each column
+correspond to writing styles of two different writers. Total we have shown ﬁve sets of interpolation results. We observe how
+the generated images seamlessly adjust from one style to another. This result shows that our model can generalize in the
+latent space rather than memorizing any trivial writing patterns.
+Figure 28: Additional qualitative ablation of integrating transformer encoder (Enc), transformer decoder (Dec) and cycle loss
+(CL) to the baseline (Base) on the IAM dataset. We show the effect of each component when generating six different words
+‘especially’, ‘ethereal’, ‘emotional’, ‘standard’,‘resorts’, and ‘under’.
+Figure 29: Additional qualitative comparisons between word and character-level conditioning on IAM dataset. We show the
+comparison between word and character-level conditioning when generating six different words ‘ engaging’, ‘actually’,
+‘movie’, ‘rhythms’,‘what’, and ‘evocative’.

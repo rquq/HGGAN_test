@@ -1,0 +1,41 @@
+branch,reference,variant,ocr,mae_255
+dev,4,original,handwriting,0.0
+dev,4,GBlock global only,handuriting,38.43962860107422
+dev,4,fusion global only,handwriting,13.403907775878906
+dev,4,both global paths,handuriting,37.8293571472168
+dev,4,local random noise,handwriting,0.8583029508590698
+dev,139,original,hondwriting,0.0
+dev,139,GBlock global only,handwriting,40.359649658203125
+dev,139,fusion global only,handuriting,16.742034912109375
+dev,139,both global paths,handuriting,40.47272491455078
+dev,139,local random noise,hondwriting,0.8483932614326477
+dev,4787,original,handuriting,0.0
+dev,4787,GBlock global only,handuriting,35.814327239990234
+dev,4787,fusion global only,handwriting,6.645814418792725
+dev,4787,both global paths,handuriting,37.40902328491211
+dev,4787,local random noise,handuriting,1.2984153032302856
+dev,22734,original,handuriting,0.0
+dev,22734,GBlock global only,handuriting,0.0
+dev,22734,fusion global only,handuriting,0.0
+dev,22734,both global paths,handuriting,0.0
+dev,22734,local random noise,handuriting,0.8879042267799377
+alpha,4,original,wittn,0.0
+alpha,4,GBlock global only,zeaaaaaarz,52.50653839111328
+alpha,4,fusion global only,handorilting,37.471153259277344
+alpha,4,both global paths,handwriting,45.68162536621094
+alpha,4,local random noise,wittn,0.09897183626890182
+alpha,139,original,witt,0.0
+alpha,139,GBlock global only,zeaaaaaaz,52.0466423034668
+alpha,139,fusion global only,hondoritiny,36.0957145690918
+alpha,139,both global paths,handwriting,45.423213958740234
+alpha,139,local random noise,wtt,0.10548873245716095
+alpha,4787,original,ttttt,0.0
+alpha,4787,GBlock global only,GAMRMKAMN4,34.712242126464844
+alpha,4787,fusion global only,hondwriting,37.05793380737305
+alpha,4787,both global paths,handuriting,51.28009796142578
+alpha,4787,local random noise,ttttt,0.09222564101219177
+alpha,22734,original,handuriting,0.0
+alpha,22734,GBlock global only,handuriting,0.0
+alpha,22734,fusion global only,handuriting,0.0
+alpha,22734,both global paths,handuriting,0.0
+alpha,22734,local random noise,handuriting,1.2868118286132812

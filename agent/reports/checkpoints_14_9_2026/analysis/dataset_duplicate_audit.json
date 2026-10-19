@@ -1,0 +1,78 @@
+{
+  "32": {
+    "train": {
+      "samples": 66603,
+      "unique_images": 63509,
+      "hdf5_attributes": {},
+      "writer_conflict_groups": 3035,
+      "writer_conflict_samples": 6123,
+      "writer_conflict_nonuniform_groups": 3032,
+      "writer_error_floor_count": 3085,
+      "writer_error_floor_percent": 4.6319234869300185,
+      "nonuniform_writer_error_floor_count": 3032,
+      "text_conflict_groups": 8,
+      "text_conflict_samples": 70,
+      "text_conflict_nonuniform_groups": 5,
+      "note": "Error floor applies to deterministic classification of the image alone with these labels."
+    },
+    "test": {
+      "samples": 25766,
+      "unique_images": 25671,
+      "hdf5_attributes": {},
+      "writer_conflict_groups": 59,
+      "writer_conflict_samples": 151,
+      "writer_conflict_nonuniform_groups": 57,
+      "writer_error_floor_count": 87,
+      "writer_error_floor_percent": 0.33765427307304197,
+      "nonuniform_writer_error_floor_count": 57,
+      "text_conflict_groups": 5,
+      "text_conflict_samples": 43,
+      "text_conflict_nonuniform_groups": 3,
+      "note": "Error floor applies to deterministic classification of the image alone with these labels."
+    },
+    "train_test_overlap": {
+      "unique_exact_images": 2,
+      "nonuniform_unique_exact_images": 0,
+      "test_samples": 37,
+      "nonuniform_test_samples": 0
+    }
+  },
+  "64": {
+    "train": {
+      "samples": 63186,
+      "unique_images": 63140,
+      "hdf5_attributes": {},
+      "writer_conflict_groups": 3,
+      "writer_conflict_samples": 48,
+      "writer_conflict_nonuniform_groups": 0,
+      "writer_error_floor_count": 43,
+      "writer_error_floor_percent": 0.06805304972620517,
+      "nonuniform_writer_error_floor_count": 0,
+      "text_conflict_groups": 4,
+      "text_conflict_samples": 50,
+      "text_conflict_nonuniform_groups": 1,
+      "note": "Error floor applies to deterministic classification of the image alone with these labels."
+    },
+    "test": {
+      "samples": 25432,
+      "unique_images": 25402,
+      "hdf5_attributes": {},
+      "writer_conflict_groups": 1,
+      "writer_conflict_samples": 29,
+      "writer_conflict_nonuniform_groups": 0,
+      "writer_error_floor_count": 23,
+      "writer_error_floor_percent": 0.09043724441648317,
+      "nonuniform_writer_error_floor_count": 0,
+      "text_conflict_groups": 3,
+      "text_conflict_samples": 33,
+      "text_conflict_nonuniform_groups": 2,
+      "note": "Error floor applies to deterministic classification of the image alone with these labels."
+    },
+    "train_test_overlap": {
+      "unique_exact_images": 2,
+      "nonuniform_unique_exact_images": 0,
+      "test_samples": 30,
+      "nonuniform_test_samples": 0
+    }
+  }
+}

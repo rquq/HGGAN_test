@@ -1,0 +1,113 @@
+{
+  "dev_32": {
+    "all": {
+      "samples": 66603,
+      "errors": 3092,
+      "WIER_percent": 4.642433524015435
+    },
+    "multiple_characters": {
+      "samples": 56595,
+      "errors": 2652,
+      "WIER_percent": 4.68592631857938
+    },
+    "alphanumeric": {
+      "samples": 58374,
+      "errors": 2706,
+      "WIER_percent": 4.635625449686504
+    },
+    "unambiguous_image": {
+      "samples": 60480,
+      "errors": 6,
+      "WIER_percent": 0.00992063492063492
+    },
+    "single_character": {
+      "samples": 10008,
+      "errors": 440,
+      "WIER_percent": 4.396482813749
+    },
+    "punctuation_only": {
+      "samples": 8229,
+      "errors": 386,
+      "WIER_percent": 4.690727913476729
+    },
+    "conflicting_image": {
+      "samples": 6123,
+      "errors": 3086,
+      "WIER_percent": 50.40013065490773
+    }
+  },
+  "dev_64": {
+    "all": {
+      "samples": 63186,
+      "errors": 58,
+      "WIER_percent": 0.09179248567720698
+    },
+    "single_character": {
+      "samples": 9564,
+      "errors": 51,
+      "WIER_percent": 0.533249686323714
+    },
+    "punctuation_only": {
+      "samples": 7809,
+      "errors": 49,
+      "WIER_percent": 0.627481111537969
+    },
+    "unambiguous_image": {
+      "samples": 63138,
+      "errors": 13,
+      "WIER_percent": 0.020589819126358135
+    },
+    "multiple_characters": {
+      "samples": 53622,
+      "errors": 7,
+      "WIER_percent": 0.013054343366528663
+    },
+    "alphanumeric": {
+      "samples": 55377,
+      "errors": 9,
+      "WIER_percent": 0.01625223468226881
+    },
+    "conflicting_image": {
+      "samples": 48,
+      "errors": 45,
+      "WIER_percent": 93.75
+    }
+  },
+  "spis_32": {
+    "all": {
+      "samples": 66603,
+      "errors": 3136,
+      "WIER_percent": 4.7084966142666245
+    },
+    "multiple_characters": {
+      "samples": 56595,
+      "errors": 2691,
+      "WIER_percent": 4.754836999734959
+    },
+    "alphanumeric": {
+      "samples": 58374,
+      "errors": 2744,
+      "WIER_percent": 4.700722924589715
+    },
+    "unambiguous_image": {
+      "samples": 60480,
+      "errors": 38,
+      "WIER_percent": 0.06283068783068783
+    },
+    "single_character": {
+      "samples": 10008,
+      "errors": 445,
+      "WIER_percent": 4.446442845723421
+    },
+    "punctuation_only": {
+      "samples": 8229,
+      "errors": 392,
+      "WIER_percent": 4.763640782598128
+    },
+    "conflicting_image": {
+      "samples": 6123,
+      "errors": 3098,
+      "WIER_percent": 50.59611301649518
+    }
+  }
+}

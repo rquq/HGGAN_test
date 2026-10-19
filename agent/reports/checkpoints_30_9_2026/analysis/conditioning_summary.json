@@ -1,0 +1,20 @@
+{
+  "dev": {
+    "local_across_reference_rms": 1.256230279977899e-05,
+    "global_across_reference_rms": 0.8120875358581543,
+    "local_mean_abs": 0.05040936917066574,
+    "local_slot_rms": 0.006034457124769688,
+    "local_attention_gate_mean": 0.45075494050979614,
+    "evidence_gate_last_weight_norm": 0.6798999309539795,
+    "sequence_gamma": 0.03492123261094093
+  },
+  "alpha": {
+    "local_across_reference_rms": 1.1447796168795321e-05,
+    "global_across_reference_rms": 0.9379993677139282,
+    "local_mean_abs": 0.03037804737687111,
+    "local_slot_rms": 0.004627957474440336,
+    "local_attention_gate_mean": 0.41198769211769104,
+    "evidence_gate_last_weight_norm": 0.6136864423751831,
+    "sequence_gamma": 0.03299615904688835
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "family": "spis",
+  "height": 32,
+  "kind": "ocr",
+  "samples": 25766,
+  "dataset": "/home/quq/machineLearning/HTG/iam/iam_test_32.hdf5",
+  "checkpoint": "/home/quq/machineLearning/HTG/chkpoints/SpiS-GAN/bestIAM.pth",
+  "stored_metadata": {
+    "KID": 0.07579803466796875,
+    "FID": 4.459543935554592,
+    "Epoch": 98
+  },
+  "checkpoint_sha256": "e5094b78691d7d07ad854b5fc0748e054d385dd52f48cbcfa9020294b42c6b60",
+  "source_is_white_paper": true,
+  "invert_polarity": false,
+  "device": "NVIDIA GeForce RTX 4060 Laptop GPU",
+  "dtype": "float32",
+  "batch_size": 16,
+  "split_note": "test, unseen writers",
+  "chars": 101954,
+  "errors": 11634,
+  "word_errors": 7246,
+  "legacy_chars": 99722,
+  "legacy_errors": 11292,
+  "legacy_word_errors": 7144,
+  "correct_writer": 0,
+  "seconds": 15.418036612000037,
+  "gpu_peak_GiB": 0.09979963302612305,
+  "CER": 0.11323479272377208,
+  "WER": 0.2772646122797485,
+  "transcript_CER": 0.11411028503050395,
+  "transcript_WER": 0.28122331755026003
+}

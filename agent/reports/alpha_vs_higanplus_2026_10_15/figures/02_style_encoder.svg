@@ -1,0 +1,72 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1250 650" role="img">
+<rect width="100%" height="100%" fill="white"/>
+<rect x="25" y="270" width="140" height="75" rx="5" fill="#f1f3f5" stroke="#263746" stroke-width="1.4"/>
+<text x="95.0" y="297.75714285714287" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="14.761904761904761" fill="#263746">Reference image</text>
+<text x="95.0" y="317.24285714285713" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="14.761904761904761" fill="#263746">x, valid width</text>
+<rect x="205" y="270" width="170" height="75" rx="5" fill="#e8f0f8" stroke="#263746" stroke-width="1.4"/>
+<text x="290.0" y="297.6" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">Shared frozen B</text>
+<text x="290.0" y="317.4" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">F2 / F3 / F4</text>
+<polyline points="165,307 205,307" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="205,307 197.0,303.0 197.0,311.0" fill="#263746"/>
+<rect x="420" y="45" width="180" height="70" rx="5" fill="#e8f0f8" stroke="#263746" stroke-width="1.4"/>
+<text x="510.0" y="70.1" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">256-D sequence</text>
+<text x="510.0" y="89.9" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">from deepest B map</text>
+<rect x="645" y="45" width="180" height="70" rx="5" fill="#e8f0f8" stroke="#263746" stroke-width="1.4"/>
+<text x="735.0" y="70.1" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">GatedStyleContext</text>
+<text x="735.0" y="89.9" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">DW k7, dilation 1→2</text>
+<rect x="875" y="45" width="160" height="70" rx="5" fill="#e8f0f8" stroke="#263746" stroke-width="1.4"/>
+<text x="955.0" y="70.1" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">Valid mean</text>
+<text x="955.0" y="89.9" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">LayerNorm + MLP</text>
+<rect x="1080" y="45" width="145" height="70" rx="5" fill="#e6f3ee" stroke="#263746" stroke-width="1.4"/>
+<text x="1152.5" y="70.1" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">μg, log σ²g</text>
+<text x="1152.5" y="89.9" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">g = μg + σg ε</text>
+<polyline points="290,270 290,80 420,80" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="420,80 412.0,76.0 412.0,84.0" fill="#263746"/>
+<polyline points="600,80 645,80" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="645,80 637.0,76.0 637.0,84.0" fill="#263746"/>
+<polyline points="825,80 875,80" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="875,80 867.0,76.0 867.0,84.0" fill="#263746"/>
+<polyline points="1035,80 1080,80" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="1080,80 1072.0,76.0 1072.0,84.0" fill="#263746"/>
+<rect x="420" y="270" width="180" height="75" rx="5" fill="#e8f0f8" stroke="#263746" stroke-width="1.4"/>
+<text x="510.0" y="289.09183673469386" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="13.945578231292515" fill="#263746">Pool to 4 height rows</text>
+<text x="510.0" y="307.5" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="13.945578231292515" fill="#263746">1×1 conv → 256</text>
+<text x="510.0" y="325.90816326530614" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="13.945578231292515" fill="#263746">per scale</text>
+<rect x="645" y="245" width="180" height="75" rx="5" fill="#e6f3ee" stroke="#263746" stroke-width="1.4"/>
+<text x="735.0" y="262.7" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">Normalized visual U</text>
+<text x="735.0" y="282.5" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">K = U + 2-D PE</text>
+<text x="735.0" y="302.3" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">V = U − valid mean</text>
+<rect x="645" y="395" width="180" height="70" rx="5" fill="#fff2d6" stroke="#263746" stroke-width="1.4"/>
+<text x="735.0" y="420.1" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">7 learned queries</text>
+<text x="735.0" y="439.9" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">orthogonal init</text>
+<rect x="875" y="270" width="160" height="75" rx="5" fill="#e8f0f8" stroke="#263746" stroke-width="1.4"/>
+<text x="955.0" y="297.6" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">4-head</text>
+<text x="955.0" y="317.4" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">cross-attention</text>
+<rect x="1080" y="270" width="145" height="75" rx="5" fill="#e8f0f8" stroke="#263746" stroke-width="1.4"/>
+<text x="1152.5" y="298.5567226890756" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="13.550420168067225" fill="#263746">Bias-free</text>
+<text x="1152.5" y="316.4432773109244" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="13.550420168067225" fill="#263746">256→32 projection</text>
+<polyline points="375,307 420,307" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="420,307 412.0,303.0 412.0,311.0" fill="#263746"/>
+<polyline points="600,307 625,307 625,282 645,282" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="645,282 637.0,278.0 637.0,286.0" fill="#263746"/>
+<polyline points="825,282 850,282 850,307 875,307" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="875,307 867.0,303.0 867.0,311.0" fill="#263746"/>
+<polyline points="825,430 955,430 955,345" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="955,345 951.0,353.0 959.0,353.0" fill="#263746"/>
+<polyline points="1035,307 1080,307" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="1080,307 1072.0,303.0 1072.0,311.0" fill="#263746"/>
+<rect x="1080" y="430" width="145" height="75" rx="5" fill="#e6f3ee" stroke="#263746" stroke-width="1.4"/>
+<text x="1152.5" y="449.61344537815125" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="13.550420168067225" fill="#263746">Center over slots</text>
+<text x="1152.5" y="467.5" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="13.550420168067225" fill="#263746">Lj ← Lj − mean(L)</text>
+<text x="1152.5" y="485.38655462184875" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="13.550420168067225" fill="#263746">7 local tokens</text>
+<polyline points="1152,345 1152,430" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="1152,430 1156.0,422.0 1148.0,422.0" fill="#263746"/>
+<rect x="420" y="540" width="600" height="65" rx="5" fill="#f1f3f5" stroke="#263746" stroke-width="1.4"/>
+<text x="720.0" y="563.3228571428572" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="13.904761904761902" fill="#263746">Output S = [g, L1, …, L7] ∈ R^(B×8×32)</text>
+<text x="720.0" y="581.6771428571428" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="13.904761904761902" fill="#263746">Only global is stochastic / KL-regularized; local evidence is deterministic</text>
+<polyline points="1225,80 1238,80 1238,625 720,625 720,605" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="720,605 716.0,613.0 724.0,613.0" fill="#263746"/>
+<polyline points="1080,467 1055,467 1055,572 1020,572" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="1020,572 1028.0,576.0 1028.0,568.0" fill="#263746"/>
+<text x="25" y="635" text-anchor="start" font-family="Arial,DejaVu Sans,sans-serif" font-size="14" fill="#263746">Position selects evidence through K; positional vectors and learned queries are not added into appearance V.</text>
+</svg>

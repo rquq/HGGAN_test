@@ -1,0 +1,17 @@
+# Retain useful documentation and rendered diagrams, not execution debris.
+__pycache__/
+*.py[cod]
+**/qa_*.png
+**/native_*.png
+**/editor_attempt.png
+**/verification.json
+**/native_renderer_verification.json
+**/artifact_verification.json
+**/analysis/*.py
+**/.superpowers/**/*.py
+**/.superpowers/**/*baseline.json
+*.pth
+*.pt
+*.hdf5
+collect_documentation.py
+rename_alpha.py

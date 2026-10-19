@@ -1,0 +1,10 @@
+{
+  "dev": {
+    "global_across_ref_rms": 0.9909605383872986,
+    "local_across_ref_rms": 1.6651250916766003e-05
+  },
+  "alpha": {
+    "global_across_ref_rms": 1.04005765914917,
+    "local_across_ref_rms": 2.1563973859883845e-05
+  }
+}

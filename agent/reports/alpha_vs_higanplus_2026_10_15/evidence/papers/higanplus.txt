@@ -1,0 +1,1530 @@
+--- PAGE 1 ---
+11
+HiGAN+: Handwriting Imitation GAN with Disentangled
+Representations
+JI GAN,Chongqing University of Posts and Telecommunications and University of Chinese Academy of Sciences
+WEIQIANG WANG,University of Chinese Academy of Sciences
+JIAXU LENGand XINBO GAO,Chongqing University of Posts and Telecommunications
+Fig. 1. Humans can quickly learn handwriting imitation with the ability of hallucination, while this task may be challenging for machines. Our goal isto
+teach machines to mimic such hallucinations, so that they may write diverse and realistic texts as well as humans after learning from limited handwriting
+scripts.
+Humans remain far better than machines at learning, where humans re-
+quire fewer examples to learn new concepts and can use those concepts
+in richer ways. Take handwriting as an example, after learning from very
+limited handwriting scripts, a person can easily imagine what the hand-
+written texts would like with other arbitrary textual contents (even for
+This work is supported by the National Nature Science Foundation of China (NSFC)
+under Grant No. 61976201, No. 62036007, No. 62101084, and No. 62102057; in part
+by the NSFC Key Projects of International (Regional) Cooperation and Exchanges
+under Grant No. 61860206004, the Special Project on Technological Innovation and
+Application Development under Grant No. cstc2020jscx-dxwtB0032, and Chongqing
+Excellent Scientist Project under Grant No. cstc2021ycjh-bgzxm0339.
+Authors’ addresses: J. Gan, Chongqing University of Posts and Telecommunications,
+Chongqing 400065, China and University of Chinese Academy of Sciences; email:
+ganji15@mails.ucas.ac.cn;J.LengandX.Gao(correspondingauthor),ChongqingUni-
+versity of Posts and Telecommunications, Chongqing 400065, China; emails: {lengjx,
+gaoxb}@cqupt.edu.cn; W.Wang(correspondingauthor),University ofChineseAcad-
+emy of Sciences, Beijing 101408, China; email: wqwang@ucas.ac.cn.
+Permission to make digital or hard copies of all or part of this work for personal or
+classroomuseisgrantedwithoutfeeprovidedthatcopiesarenotmadeordistributed
+for profit or commercial advantage and that copies bear this notice and the full cita-
+tiononthefirstpage. Copyrightsforcomponentsofthisworkownedbyothersthan
+ACMmustbehonored.Abstractingwithcreditispermitted.Tocopyotherwise,orre-
+publish,topostonserversortoredistributetolists,requirespriorspecificpermission
+and/or a fee. Request permissions frompermissions@acm.org.
+© 2022 Association for Computing Machinery.
+0730-0301/2022/09-ART11 $15.00
+https://doi.org/10.1145/3550070
+unseen words or texts). Moreover, humans can also hallucinate to imitate
+calligraphic styles from just a single reference handwriting sample (that
+even have never seen before). Humans can do such hallucinations, per-
+haps because they can learn to disentangle the textual contents and cal-
+ligraphic styles from handwriting images. Inspired by this, we propose a
+novelhandwritingimitationgenerativeadversarialnetwork(HiGAN+)for
+realistichandwrittentextsynthesisbasedondisentangledrepresentations.
+The proposed HiGAN+ can achieve a precise one-shot handwriting style
+transfer by introducing the writer-specific auxiliary loss and contextual
+loss, and it also attains a good global & local consistency by refining local
+details of synthetic handwriting images. Extensive experiments, including
+human evaluations, on the benchmark dataset validate our superiority in
+terms of visual quality, scalability, compactness, and style transferability
+compared with the state-of-the-art GANs for handwritten text synthesis.
+CCS Concepts: • Computing methodologies→Image representa-
+tions;
+Additional Key Words and Phrases: Handwriting imitation, handwritten
+text generation, generative adversarial networks, machine learning
+ACM Reference format:
+Ji Gan, Weiqiang Wang, Jiaxu Leng, and Xinbo Gao. 2022. HiGAN+: Hand-
+writing Imitation GAN with Disentangled Representations.ACM Trans.
+Graph.42, 1, Article 11 (September 2022), 17 pages.
+https://doi.org/10.1145/3550070
+ACM Transactions on Graphics, Vol. 42, No. 1, Article 11. Publication date: September 2022.
+
+--- PAGE 2 ---
+11:2 • J. Gan et al.
+1 INTRODUCTION
+Although machines can easily recognize humans’ handwriting
+scripts with recent advanced techniques, it still remains chal-
+lenging for machines to synthesize realistic handwriting images.
+Hence, it will step closer to high-level artificial intelligence if we
+can teach machines/robotics to write texts as realistic as humans.
+Generally,handwriting imitation(HI) aims at (1) synthesizing
+diverse and realistic handwriting images conditioned on arbitrary
+textual contents and (2) imitating the calligraphic styles of refer-
+ence handwriting images (e.g., the character shape, stroke thick-
+ness, writing slant, and ligature). As shown in Figure1, humans
+canquicklylearnsuchHIwiththeabilityofhallucination.Specifi-
+cally,afterlearningfromverylimitedhandwritingscripts,humans
+caneasilyvisualize(orimagine)whatthehandwrittentextswould
+looklikewiththeotherarbitrarytextualcontents.Moreover,after
+providing a reference handwriting sample, humans can also hal-
+lucinate novel handwriting images of similar calligraphic styles
+yet with different textual contents. Lastly, humans also are able to
+write arbitrarily long words and even complete sentences or para-
+graphs.Byrethinkinghumans’learningability,thereasonwhyhu-
+manscandosuchadvancedhallucinationsisperhapsthattheycan
+learn to disentangle calligraphic styles and textual contents from
+handwriting images (rather than simply memorizing the training
+samples). Therefore, if we can teach machines to mimic this learn-
+ing process, they may learn HI as well as humans.
+It has witnessed many great achievements in the field of image
+generation with the recent advances ingenerative adversarial
+networks(GANs)[Goodfellowetal. 2014]and variationalauto-
+encoders (VAEs) [Kingma and Welling2013]. By integrating the
+advantages of GANs and VAEs, computers nowadays are capable
+ofsynthesizingdiverseandrealisticnatureimagesoroilpaintings,
+andtheycanevenperformimage-to-imagetranslationbylearning
+the mapping between different visual domains. However, a signif-
+icant observation is that HI as a special image synthesis task has
+not been fully explored yet. Particularly, we demonstrate that HI
+is substantially different from theconventional image genera-
+tion(CIG)studiedinpreviousworks,mainlyduetothefollowing
+aspects:
+(1) Variable-Sized Outputs. CIG mainly focuses on producing
+fixed-sized images, while HI requires generating variable-
+sized images since handwritten texts can be arbitrarily long
+(e.g., handwritten sentences typically are longer than hand-
+written words). Therefore, the generator for HI should be
+specifically designed for variable-sized outputs.
+(2) ArbitraryTextualContents .CIGcanonlygenerateimages
+conditioned on predefined classes and thus is impossible to
+produce images for other unseen classes. However, HI re-
+quires textual contents to be more precise (i.e., exact char-
+acters in desired orders), which is expected to generate ar-
+bitrary handwriting images conditioned on arbitrary textual
+contents that are unconstrained to any pre-defined corpus or
+out-of-vocabulary (OOV) words (i.e., the words that have
+never been seen during training).
+(3) Different Style Transfer. CIG aims at synthesizing nature
+images or oil paintings, whose styles can be modeled as
+dense textures (which can be effectively captured by Gram
+Table 1. Feature-by-Feature Comparison of GANs for
+Handwritten Text Generation
+Method Text
+Length
+Style Transfer Refine
+Detail
+Size↓
+(MB)
+Quality
+FID↓Shot Acc. ↑
+ScrabbleGAN Arbitrary ××× 81.8 26.78
+TS-GAN Arbitrary One 0.05 × 172.1 33.90
+GANwriting Short Few 0.16 × 135.8 20.55
+HWT Arbitrary Few 0.17 × 131.3 19.69
+HiGAN Arbitrary One 0.33 × 59.1 18.30
+HiGAN+ Arbitrary One 0.42 √ 21.7 5.95
+In the table,↑indicates that higher values are better, and vice versa.
+Bold indicates the best result.
+matrices). In contrast, handwriting images contain little tex-
+tures since they mainly consist of a sparse set of continuous
+graphical elements (i.e., handwriting strokes and cursive
+ligatures). Moreover, humans’ handwriting can be very
+arbitrary, and thus handwriting images may not be perfectly
+spatially aligned even though their styles are visually similar.
+What is worse, HI has stronger semantic constraints, under
+whichthegeneratedimagesmaycontaincompletelydifferent
+textual contents with different spatial sizes. Therefore, it
+poses challenges for traditional style transfer methods based
+on pixel correspondence (e.g., Pix2Pix [Isola et al.2017]a n d
+CycleGAN [Kim et al.2017]).
+Those characteristics make HI could be more challenging than
+CIG.
+Recently, several efforts have been made for handwritten text
+synthesis based on GANs, while none of them have success-
+fully solved the aforementioned difficulties at the same time.
+Specifically, Alonso et al. [2019] first proposed to adopt GANs
+for synthesizing handwritten text images conditioned on the
+whole embeddings of entire words. However, this method can
+only synthesize fixed-sized images and also produce low visual
+qualitiesforOOVwords.Fogeletal.[ 2020]proposedanimproved
+methodcalledScrabbleGAN,whichcansynthesizearbitrarilylong
+handwrittentextsbyconcatenatingalltheletter-tokens.However,
+the major limitation is that ScrabbleGAN cannot imitate the
+calligraphic styles of reference samples and thus fails to control
+the styles of synthetic images. Furthermore, Kang et al. [2020]
+proposed a few-shot style-conditioned handwritten word gener-
+ation GAN, i.e., GANwriting. However, GANwriting is limited to
+synthesizing short words (e.g., less than 10 letters) rather than
+long texts due to its inferior architectural design. Moreover, Bhu-
+nia et al. [2021] proposed HWT to synthesize handwritten texts
+withTransformers.However,bothGANwritingandHWTrequire
+multiple reference samples for extracting reliable calligraphic
+featuresduringtraining,thusexhibitinglowvisualqualitieswhen
+only one reference sample is available in inference. Recently,
+Davis et al. [2020]p r o p o s e dtext and style conditioned GAN
+(TS-GAN) for handwritten text synthesis. TS-GAN can learn to
+extract styles from images based on the pixel-to-pixel reconstruc-
+tion loss, while it fails to correctly imitate styles of reference
+samplesinmostcases.Thisisbecausehandwritingimagesarenot
+spatially aligned and contain few textures, which makes pixel cor-
+respondence ineffective to model calligraphic styles. In summary,
+the state-of-the-art GANs have not entirely solved HI yet.
+ACM Transactions on Graphics, Vol. 42, No. 1, Article 11. Publication date: September 2022.
+
+--- PAGE 3 ---
+HiGAN+: Handwriting Imitation GAN with Disentangled Representations • 11:3
+To address the above challenges, in our previous conference
+work[GanandWang 2021],we haveproposedanovel handwrit-
+ingimitationGAN (HiGAN)forHI,whichcangeneratediverse
+and realistic handwriting images conditioned on arbitrary textual
+contents(thatareunconstrainedtoanypredefinedcorpusorOOV
+words) and calligraphic styles (that are disentangled from refer-
+ence samples). However, HiGAN may produce blurred and dis-
+torted characters, exhibiting low visual qualities of synthetic im-
+ages. The presented HiGAN+ not only significantly improves the
+visual qualities of synthetic images but also achieves a more ac-
+curate handwriting style transfer with desired properties. Table1
+shows a feature-by-feature comparison between different GANs
+for handwritten text generation.
+Overall, the presented work supposes a significantly extended
+version of our previous conference paper. Specifically,
+(1) WeenhanceourpriorHiGANwithseveralnewtechnicalcon-
+tributions, including:
+— The contextual loss is introduced to improve the style con-
+sistency and achieves a better calligraphic style transfer.
+— The local patch refinement is proposed to improve the
+local consistency of synthetic images with higher visual
+qualities.
+— We derive a more compact and effective architecture by
+reusing the writer identifier for style encoding.
+(2) We propose comprehensive metrics to fully measure the
+performance of GANs for variable-length handwritten text
+synthesis. Particularly, the newly proposedwriter identifi-
+cation error rate(WIER) can quantitatively measure the
+handwriting style transferability of GANs, which has never
+been investigated before.
+(3) We conduct more extensive experiments (including Turning
+tests)onbenchmarkstofullycomparetheproposedHiGAN+
+with other state-of-the-art GANs for HI, where HiGAN+
+achieves the best performance in terms of visual quality,
+scalability,compactness, and style transferability.
+2 RELATED WORK
+2.1 Handwriting Synthesis
+Traditional approaches for handwritten text generation not only
+involveexpensivemanualinterventionforclippingglyphsandtag-
+ging individual characters, but they also require a strong domain-
+specific knowledge for modeling glyph layouts and rendering lig-
+atures and background textures. For example, Haines et al. [2016]
+proposed such an algorithm that can render desired English texts
+in a specific writer’s handwriting. Similarly, Lin and Wan [2007]
+proposed to compute features from individual glyphs and words
+based on geometric statistics and further learn to synthesize com-
+plete words/sentences with hand-crafted hierarchical rules. Of
+course, such manual interventions are extremely expensive, and
+their generalization and scalability are also limited due to the
+domain-specific knowledge and hierarchical rules.
+With the great successes of deep learning techniques in com-
+puter vision and machine learning, artificial neural networks
+have been gradually used for handwriting synthesis. Specifically,
+Graves [2013] first proposed to synthesize online handwrit-
+ing trajectories of English texts based on recurrent neural
+networks(RNNs),whichcanpredictthefuturestrokepointswith
+Gaussian mixture models. Moreover, Ha and Eck [2018]p r o p o s e d
+SketchRNN for synthesizing hand-drawn sketches. Furthermore,
+Zhang et al. [2018] successfully adopted this architecture to draw
+realistic online handwritten Chinese characters of thousands of
+categories. Morerecently, Kotanietal. [2020]proposed thedecou-
+pled style descriptor model for handwriting, which factors both
+character-andwriter-levelstylesandthussynthesizesmorerealis-
+tic handwriting trajectories. However, such an RNN-based model
+is hard to learn long-range dependencies of long sequences, and
+also their generation is time-consuming since RNNs remain less
+amenable to parallelization. More lethally, it is challenging to col-
+lectmassivetrajectoriesinanaturalsetting,sincetheirrecordings
+require unique equipment like stylus pens and touch screens. In-
+stead, it is much easier to collect handwriting images with ubiqui-
+touscamerasandscannersinourreallives.Hence,itismoreprac-
+tical to synthesize handwriting images rather than trajectories.
+GANs have achieved much progress in many image synthe-
+sistasks,includinghandwrittencharactergeneration.Specifically,
+Goodfellow et al. [2014] proposed to generate realistic handwrit-
+ten digits by introducing the adversarial loss, and Kingma and
+Welling [2013] proposed a VAE instead. Furthermore, Mirza and
+Osindero [2014]p r o p o s e dconditional GANs (cGANs)t oc o n -
+strain the handwriting generation conditioned on desired class la-
+bels. Moreover, Chen et al. [2016] proposed InfoGANs to address
+the model collapse and Radford et al. [2013]p r o p o s e ddeep con-
+volutional GANs (DCGANs) to improve the generation capa-
+bility, thus producing more diverse and realistic images. Particu-
+larly, Chang et al. [2018] successfully adopted CycleGANs [Kim
+et al. 2017] for synthesizing handwritten Chinese characters of
+thousands of categories. Moreover, many researches also adopted
+GANs for the glyph font generation [Azadi et al.2018; Jiang et al.
+2019; Cha et al.2020;P a r ke ta l .2021], which aims at generating
+fixed-sizedandisolatedglyphfontcharacters(insteadoflongtext
+strings) with desired styles. Overall, existing works mainly focus
+on synthesizing fixed-sized handwritten digits/characters, while
+handwritten text synthesis is rarely explored.
+As an emerging research topic, only a few efforts have been
+made for synthesizing handwritten text images. Specifically,
+Alonso et al. [2019] first proposed a GAN-based model to syn-
+thesize handwritten words conditioned on the whole embeddings
+of input texts, while their model is limited to generating fixed-
+sized images and also produces low visual qualities for OOV
+words.Moreover,Fogeletal.[ 2020]proposedScrabbleGANwhich
+can generate arbitrary-length handwritten texts by concatenat-
+ing letter-tokens together but fails to imitate calligraphic styles
+of reference samples. Furthermore, Kang et al. [2020]p r o p o s e d
+GANwritingthatcangeneratehandwrittenwordsconditionedon
+extracted calligraphic features in a few-shot setting and tex-
+tual contents of a pre-defined text length. In their follow-up
+work [Kang et al.2021], they further demonstrated that the use
+of realistic synthetic texts at training is useful for improving the
+handwrittentextrecognitionperformance.Moreover,Bhuniaetal.
+[2021] proposed to synthesize handwritten texts with Transform-
+ers.Recently,Davisetal.[ 2020]proposedaTS-GANforhandwrit-
+ten text synthesis, which learns to extract styles based on pixel-
+to-pixel reconstruction loss. However, TS-GAN fails to correctly
+ACM Transactions on Graphics, Vol. 42, No. 1, Article 11. Publication date: September 2022.
+
+--- PAGE 4 ---
+11:4 • J. Gan et al.
+imitate styles of reference samples most of the time. In our prior
+work[GanandWang 2021],weproposedHiGANthatcansynthe-
+size variable-sized handwriting images conditioned on arbitrary-
+length texts and disentangled styles, while it sometimes produces
+blurred textures and distorted characters. Nevertheless, the state-
+of-the-art GANs have not entirely solved the text- and style-
+conditioned handwritten text synthesis yet.
+2.2 GAN-Based Style Transfer
+Computers nowadays can solve many image translation tasks by
+combining the conceptions of GANs and VAEs, and those tasks
+aim at transferring the style characteristics of a style image to a
+content image. Specifically, Isola et al. [2017] proposed a cGAN
+(i.e.,pix2pix)forimage-to-imagetranslation,andZhuetal.[ 2017]
+proposed BicycleGAN to enable more diversified outputs. Never-
+theless, those methods all require paired training data. To address
+thisproblem,manyworksrelaxthedependencyonpaireddataby
+leveraging thecycle consistency, e.g.,CycleGAN [Kimetal.2017],
+DIRT [Lee et al.2018], MUNIT [Huang et al.2018], and StarGAN
+[Choi et al.2018]. Moreover, Mao et al. [2019] proposed the mode
+seeking regularization to ensure the output diversity, and Iizuka
+et al. [2017] proposed to refine local details of images. Essentially,
+this kind of style transfer is achieved by minimizing differences
+between the generated and target images, where pixel-to-pixel
+reconstruction is utilized for spatial alignments and Gram matri-
+ces for texture statistics. Similar techniques have been extended
+to related applications such as font synthesis [Gao et al.2019],
+scene texts [Wu et al.2019], caricature [Cao et al.2018], and face
+editing [Portenier et al.2018].
+2.3 Glyph Font Synthesis
+Glyph font synthesis aims at designing and generating glyph font
+images automatically, and it has witnessed great achievements in
+recent years [Azadi et al.2018; Gao et al.2019; Jiang et al.2019;
+Cha et al.2020;W a n ge ta l .2020;P a r ke ta l .2021]. However, we
+demonstratethattheglyphfontsynthesisislargelydifferentfrom
+HI in the following aspects:
+(1) Annotation Difficulty: The font style transfer requires
+laboriousannotationsforsupervision,suchaspairedtraining
+samples (i.e., the input images and corresponding pixel-level
+aligned ground-truth images) or even attribute annotations
+for attribute editing [Wang et al. 2020]. Instead, HI only
+imposes writers’ identities to specify the calligraphic styles,
+whichavoidslaboriousannotations.Thistasklearnsthestyle
+transfer more implicitly than font generation.
+(2) Characters vs. Strings:Previous font generation can only
+generate single isolated characters; however, HI aims at syn-
+thesizing long handwritten text strings with variable-sized
+outputsandarbitrarytextualcontentsthatareunconstrained
+to any predefined corpus and OOV words.
+(3) Style Variations:Font generation aims at designing fonts
+for the industry, and the glyph fonts have very small intra-
+categoryvariations(i.e.,thefontofthespecificcharacterclass
+and style always has a standard template); instead, humans’
+handwriting is very arbitrary and their writing styles vary
+significantly (e.g., a person even is hard to write the exactly
+same sentences twice with pixel-to-pixel correspondence).
+Different from glyph fonts with limited styles, a thousand
+people have a thousand different handwriting styles.
+Indeed, the research on glyph font generation may bring some in-
+spiration for HI.
+2.4 Differences between the Prior and Presented Works
+HI is a new research topic, and the state-of-the-art GANs have
+not entirely solved this challenging problem yet. In our previous
+work [Gan and Wang2021], we have proposed a novel HiGAN
+for HI, which can generate handwriting images conditioned on
+arbitrary-lengthtextsandanycalligraphicstylesofreferencesam-
+ples. However, the prior work is very preliminary, still leaving a
+big room for improvement. Specifically,
+(1) Generation Quality:The prior HiGAN sometimes may pro-
+duce blurred and distorted characters, exhibiting low visual
+qualities of synthetic images. In HiGAN+, we introduce alo-
+cal patch loss(LPL) to refine the local details of synthetic
+images,whichsignificantlyimprovesthelocalconsistencyof
+synthetic images. This strategy effectively prevents HiGAN+
+from producing blurred patches or distorted characters, thus
+leadingtomuchhighervisualqualitiesofsynthetichandwrit-
+ten texts. Moreover, considering the characteristics of hand-
+writingimages,weintroducethecontextuallossdedicatedto
+HiGAN+toeffectivelymodelcalligraphicstyles,whichsignif-
+icantly improves the style consistency and achieves a better
+handwriting style transfer.
+(2) Model Compactness: The prior HiGAN requires training
+twoindividualmodules(i.e.,thewriteridentifierandstyleen-
+coder).Instead,HiGAN+derivesamorecompactandmoreef-
+fectivearchitecturebyrethinkingtherolesofindividualmod-
+ulesinthecurrentframework,i.e.,reusingtheearlylayersof
+thewriteridentifierforstyleencoding.Incontrasttoexisting
+works, this strategy can avoid using a huge pre-trained VGG
+backbone or training an additional style encoder.
+(3) ComprehensiveEvaluation: Theevaluationsofpriorwork
+areweakandinsufficientinsomeaspects,sinceitonlyevalu-
+ates theFréchet Inception Distance(FID)a n dword error
+rate(WER)scoresofHiGAN,GANwritingandScrabbleGAN.
+Instead,thepresentedworkproposescomprehensivemetrics
+for HI, including (a) Inception Score (IS), FID, Kernel
+Inception Distance (KID), Peak Signal to Noise Ratio
+(PSNR), and Mean Structural Similarity (MSSIM)f o r
+visual quality, (b) WER for readability, and (c) the newly pro-
+posed WIER for style transferability. Especially, none of the
+previous works have ever attempted to quantitatively evalu-
+ate the handwriting style transferability before. Furthermore,
+more extensive experiments are conducted on benchmark
+datasets to demonstrate the superiority of HiGAN+ over
+many other state-of-the-art GANs (including ScrabbleGAN,
+GANwriting, TS-GAN, HWT, and HiGAN). Moreover, the
+presented work even conducts Turing tests for HI.
+(4) State-of-The-ArtPerformance: Experimental results show
+that the presented framework significantly outperforms
+the prior work, and the proposed HiGAN+ achieves the
+ACM Transactions on Graphics, Vol. 42, No. 1, Article 11. Publication date: September 2022.
+
+--- PAGE 5 ---
+HiGAN+: Handwriting Imitation GAN with Disentangled Representations • 11:5
+state-of-the-art performance for HI in terms of visual
+quality, scalability, compactness, and style transferability
+compared with the state-of-the-art GANs for handwritten
+text generation.
+Overall, the presented HiGAN+ not only significantly improves
+the visual qualities of prior HiGAN but also achieves the more ac-
+curate handwriting style transfer with desired properties, suppos-
+ing a significantly extended version of our prior work.
+3 METHODOLOGY
+3.1 Problem Formulation
+We aim at teaching machines to synthesize diverse and realis-
+tic handwriting images conditioned on arbitrary textual content
+y = [y1,..., yL]( w i t hal e n g t ho fL) and any calligraphic styles,
+i.e., ˆx =G(y,s),where G isthegenerator.Notably,thetextualcon-
+tent y for handwriting generation can be very arbitrary, which is
+unconstrainedtoanypredefinedcorpusorOOVwords.Moreover,
+theconditionedcalligraphicstyle s canbeeither(1)randomlysam-
+pled from a prior normal distributionN(0,1) or (2) disentangled
+fromthereferenceimage x,i.e., s = E(x),where Edenotesthestyle
+encoder. As a result, our generative model can not only generate
+arbitrary handwritten texts with randomized styles, but it also is
+abletoimitatethecalligraphicstylesofreferencesamples.Figure 2
+illustrates the overview of the proposed HiGAN+.
+3.2 Network Architecture
+3.2.1 Style-Controlled Handwritten Text Generator. Different
+fromconventionalimagesynthesistasks,handwrittentextsynthe-
+sis needs to generate variable-length images (instead of fix-sized
+ones) conditioned on arbitrary textual contents (even for unseen
+texts and OOV words). By revisiting humans’ handwriting pro-
+cess, one major observation is that handwriting essentially is a
+local process (which is firstly introduced by ScrabbleGAN [Fogel
+etal. 2020]).Morespecifically,humanstypicallyfinishahandwrit-
+ing text by writing its letters sequentially and individually, under
+which the character shapes and cursive ligatures are mostly influ-
+encedbytheirneighborcharactersinalocalrange.Inspiredbythis,
+ourgeneratorisdesignedtomimicsuchawritingprocess.Briefly,
+rather than generating handwriting based on a single embedding
+oftheentiretext,thegeneratorconvertsthetextintocharacterem-
+beddings individually and then concatenates those local character
+patchestogetherintoacompletehandwrittentext,wherethecon-
+volutions are utilized to learn the overlaps and transitions among
+characters. Overall, the style-controlled handwritten text genera-
+tor is designed with the following two strategies:
+Textual Content Embedding.Instead of encoding the entire tex-
+tual contentyinto a fixed-sized representation, we prefer to learn
+thecharacter-levelembeddingsof yandconcatenateletter-tokens
+into a complete text. The reason for doing this is to improve the
+generalization ability of the generative model, under which the
+generation can be conditioned on arbitrary texts that are uncon-
+strained to the training corpus or any OOV words (e.g., words
+that have never been seen during training). Specifically, letA
+be the alphabet andF = {fc|c ∈A }be the set of character
+filter maps (where fc is the embedding of the characterc). To
+achieve the character-level embedding, the given textual content
+y = [y1,..., yL]( w i t hal e n g t hL) will be individually embedded
+intomultiplefiltermapsas F (y) = [fy1,..., fyL].Moreover,each
+filter map can be further modulated with a consistent randomized
+noise vectorϵto introduce subtle distortions for characters, i.e,
+F (y,ϵ) = [fy1 ⊗ϵ,..., fyL ⊗ϵ]. Lastly, those filter maps are con-
+catenated horizontally into a variable-sized text mapM, which
+can be regarded as a style-invariant embedding ofy.
+CalligraphicStyleRendering. Giventhestyle-invarianttextmap
+M,thegenerator G willup-sampleitsspatialresolutionandsimul-
+taneously render the calligraphic styles. Particularly, thecondi-
+tional batch normalization(CBN) [Vries et al.2017] is utilized
+to inject the style features into the generator, thus explicitly af-
+fectingthecalligraphicstylesofsyntheticimages(suchasthetext
+slant, character shape, and stroke thickness). Moreover, the gener-
+ator follows a fully convolutional structure to ensure the variable-
+length outputs. Due to the merits of convolutions, the generator
+can automatically learn the overlaps between adjacent characters
+and create smooth transitions (i.e., natural ligatures) if necessary.
+This eventually leads to the generator being able to synthesize ar-
+bitrarily long handwritten texts conditioned on arbitrary textual
+contents with controllable calligraphic styles.
+3.2.2 Other Components. To achieve precise HI, we further in-
+troducethefollowingkeycomponentstoassistinthetrainingpro-
+cess of HiGAN+:
+GlobalDiscriminator. Theglobaldiscriminator Dlearnsabinary
+classification to determine whether an input imagex is the real
+image from the training data or the fake image produced by the
+generatorG.Bygradingthewholeimage,thediscriminator D can
+verify the fidelity of synthetic images from a global perspective.
+Patch Discriminator. The patch discriminator P can justify
+whether a given patchψx is the one cropped from real images or
+fakeimages.Insteadofgradingthewholeimage,itwillhelprefine
+thelocaltexturedetailsofsyntheticimagesbyverifyingthepatch
+fidelity.
+StyleEncoder. Thestyleencoder Eissupposedtodisentanglethe
+calligraphicstylesfromarbitraryhandwritingimagesbutwithout
+explicitly accessing extra clues including the writer identities and
+text labels. Additionally, the encoderE can map arbitrary-length
+handwriting images into fixed-sized latent vectors (i.e., the calli-
+graphic style features) for HI.
+Writer Identifier.The writer identifierI can distinguish which
+writer the input handwriting imagex belongs to, and it aims to
+guidethegeneratortosynthesizehandwritingimagesconditioned
+on specific calligraphic styles. Notably, the identifierI can only
+identifyhandwritingimagesofseenwritersintrainingdata,while
+it cannot classify that of unseen writers at test time.
+Text Recognizer.The text recognizerR should correctly predict
+thetextlabel yofanyhandwritingimage x.Particularly,although
+the recognizerR is only trained on real, labeled, handwriting im-
+ages, it is supposed to guide the generatorG to produce arbitrary
+readable handwriting images conditioned on arbitrary textual
+contents.
+ACM Transactions on Graphics, Vol. 42, No. 1, Article 11. Publication date: September 2022.
+
+--- PAGE 6 ---
+11:6 • J. Gan et al.
+Fig. 2. Overview of the proposed HiGAN+. During training, the model simultaneously (a) learns to synthesize handwritten texts based on disentangled
+styles, (b) is regularized based on reconstruction, and (c) lastly refines the local details of synthetic images for improving visual qualities. At the test time,
+the model can either (d) generate diverse handwritten texts by randomly sampling styles from a prior normal distribution or (e) imitate the calligraphic
+styles that disentangled from reference samples. Notably, each module shares its parameters at different training stages.
+3.3 Objective Functions
+To train HiGAN+ for HI, it requires a multi-writer handwriting
+dataset which consists of the sets of handwriting imagesX, their
+labeled textsY, and the corresponding writer identitiesW. Since
+the handwritten text generation is not limited to the training cor-
+pus or OOV words, a large open corpusC is utilized to yield arbi-
+trary textual contents during training, whereY⊂C.A ss h o w n
+in Figure2, we illustrate the overview of the training process, and
+the details of different losses are formulated below.
+3.3.1 HI with Disentangled Representations.
+Adversarial Loss.Following the paradigm of GANs, the genera-
+tivemodelistrainedviaamin-maxadversarialgame.Duringtrain-
+ing, the generatorG takes arbitrary textual content˜y∈Cand a
+stylefeature s asinputsandthenlearnstosynthesizeafakeimage
+G(˜y,s) that is indistinguishable (by the discriminatorD)f r o mt h e
+real onex∈Xvia the adversarial loss, i.e.,
+Ladv = Ex[logD(x)] + E˜y,s[log(1−D(G(˜y,s)))], (1)
+where the style features is either (1) randomly sampled from a
+prior normal distributionN(0,1) or (2) disentangled from the ref-
+erenceimage x,i.e., s = E(x).Notably,theadversariallossonlypro-
+motes the general visual appearance of generated images to make
+them look realistic, while it does not consider preserving either
+textual contents or calligraphic styles.
+Text Recognition Loss.Despite visual appearances, the genera-
+torG is supposed to synthesize realistic readable handwriting im-
+ageswithpreservingdesiredtextualcontents.Tothisend,ahand-
+writing recognizerR is introduced to guideG toward producing
+handwritingimageswithspecifictextualcontents.Specifically,the
+recognizerRisfirstoptimizedbytheoreticallymaximizingthelike-
+lihoodsforeachpair {x∈X,y∈Y}fromthetrainingdata(where
+the connectionist temporal classification loss [Graves et al.2006]
+is empirically adopted in HiGAN+) as
+LD
+ctc = Ex,y[−ylogR(x)], (2)
+when maximizing the adversarial loss. This ensures thatR can
+correctly predict the text labels of given handwriting images. Al-
+though the recognizerR is only trained with real, labeled, hand-
+writing images, it is supposed to guide the generatorG to synthe-
+sizereadablehandwritingconditioningtoarbitrarytextualcontent
+˜y∈Cas
+LG
+ctc = E˜y,s[−˜ylogR(G(˜y,s))], (3)
+where the parametersofR keep fixed when minimizing the adver-
+sarial loss.
+Writer Identification Loss.The primary objective of HiGAN+ is
+to exactly disentangle the calligraphic styles from reference hand-
+writing images and further imitate generating different images of
+similarstylesbutwithothertextualcontents.However,onemajor
+ACM Transactions on Graphics, Vol. 42, No. 1, Article 11. Publication date: September 2022.
+
+--- PAGE 7 ---
+HiGAN+: Handwriting Imitation GAN with Disentangled Representations • 11:7
+concern is that we actually do not have the exact labels for writ-
+ingstyles(includingthestrokethickness,charactershape,andtext
+slant)toformthestyleconsistencyregularization.Toavoidexpen-
+sive manual annotations, we impose the writer identity to specify
+the calligraphic style. The reason for doing this is based on a sim-
+ple assumption that the writing style of each individual is unique
+and almost consistent. Therefore, the writer identifierI is intro-
+duced to guide the encoderE in disentangling calligraphic styles
+from reference samples.
+Specifically,theidentifier I isoptimizedbyminimizingthecross-
+entropy loss for each pair{x∈X,w∈W}from training data as
+LD
+id = Ex,w[−wlogI(x)], (4)
+when maximizing the adversarial loss. This ensures thatI can
+identify which writer the reference imagex belongs to. To guide
+the encoder E to exactly disentangle calligraphic styles from
+reference samples, we enforce the style-conditioned synthetic
+images G(˜y,E(x)) to retain a remarkably similar style with the
+reference imagex, i.e.,
+LG
+id = Ex,w,˜y[−wlogI(G(˜y,E(x)))], (5)
+whereI keepsitsparametersfixedwhenminimizingtheadversar-
+ialloss,andthetextualcontent ˜y∈Cisnotlimitedtothetraining
+corpus. It is worth noting that the identifierI is only trained on
+the training set and thus it is unable to identify the writers that
+have never been seen during training (i.e., the writers in the test
+set).
+3.3.2 Regularization with Reconstruction.
+Style Reconstruction Loss.To encourage an invertible mapping
+between synthetic images and style features, we apply a style re-
+construction loss similar to Chen et al. [2016]a s
+Lstyle = E˜y,s[||s−E(G(˜y,s))||1], (6)
+where the style features is sampled from the prior normal distri-
+butionN(0,1). This regularization loss essentially exhibits two
+advantages: (1) It guarantees that the style features can explic-
+itly affect calligraphic styles of synthetic handwriting images; (2)
+It encourages the diversified outputs and thus helps avoid model
+collapses of the generative network.
+Content Reconstruction Loss.To improve the content and style
+consistency of synthetic images, we adopt a self-reconstruction
+loss to facilitate the training, i.e.,
+Lrecn = Ey,x[||x−G(y,E(x))||1], (7)
+where y∈Yis the labeled text of imagex. Following this auto-
+encoding training scheme, it may regularize the generative model
+to achieve a more robust handwriting style transfer.
+KL-Divergence Loss. To ensure a meaningful stochastic style
+samplingininference,wefurtherexplicitlyregularizetheencoded
+latent space to match the prior normal distribution as
+Lkl = Ex[DKL (E(x)||N (0,1))], (8)
+whereDKL denotes the KL-divergence [Zhu et al.2017]. This is a
+crucial regularization technique in many style transfer tasks [Zhu
+et al.2017; Lee et al.2018].
+3.3.3 Local Detail Refinement.
+Contextual Loss.Conventional style transfer is achieved by syn-
+thesizing an image to match both the contents and styles of tar-
+get images, which commonly compares images in two aspects:
+(1) the pixel-to-pixel loss that compares pixel values at the same
+spatialcoordinates;(2)theGramlossthatcompareshighlayerfea-
+turesandtextureinformationovertheentireimage.Thismethodis
+very effective for nature images or oil paintings, since their styles
+are modeled as texture features. In contrast, handwriting images
+contain little textures and their styles are modeled as the charac-
+ter shape, thickness, and slant. Moreover, humans’ handwriting
+can be very arbitrary and the synthetic handwriting may not be
+exactly spatially aligned with the ground-truth images, and thus
+handwriting images with similar styles may produce a large re-
+construction loss. What is worse, the synthetic handwriting and
+reference samples may have completely different textual contexts
+and spatial sizes. Therefore, the conventional style transfer strat-
+egy is unsuitable for HI.
+To address this problem, we introduce the contextual
+loss [Mechrez et al. 2018] to measure the similarity of two
+handwriting images, requiring no spatial alignment. The key
+idea of contextual loss is to treat an image as a collection of
+features, and the similarity between images is measured based
+on the similarity between their high-level features, ignoring
+the spatial positions of the features. This loss focuses more on
+high-level style features and allows the generated images to be
+slightly spatially deformed with respect to ground-truth images.
+Moreover, the contextual loss is not overly global and it compares
+featuresinlocalregionsbasedonsemantics.Let A ={a1,..., aN}
+and B = {b1,..., bN} be two sets of features, the contextual
+similarity between them is defined as
+CX(A,B) = 1
+N
+∑
+j
+max
+i
+CXij, (9)
+whereCXij denotesthesimilaritybetweenfeatures ai andbj,and
+CXij is calculated by normalizing all the cosine distancesdij be-
+tweenany ai andbj asMechrezetal.[ 2018].Inourtask,weapply
+the contextual loss to achieve better HI, i.e.,
+Lctx =
+∑
+l
+−loдCX
+(
+Φl(x),Φl(G(˜y,E(x)))
+)
+, (10)
+whereΦl(·) denotes the high-level features extracted from thelth
+layer of the writer identifierI,a n dC X(·,·) denotes the aforemen-
+tioned contextual similarity between two feature sets.
+Local Patch Loss. Handwritten text images can be arbitrarily
+long,andthustheycanberegardedashigh-resolutionimages.Al-
+thoughitcanachieveagoodglobalconsistency(i.e.,asyntheticim-
+ageisgloballyvisuallyplausible)bygradingthewholeimagefrom
+a global perspective, such a strategy may lead to poor local con-
+sistency (i.e., the synthetic handwriting image may contain many
+blurred patches and distorted characters). Therefore, it is crucial
+to refine the local texture details of synthetic handwriting images.
+Despiteclassifyingthewholeimageasfakeorreal,wefurthersplit
+each image into patches and then justify the patch fidelity by in-
+troducing an extra patch discriminator. The introduced patch dis-
+criminator can penalize the local structures and thus help achieve
+ACM Transactions on Graphics, Vol. 42, No. 1, Article 11. Publication date: September 2022.
+
+--- PAGE 8 ---
+11:8 • J. Gan et al.
+good local consistency. Let{ψx
+i |i = 1··· M} and{ψ˜y,s
+i |i = 1··· M}
+be the patches of real imagex and generated oneG(˜y,s) respec-
+tively, the local details of synthetic images are refined as
+Lpatch = 1
+M
+M∑
+i=1
+{
+Ex[logP(ψx
+i )] + E˜y,s[log(1−P(ψ˜y,s
+i ))]
+}
+,
+(11)
+whereP isthepatchdiscriminator.Itisworthnotingthatourpatch
+discriminator receives image patches as inputs rather than the en-
+tire image, and thus it is not limited to the simple and specific net-
+workdesignofPatchGAN[Isolaetal. 2017].Asaresult,ourpatch
+discriminatorcanbemoreflexibleandcomplexthanthatofPatch-
+GAN, which eventually may lead to better synthesis performance.
+3.3.4 Overall Objectives. Finally, our model is trained by play-
+ingamin-maxadversarialgame,wherethefullobjectivefunctions
+can be summarized as follows.
+When maximizing the adversarial loss, the global discriminator
+D, patch discriminatorP, text recognizerR, and writer identifierI
+are individually optimized as
+LD =−Ladv,LP =−Lpatch,LR =LD
+ctc,LI =LD
+id. (12)
+When minimizing the adversarial loss, the generatorG and style
+encoderE are jointly optimized as
+LG,E = Ladv +Lpatch (13)
++λctcLG
+ctc +λidLG
+id +λctxLctx (14)
++λstyleLstyle +λrecnLrecn +λklLkl, (15)
+where λsare the hyper-parameters to control the importance of
+different loss terms.
+3.4 Training Strategies
+3.4.1 Pre-TrainingtheWriterIdentifierandTextRecognizer. For
+the writer identifierI and text recognizerR, their optimization
+actually can be separated from the adversarial training process.
+Specifically,wecanbenefitfromsuchapre-trainingintwoaspects:
+(1) Wecanobtainmorepowerfulandrobust IandRbyintroduc-
+ingdataaugmentationandextrahandwritingsamplesduring
+pre-training,sincetheiroptimizationisseparatedfromthead-
+versarial training process.
+(2) Once theI andR are pre-trained, the adversarial training of
+HiGAN+ can be further accelerated. Moreover, we can avoid
+retraining newI andR when training a different HiGAN+.
+Finally, pre-training bothI andR will not hurt the performance
+of HiGAN+ empirically.
+3.4.2 Reusing Writer Identifier as Style Encoder.By rethinking
+theroleofeachcomponentofHiGAN+forHI,weproposetoreuse
+the writer identifier as the style encoder as shown in Figure3.
+Specifically, if we check the relations between the style encoder
+and writer identifier, their functions are almost consistent. Basi-
+cally, to correctly identify handwriting images, the writer identi-
+fiershouldextracttheircalligraphicstylesbutignorethesemantic
+textual contents; Similarly, the style encoder is exactly designed
+to disentangle styles from handwriting images. Upon this moti-
+vation, it is intuitive to reuse the writer identifier for encoding
+Fig. 3. Reusing writer identifier as style encoder.
+styles. However, most previous works for handwriting synthesis
+simply use the huge VGG backbone as the style encoder, and they
+also train two separated modules (i.e., the writer identifier and
+styleencoder)ratherthanmergingthemasours.Thoseeventually
+make their model more parameter-redundant and computation-
+expensive than HiGAN+. In summary, such reusing exhibits two-
+fold advantages:
+(1) We achieve a more compact architecture, since the style en-
+coder and writer identifier share a large number of parame-
+ters. Moreover, this strategy can benefit the training proce-
+dureofHiGAN+,sincelotsofparametersofthestyleencoder
+arewellpre-trainedandthusitcanextractmorereliablestyle
+features at the early stage.
+(2) We avoid using a huge VGG backbone for style encoding,
+which is pre-trained on nature images instead of handwrit-
+ingimages.Incontrast,ourwriteridentifierisspecificallyde-
+signed for handwriting identification, which is more suitable
+forextractingcalligraphicstylesandalsoattainsamorecom-
+pact model than the VGG backbone.
+During training, the shared parameters of the style encoder keep
+fixed and only the independent part is optimized.
+3.4.3 Optimization with Gradient Balancing.The loss function
+of HiGAN+ for optimization involves quite a few terms, and the
+relative weighting of different loss terms will affect the synthesis
+results.Moreover,italsotakeslotsoftimetofullyoptimizetheHi-
+GAN+ for handwriting synthesis. Therefore, it may be difficult to
+find an optimal setting of those hyper-parametersλs for HiGAN+
+withthenaivegridsearch.Toaddressthisissue,weadoptthegradi-
+entbalancingstrategytodynamicallyadjustthehyper-parameters
+λsofHiGAN+,thusbalancingthegradientofeachlosstermtosta-
+bilize the training procedure and reach a satisfied local optimum.
+Specifically, the gradient ofLadv warped on the synthetic im-
+age ˆx is first calculated as
+∇adv =∂Ladv
+∂ˆx . (16)
+TakeLctc for example, its gradient can be balanced [Alonso et al.
+2019]b y
+∇ctc ←δ(∇adv )
+δ(∇ctc ) [∇ctc −μ(∇ctc )] +μ(∇adv ), (17)
+where μ(∇ctc ) denotes the mean of∇ctc and δ(∇adv ) denotes
+the standard deviation. To avoid changing the sign of the gradi-
+ent∇ctc ,weadoptasimplerstrategysimilartoFogeletal.[ 2020],
+i.e.,
+∇ctc ←δ(∇adv )
+δ(∇ctc )∇ctc. (18)
+ACM Transactions on Graphics, Vol. 42, No. 1, Article 11. Publication date: September 2022.
+
+--- PAGE 9 ---
+HiGAN+: Handwriting Imitation GAN with Disentangled Representations • 11:9
+Therefore, the weight ofLctc is adjusted asλctc = δ(∇adv )
+δ(∇ctc ) and
+other hyper-parameters can be calculated in the same way.
+3.5 Evaluation of GANs for HI
+HI is different from CIG due to its variable-sized outputs, arbi-
+trary textual contents, and different style transfer. Hence, it is
+essentialtoquantitativelymeasurethequalitiesofsynthetichand-
+writingimagesfromdifferentaspects.Therefore,weproposecom-
+prehensive metrics to fully evaluate the performance of GANs for
+variable-length handwritten text synthesis. Specifically,
+— Visual Quality:Synthetic handwriting images should first
+deceive the human eyes visually and be realistic as far as
+possible. Therefore, we adopt several commonly used met-
+rics to evaluate the visual quality of handwriting images, in-
+cluding IS [Salimans et al. 2016], FID [Heusel et al. 2017],
+KID [Binkowski et al.2018], PSNR,a n dMSSIM. Particularly,
+IS is used to measure the realism and diversity of generated
+images,FIDandKIDaimtomeasurethedistancebetweendis-
+tributions of the generated images and real samples, MSSIM
+measures the structural similarity between them, and PSNR
+measures the reconstruction error.
+— Readability:Different fromnaturalimages, handwriting im-
+ages convey specific semantic information that can be read
+and understood by humans. Therefore, we use theWER to
+evaluate the readability of synthetic texts, which is the num-
+ber of word recognition errors divided by that of total words.
+Particularly, the word recognition can be done by humans or
+a pre-trained handwriting recognizer.
+— Style Transferability: Besides the realism and readabil-
+ity, the calligraphic styles of synthetic images should be
+consistent with the reference samples as much as possible.
+Therefore, we propose to use theWIER to measure the style
+transferabilityofGANsforHI,whichisthenumberofwriter
+identification errors divided by that of the total words. It is
+worthnotingthatnoneofthepreviousworkshaveeverquan-
+titatively evaluated the style transferability of GANs for HI.
+Since the handwritten texts are variable-length instead of fixed-
+sized,wereplacetheaveragingpoolingofIncepetionV3with Tem-
+poralPyramidPooling (TPP)whencalculatingIS,FID,andKID
+(similar to Kang et al. [2021]), and we also use the global averag-
+ing pooling in the CNN backbone of the writer identifier when
+calculating WIER. In our settings, all GANs are trained using the
+trainingsetimagesandallevaluationsareconductedontestsetim-
+ages. However, since the writers in test set have never been seen
+in training set, we need to train an additional writer identifier us-
+ing the test images to evaluate the WIER. Such a writer identifier
+is entirely independent of the presented framework and thus can
+fairly evaluate the style transferability of different GANs for HI.
+4 EXPERIMENTS
+4.1 Experimental Settings
+4.1.1 Datasets. To evaluate the performance of handwriting
+generation, we use theIAM dataset [Marti and Bunke2002]a s
+thebenchmarkdataset.TheIAMdatasetconsistsof63Khandwrit-
+tenEnglishwords,writtenby500differentwriters.Itprovidesone
+training set, one test set, and two validation sets. It is worth not-
+ingthathandwrittenwordsofallsetsaremutuallyexclusive,thus
+each writer only contributes to one set. In our experiments, only
+thetrainingsetandvalidationsetsareusedfortrainingGANs,and
+the test set is only used for quality evaluation.
+4.1.2 Implementation Details. Our experiments are conducted
+onaDellworkstationwithanIntel(R)Xeon(R)Bronze3204CPU@
+1.90GHz,48GBRAM,andGeForceRTX3090GPU24GB.Forfast
+training, the batch size is set to 8 and the model is trained for 70
+epochs. Furthermore, we utilize the Adam [Diederik and Ba2015]
+algorithm to optimize the GAN model, where the initial learning
+rate is 0.0001 and (β1, β2) = (0.5, 0.999). Moreover, we begin to lin-
+early decay the learning rate at the 25th epoch. When training Hi-
+GAN+,weempiricallyset λkl = 0.0001,λctx = 5.0,andtherest λs
+aredynamicallyadjustedduringtrainingwiththegradientbalanc-
+ing strategy. The training time is less than three days on a single
+GeForce RTX 3090 with our implementation in PyTorch [Paszke
+et al.2019].
+4.1.3 Competitors. Previous works mainly focus on handwrit-
+ten character/digit generation, while handwritten text generation
+has not been fully explored. In our experiments, we can only
+compare our method with several recently proposed handwrit-
+ten text generation approaches, i.e.,ScrabbleGAN [Fogel et al.
+2020],GANwriting[Kangetal. 2020],TS-GAN[Davisetal. 2020],
+HTW [Bhunia et al.2021], and HiGAN [Gan and Wang2021]
+(where Table1 gives a detailed feature-by-feature comparison ).
+Weusetheofficialimplementationofthosemodelsprovidedbythe
+authors,wherewedirectlyusethedefaultsettingsandpre-trained
+models if available. Notably, we also retrain HiGAN with our new
+network configurations, which can generate handwriting images
+with a fixed height of 64 pixels rather than 32 pixels. In our ex-
+periments,allsynthetichandwritingimagesareresizedtohave64
+pixel height while preserving the original aspect ratios. For a fair
+comparison,allevaluationsareconductedontestsetimages.More
+specifically, we optimize all GANs with training set images and
+then use those generative models to reconstruct test set images.
+4.2 Qualitative Analysis
+In this subsection, we first conduct the qualitative analysis of Hi-
+GAN+ for arbitrary handwritten text generation.
+4.2.1 Latent-GuidedSynthesis. TheproposedHiGAN+cangen-
+erate arbitrary handwritten English words of diverse calligraphic
+styles with high visual quality. For latent-guided synthesis, differ-
+ent styles of synthetic images are simply randomly sampled from
+the prior normal distribution. Specifically, we show some selected
+synthetic images in Figure4, where each row presents images of
+thesamestylesandeachcolumnofthesametexts.Itisworthnot-
+ingthatallgeneratedhandwrittenwordsarehuman-readable,and
+they are unconstrained to the predefined corpus or OOV words.
+Moreover, we observe that HiGAN+ can successfully render cur-
+sive ligatures among adjacent characters of handwritten words if
+necessary.
+4.2.2 Reference-Guided Synthesis. For reference-guided syn-
+thesis, our HiGAN+ can precisely disentangle calligraphic styles
+ACM Transactions on Graphics, Vol. 42, No. 1, Article 11. Publication date: September 2022.
+
+--- PAGE 10 ---
+11:10 • J. Gan et al.
+Fig. 4. Latent-guided synthesis.
+Fig. 5. Reference-guided synthesis.
+from reference samples, and it further imitates generating other
+handwriting images of similar calligraphic styles. As shown
+in Figure 5, we show some selected handwritten words under
+reference-guided synthesis. We can observe that HiGAN+ can
+successfully imitate the calligraphic styles of reference samples
+(such as the writing slant, thickness, and character shape), while
+strictly preserving the desired textual contents. Overall, Our
+HiGAN+ can achieve precise one-shot handwriting style transfer.
+4.2.3 Arbitrary-Length Text Synthesis. The proposed HiGAN+
+can generate variable-sized images conditioned on arbitrary-
+length texts, which are unconstrained to any predefined corpus
+or OOV words. As shown in Figure6,w es h o ws o m es e l e c t e d
+long synthetic handwritten texts. Particularly, since handwritten
+English sentence generation can be easily accomplished by word
+generation, we omit all spaces of the provided textual content to
+form an extremely long text string for handwriting synthesis in
+Figure6. Rather than generating handwriting images conditioned
+on a single embedding of the entire word/text, HiGAN+ will con-
+vertthetextintocharacterembeddingsindividuallyandthencon-
+catenate them together. Moreover, the generator with a fully con-
+volutionalnetworkstructurewillautomaticallylearnoverlapsand
+ligatures among adjacent characters. Notably, HiGAN+ can even
+Fig. 6. Arbitrary-length text synthesis. Notably, all spaces of the provided
+textual content are omitted to form a long text string.
+Fig. 7. Handwritten paragraph synthesis.
+disentangle styles from short words to generate arbitrary-length
+text images of similar styles.
+4.2.4 Handwritten Paragraph Synthesis. Despite words and
+texts, HiGAN+ can even generate complete handwritten para-
+graphs with its ability of one-shot style transfer for handwriting
+images.Figure 7illustratestheoriginalhandwrittenparagraphand
+the one reconstructed with HiGAN+, where each reconstructed
+word is synthesized based on the disentangled representations of
+the corresponding real word. We observe that HiGAN+ can suc-
+cessfully imitate calligraphic styles and preserve the original tex-
+tual contents of most handwritten words. This eventually results
+inthatthegeneratedhandwrittenparagraphslookextremelyreal-
+istic and mostly indistinguishable from the real ones. Overall, our
+ACM Transactions on Graphics, Vol. 42, No. 1, Article 11. Publication date: September 2022.
+
+--- PAGE 11 ---
+HiGAN+: Handwriting Imitation GAN with Disentangled Representations • 11:11
+Fig. 8. Handwriting style interpolation.
+Fig. 9. Handwriting text editing.
+resultsdemonstratethatHiGAN+canperformpreciseone-shotHI
+with high visual qualities.
+4.3 Generalization Analysis
+We further investigate whether the generative model can imi-
+tate handwriting as humans, rather than simply memorizing the
+ground-truth images.
+4.3.1 Style Interpolation. To better analyze the learned latent
+style space, we perform the linear interpolation between two ran-
+dom calligraphic styles and generate the corresponding handwrit-
+ingimagesasshowninFigure 8.Wecanobservethatthesynthetic
+handwriting images continuously change their calligraphic styles
+(such as the thickness, character shape, and writing slant), while
+strictly preserving the original textual contents. Those results val-
+idate the continuity of the latent style space, thus demonstrating
+that HiGAN+ generalizes in the distribution rather than simply
+memorizing trivial visual appearances of training data.
+4.3.2 Text Editing. Despite the latent style space, we also per-
+form the interpolation in the text space to further validate the
+generalization of HiGAN+. In contrast to the continuous nature
+of the style distribution, the textual content space essentially
+is discrete. Therefore, we simply perform the handwriting text
+editing by following a “word ladder” puzzle game as shown in
+Figure 9, where we change the source word into the target one
+byreplacingonlyonecharacteratatime.Wecanobservethatthe
+synthetic handwriting images continuously change their textual
+contents, while strictly preserving the original calligraphic styles.
+Moreover, HiGAN+ not only draws the natural ligatures when re-
+placing the specific letter but also successfully generates the OOV
+words (e.g., “kitty”, “dicer”, and “dicey”). The interpolation results
+validatethatHiGAN+cangeneratenovelhandwritingimagesthat
+Fig. 10. The UMAP visualization of the latent vectors extracted by the en-
+coder, where the shape and color identify the author.
+unconstrainedtoanyOOVwords(ratherthansimplycopyingthe
+training samples).
+4.3.3 Style Embeddings. To further verify the generalization
+ability of HiGAN+, we show the UMAP visualization of the latent
+vectors extracted from both (a) test images and (b) reconstructed
+images of HiGAN+. As shown in Figure10(a), the latent distri-
+butions (i.e., style features) of images from the same writer are
+clustered, while that of different writers are separated from each
+other.ThisdemonstratesthatHiGAN+canclusterembeddingsfor
+handwritingimagesofsimilarstylesanddiversifyembeddingsfor
+that of different styles, thus disentangling meaningful styles from
+handwriting images. Furthermore, we can also observe a similar
+phenomenon on the reconstruction images in Figure10(b), which
+indicates that HiGAN+ can achieve a precise HI.
+4.4 Ablation Studies
+Inthissubsection,weconductanablationstudytojustifythecon-
+tributionofeachkeycomponentinHiGAN+.AsshowninTable 2,
+wegivethequantitativecomparisonofdifferentconfigurationsfor
+handwrittentextsynthesis,whereeachcomponentiscumulatively
+added on top of the baseline model.
+Specifically,thebaselineconfiguration(A)(withonlytheadver-
+sarial loss and CTC loss) corresponds to the basic setup of Scrab-
+bleGAN[Fogeletal. 2020],whichcanonlygeneratereadablehand-
+written texts with randomized styles. As shown in the first row of
+Figures 11 and 12, the baseline model (A) fails to imitate the cal-
+ligraphic styles of reference images, since it lacks a style encoder
+to disentangle handwriting styles. Moreover, the visual quality of
+syntheticimagesispoor,wheresomecharactersareevendistorted
+and blurred as shown in Figure11.
+Wefirstimprovethebaselinemodel(A)byregularizingthegen-
+eratorwithreconstructingoriginalimagecontents,i.e.,theconfig-
+uration (B) which is equivalent to the TS-GAN [Davis et al.2020].
+Additionally, we introduce the KL-Divergence loss to regularize
+the encoded latent space to match the prior normal distribution.
+With the explicit spatial alignment between synthetic images and
+ground-truthimages,wewishthestyleencodercanextractmean-
+ingful style embeddings from reference images and thus is able to
+generate novel handwritten texts of similar styles. However, the
+WIERofconfiguration(B)isveryhighasshowninTable 2,which
+indicates that such an auto-encoding scheme cannot help the gen-
+erative model to achieve precise HI. As shown in the second row
+ACM Transactions on Graphics, Vol. 42, No. 1, Article 11. Publication date: September 2022.
+
+--- PAGE 12 ---
+11:12 • J. Gan et al.
+Table 2. Quantitative Comparison of Different Configurations for Handwritten Text Synthesis
+ID Method IS ↑ FID↓ KID↓PSNR↑MSSIM↑WIER↓WER↓
+A Ladv +Lctc 1.2975 24.3985 2.2173 11.6510 0.2078 1.0000 0.0243
+BA + Lrecn +Lkl 1.3356 25.2118 2.0649 11.3832 0.2452 0.9751 0.0080
+CB + Lid +Lstyle 1.3298 18.3095 1.6688 11.7609 0.2459 0.6747 0.0085
+DC + Lctx 1.3694 10.6346 0.7752 11.9286 0.2981 0.6116 0.0085
+ED + Dpatch 1.4059 5.9510 0.3709 12.3391 0.3322 0.5821 0.0186
+Ground Truth 1.4390 0.1105 0.1820
+“↑” denotes that higher values are better, and “↓” denotes that lower values are better.
+Bold indicates the best result.
+Fig. 11. Ablation study for handwritten words.
+Fig. 12. Ablation study for long handwritten texts.
+of Figures11and12, the model (B) fails to imitate the calligraphic
+styles of reference images.
+To achieve precise handwriting style transfer, we further intro-
+duce the writer identification lossLid and style reconstruction
+lossLstyle, i.e., the configuration (C) which corresponds to Hi-
+GAN [Gan and Wang2021]. Specifically, the termLid can guar-
+antee that the input style code can explicitly affect the styles of
+generated images. Furthermore, with the help of the writer iden-
+tifier, the termLid enforces the generator to synthesize images
+conditioned on a particular writer identity, e.g., that of reference
+images. Therefore, we can explicitly guide the generator to mimic
+the calligraphic styles of reference images. As shown in Table2,
+the model (C) achieves much lower WIER and higher FID scores,
+whichindicatesthatthemodelachievesmoreaccuratecalligraphic
+style transfer and significantly improves the visual quality of syn-
+thetic images.
+Wefurtherimprovethestyleconsistencyofsyntheticimagesby
+introducing the contextual lossLctx on top of the model (C), i.e.,
+theconfiguration(D).Sincehumans’handwritingisveryarbitrary,
+it may be challenging to spatially align the synthetic handwriting
+images and ground-truth ones. Furthermore, in contrast to nature
+images, handwriting images contain little textures. Therefore, it
+may be insufficient to achieve precise handwriting style transfer
+withtheconventionalpixel-to-pixelreconstructionandGramloss
+(thatisdesignedforcapturingtextualfeatures).However,thecon-
+textual loss can measure the style similarity between two images
+based on high-level feature map collections, requiring no spatial
+alignments. As shown in Table2, the values of evaluation metrics
+clearly demonstrate the effectiveness of the contextual loss.
+Lastly, we introduce the local patch lossLpatch on top of the
+model (D) to further refine the local texture details of synthetic
+images, i.e., the configuration (E) which corresponds to the pro-
+posed HiGAN+. Notably, handwritten text images can be arbitrar-
+ily long, and thus it cannot guarantee the local details for such
+high-resolution images. Instead of grading the whole image, we
+split each image into patches and then introduce another discrim-
+inator to justify the patch fidelity. As shown in Figures11 and 12,
+thegenerativemodelwithouttheLPLwillproduceblurredcharac-
+ters, and theLpatch term ensures that the generated images pre-
+serve better style consistency (e.g., grey textures in backgrounds).
+Finally, the results in Table2 demonstrate that HiGAN+ signifi-
+cantlyimprovesthevisualqualityandachievesamoreprecisecal-
+ligraphic style transfer.
+4.5 Comparison between PatchGAN and LPL
+Although PatchGAN accepts the whole image and computes
+patches in parallel, its discriminator is limited to the specific shal-
+lowarchitecturestosimulatethepatchprocessing.Forexample,to
+simulate a patch processing with a path size of 32× 32 and patch
+stride of 8, the deepest discriminator is limited to “Conv2D(k =
+3,s = 2) →Conv2D(k = 3,s = 2) →Conv2D(k = 3,s =
+2) →Conv2D(k = 3,s = 1)”( w h e r e“k” is the kernel size and
+“s”isthestride);however,adeeperCNNwillleadtoalargerrecep-
+tive filed (>32). In contrast, LPL physically splits the whole image
+into separated patches, and thus its patch discriminator is not lim-
+itedtothespecificarchitecturaldesignandcanbearbitrarilycom-
+plex. Therefore, LPL with a more complex and powerful discrimi-
+natormayachievebetterperformancethanPatchGAN.Tovalidate
+our assumption, we conduct a quantitative comparison between
+ACM Transactions on Graphics, Vol. 42, No. 1, Article 11. Publication date: September 2022.
+
+--- PAGE 13 ---
+HiGAN+: Handwriting Imitation GAN with Disentangled Representations • 11:13
+Table 3. Comparison between PatchGAN and LPL
+Method Patch Discriminator IS↑ FID↓ KID↓
+Type Depth Size
+Scrabble
+GAN
+None × 0.00 1.2975 24.3985 2.2173
+PGAN∗ 4 2.32 1.3367 15.2872 1.1609
+LPL∗ 8 2.26 1.3607 13.0480 0.9890
+HiGAN
+None × 0.00 1.3298 18.3095 1.6688
+PGAN∗ 4 2.32 1.3521 13.0448 1.0290
+LPL∗ 8 2.26 1.4393 12.0309 0.9795
+*“PGAN” is the PatchGAN and “LPL” is the LPL.
+PatchGAN and LPL on the IAM dataset in Table3, where their
+patch discriminators have the same number of parameters with
+the patch size of 32× 32 and patch stride of 8. Experimental re-
+sultsshowthatLPLwithmorepowerfulpatchdiscriminatorsmay
+outperform PatchGAN.
+4.6 Imitating Handwriting in the Wild
+WeshowthatHiGAN+canalsoimitatecalligraphicstylesofhand-
+writing images in the wild. Different from handwriting on the
+whiteboard, handwriting in the wild has more extreme and di-
+versecalligraphicstyles(includinglargevariationsinstrokethick-
+ness/colors and many noises and distortion of characters). Specif-
+ically, we have conducted experiments on a dataset for English
+handwriting in the wild named GNHK [Lee et al.2021]. In our
+experiments, only the training set of GNHK is used for optimiz-
+ing GANs and no other extra images are involved, and the test
+set is only used for evaluation. The qualitative results in Figure13
+showthatHiGAN+cansynthesizehandwritingimageswithmore
+extreme handwriting styles. Lastly, we also give the quantitative
+results in Table4, which demonstrates HiGAN+ significantly out-
+performs the baselines.
+4.7 Comparison with the State-of-the-Arts
+We compare the proposed HiGAN+ with recent state-of-the-art
+GANsforhandwrittentextsynthesis.ForallcompetingGANs,we
+use the official implementation with default settings and the pre-
+trained models provided by the authors. For a fair comparison,
+we utilize all GANs to reconstruct the test set images of the IAM
+dataset.
+4.7.1 Visual Comparison. As shown in Figures14 and 15,w e
+make a qualitative comparison between different GANs for hand-
+writing synthesis to intuitively reflect their synthetic visual quali-
+ties.Notably,theoriginalimplementationsofScrabbleGAN,HTW,
+and HiGAN can only produce images with 32-pixel height, while
+GANwriting, TS-GAN, and HiGAN+ can produce images with
+64-pixel height.
+Although ScrabbleGAN can generate readable handwritten
+text images, it fails to imitate the calligraphic styles of reference
+samples. This is because ScrabbleGAN lacks a style encoder to
+disentangle calligraphic styles from images. Moreover, the visual
+qualities of its synthetic images are poor as many characters in
+handwritten texts are distorted and blurred.
+Both GANwriting and HWT can control the calligraphic styles
+of synthetic handwriting images. For GANwriting, since it only
+Fig. 13. Handwritten text synthesis in wild.
+Table 4. Quantitative Results of Handwritten Text Synthesis
+in Wild on GNHK
+Method IS ↑ FID↓MSSIM↑WIER↓WER↓
+ScrabbleGAN 1.4993 44.3732 0.2931 1.0000 0.2524
+HiGAN 1.5291 26.8190 0.2940 0.7111 0.1751
+HiGAN+ 1.6255 9.6546 0.3695 0.4480 0.1237
+Ground Truth 1.7592 0.0175 0.3602
+encodeslimited-lengthwordstofixed-sizedvectors,itcannotgen-
+erate arbitrarily long handwritten texts (i.e., no more than 10 let-
+ters).AsshowninFigure 15,GANwritingfailstocompletethepro-
+videdtextualcontents.ForHTW,itutilizesthevisionTransformer
+tocapturetheglobalandlocalstylesofhandwritingimages.How-
+ever, both HWT and GANwriting require multiple reference sam-
+ples to extract reliable style features for HI.
+ForTS-GAN,itfollowsanauto-encoderarchitecture,whichim-
+plicitly learns HI by reconstructing original images. Although TS-
+GAN successfully mimics thicknesses and text slants, it fails to
+mimic character shapes and texture backgrounds. Therefore, its
+ability for handwriting style transfer is limited, which demon-
+strates that the pixel-to-pixel reconstruction is insufficient for
+handwriting style transfer.
+ForHiGAN,itnotonlygeneratesrealistichandwrittentextsbut
+also successfully imitates calligraphic styles of reference samples.
+This is because HiGAN further introduces a writer-specific auxil-
+iary loss to constrain the handwriting generation conditioned on
+particularwriteridentities.However,HiGANsometimesproduces
+a few distorted and blurred characters, since it only grades the
+whole image during training but fails to consider the local texture
+details.
+For HiGAN+, we first introduce the contextual loss to improve
+thestyleconsistencyofHiGAN, whichenhancesthestylesimilar-
+ityofimagesbasedonhigh-levelfeaturemapcollectionsextracted
+by the writer identifier. Furthermore, we also refine the local
+ACM Transactions on Graphics, Vol. 42, No. 1, Article 11. Publication date: September 2022.
+
+--- PAGE 14 ---
+11:14 • J. Gan et al.
+Fig. 14. Qualitative results of different GANs for handwritten paragraphs.
+Fig. 15. Qualitative results of different GANs for long handwritten texts.
+texturedetailsofsyntheticimagesbyintroducingapatchdiscrimi-
+natortoverifythepatchfidelity.Thosestrategieseventuallymake
+HiGAN+ attain a good global & local consistency. As shown in
+Figures 14 and 15, HiGAN+ produces clearer handwriting images
+and achieves a more precise HI.
+4.7.2 QuantitativeEvaluation. Togiveahigher-levelindication
+of visual quality on the whole test set, we further conduct a quan-
+titative evaluation between different GANs for handwriting syn-
+thesis as shown in Table5. Moreover, we also have evaluated the
+metrics between the generated and real samples in different set-
+tings (in Table6) including (1) in vocabulary and seen style (I-
+S), (2) in vocabulary and unseen style (I-U), (3) OOV and seen
+style (O-S), and (4) OOV and unseen style (O-U). We can ob-
+serve that both ScrabbleGAN and ST-GAN obtain high FID and
+WIER, which indicates that they suffer from the poor visual qual-
+ity and also fail to imitate the calligraphic styles of reference sam-
+ples. Moreover, although HiGAN slightly outperforms GANwrit-
+ing in terms of visual quality, it achieves more precise HI (i.e.,
+lower WIER) and its synthetic images are much more readable
+(i.e., lower WER). Furthermore, the quantitative results in Table5
+clearly demonstrate that HiGAN+ largely outperforms the other
+state-of-the-art GANs for HI in terms of visual quality and it also
+achievesamorepreciseone-shothandwritingstyletransfer.Lastly,
+we list the model storages of different GANs in Table7,a n dw e
+can observe that the proposed HiGAN+ attains the most com-
+pact model for handwritten text synthesis compared with other
+state-of-the-art GANs. This is because HiGAN+ employs a com-
+pact style encoder (that is specifically designed for extracting
+handwriting styles) rather than using a huge pre-trained VGG
+backbone.
+4.8 Failure Case Analysis
+To investigate the weakness and limitation of the proposed Hi-
+GAN+,weconductthefailurecaseanalysisasshowninFigure 16.
+ACM Transactions on Graphics, Vol. 42, No. 1, Article 11. Publication date: September 2022.
+
+--- PAGE 15 ---
+HiGAN+: Handwriting Imitation GAN with Disentangled Representations • 11:15
+Table 5. Quantitative Comparison of Different GANs for Handwritten Text Synthesis
+Method IS ↑ FID↓ KID↓PSNR↑MSSIM↑WIER↓WER↓
+ScrabbleGAN 1.3268 26.7758 2.9479 11.2562 0.1950 1.0000 0.0740
+ST-GAN 1.2443 33.9069 3.1314 12.0345 0.1845 0.9741 0.1968
+GANwriting 1.3267 20.5539 1.3927 10.8045 0.2038 0.8455 0.2143
+HWT 1.3620 19.6938 1.8003 10.7518 0.2319 0.8320 0.1032
+HiGAN 1.3298 18.3095 1.6688 11.7609 0.2459 0.6747 0.0085
+HiGAN+ 1.4059 5.9510 0.3709 12.3391 0.3322 0.5821 0.0186
+Ground Truth 1.4390 0.1105 0.1820
+Table 6. Comparison of Different GANs in Different Settings for Handwritten Text Synthesis
+IS↑ FID↓ WIER↓ WER↓
+Method I-S I-U O-S O-U I-S I-U O-S O-U I-S I-U O-S O-U I-S I-U O-S O-U
+ScrabbleGAN 1.327 1.309 1.193 1.184 26.95 27.48 30.62 33.86 0.996 0.986 0.997 0.986 0.052 0.041 0.117 0.119
+ST-GAN 1.277 1.237 1.159 1.277 37.71 37.89 40.79 43.76 0.994 0.986 0.994 0.994 0.174 0.173 0.217 0.227
+GANwriting 1.345 1.347 1.213 1.322 19.50 21.28 26.67 25.40 0.877 0.843 0.888 0.862 0.177 0.106 0.428 0.439
+HWT 1.352 1.326 1.278 1.369 18.87 20.76 25.15 24.47 0.856 0.826 0.847 0.822 0.059 0.043 0.159 0.162
+HiGAN 1.374 1.335 1.241 1.204 17.83 18.61 17.53 24.02 0.665 0.669 0.727 0.721 0.004 0.003 0.061 0.061
+HiGAN+ 1.468 1.416 1.352 1.296 5.81 6.17 12.62 11.42 0.494 0.528 0.642 0.659 0.008 0.005 0.092 0.086
+Table 7. Comparison of Different GANs
+in Terms of Model Storage
+Method Size (MB)
+Gen. Enc. Total
+ScrabbleGAN 81.8 × 81.8
+GANwriting 95.6 76.5 172.1
+ST-GAN 8.3 127.5 135.8
+HWT 80.7 50.6 131.3
+HiGAN ∗38.6 ∗20.5 ∗59.1
+HiGAN+ 15.0 6.7 21.7
+Training Data 496.8
+*Conference version.
+In the table, “Gen.” denotes the generator and
+“Enc.” denotes the style encoder.
+Ourmodelsometimesfailsingeneratingsatisfactoryhandwriting
+images in the following two situations:
+(1) HiGAN+isdifficulttosynthesizerealisticpunctuationmarks
+and digits. This is probably because that different characters
+andsymbolsintrainingdatafollowalong-taileddistribution,
+where the punctuation marks and digits are particularly rare
+in ground-truth samples. Therefore, HiGAN+ is good at syn-
+thesizing English characters rather than punctuation marks
+and digits.
+(2) HiGAN+ may fail to generate extremely scribbled characters,
+while it prefers to generate neat and readable handwriting
+images. This is because the recognizer will penalize HiGAN+
+during training if the model generates scribbled handwritten
+texts. This may be fixed by tuning the hyper-parameterλctc
+of the text recognition lossLctc during training.
+Overall, humans’ handwriting can be very arbitrary and thus the
+proposedHiGAN+essentiallyhaslimitsforsynthesizingmeaning-
+ful handwriting images.
+Fig. 16. Failure case analysis of HiGAN+.
+4.9 Human Evaluation
+Due to the subjective nature of images, we also conduct human
+evaluations (i.e., Turing tests) to verify the performance of differ-
+ent generative models for handwritten text synthesis. Specifically,
+we have conducted two user studies on a professional data plat-
+form Credamo with 100 randomly selected trustable participants
+who can recognize handwritten English texts.
+4.9.1 User Plausibility Study. We first conduct a user plausibil-
+itystudytotestwhetherthesyntheticimagesofHiGAN+areactu-
+allyindistinguishablefromrealonesbyhumanjudgements.Inthis
+study, we show each participant 50 random handwriting images
+(half genuine and half generated), where the participant can only
+viewasingleimageatatimeandthenisaskedwhethertheimage
+is written by humans or artificially generated by machines. After
+ensuringtheparticipant’sreliability,thereare5,000responsescon-
+tributing to the final evaluation. As shown in Table8, the study
+reveals that our generative model is clearly perceived as plausible.
+4.9.2 User Preference Study. We also conduct a user prefer-
+ence study to justify whether HiGAN+ outperforms the com-
+peting GANs for handwritten text synthesis in terms of visual
+quality. In this study, we first randomly generate fake images of
+different GANs conditioned on the identified textual contents and
+calligraphic styles (where each GAN model generates one image
+at a time), and we repeat this procedure 25 times. After that, each
+participant is shown those images in a random order (side by side
+on the same screen) and then asked to choose the most preferred
+ACM Transactions on Graphics, Vol. 42, No. 1, Article 11. Publication date: September 2022.
+
+--- PAGE 16 ---
+11:16 • J. Gan et al.
+Table 8. User Plausibility Study
+Actual Predicted Overall
+AccuracyReal Fake
+Genuine 0.3172 0.1828 0.5004Generated 0.3168 0.1832
+Table 9. User Preference Study
+Methods Scrabble
+GAN
+GAN
+writing
+ST-
+GAN
+HWT HiGAN HiGAN+
+Prefers 0.0918 0.0542 0.1027 0.1686 0.2102 0.3725
+one. In total, there are 2,500 responses contributing to the final
+evaluation. As shown in Table9, our HiGAN+ obtains the major-
+ityofvotesinallinstances,whichdemonstratesthesuperiorityof
+HiGAN+overthecompetingGANsforhandwrittentextsynthesis.
+5 CONCLUSION
+Inthisarticle,wehaveproposedanovelgenerativemodelHiGAN+
+for HI based on disentangled representations. The proposed Hi-
+GAN+ can generate diverse and realistic handwritten texts con-
+ditioned onarbitrarytextual contentsand calligraphic styles(that
+aredisentangledfromreferenceimagesorrandomlysampledfrom
+apriornormaldistribution).Sinceconventionalstyletransfertech-
+niques based on pixel correspondences may be unsuitable for HI,
+we further introduce the contextual loss to significantly improve
+thestyleconsistencyofsyntheticimages.Moreover,toavoidmany
+artifacts produced by existing GANs, we further refine the local
+details of synthetic handwriting images with an LPL. Lastly, we
+propose to reuse the early layers of the writer identifier for style
+encoding, thus deriving a more compact and effective architec-
+ture. Extensive experiments, including human evaluations, on the
+benchmark dataset demonstrate the superiority of HiGAN+ in
+termsofvisualquality,scalability,compactness,andstyletransfer-
+abilityoverthestate-of-the-artGANsforhandwrittentextsynthe-
+sis. It is worth noting that humans’ handwriting is very arbitrary
+and thus HiGAN+ indeed has limits for synthesizing meaningful
+handwriting images. Nevertheless, it is interesting to teach ma-
+chines/roboticstowritetextsasrealisticashumans,whichtakesa
+closer step to high-level artificial intelligence. The source code of
+HiGAN+ is available athttps://github.com/ganji15/HiGANplus.
+REFERENCES
+Eloi Alonso, Bastien Moysset, and Ronaldo Messina. 2019. Adversarial generation of
+handwritten text images conditioned on sequences. InProceedings of the Interna-
+tional Conference on Document Analysis and Recognition. 481–486.
+S.Azadi,M.Fisher,V.Kim,Z.Wang,E.Shechtman,andT.Darrell.2018.Multi-content
+GAN for few-shot font style transfer. InProceedings of the 2018 IEEE/CVF Confer-
+ence on Computer Vision and Pattern Recognition. 7564–7573.
+AnkanKumarBhunia,SalmanKhan,HishamCholakkal,RaoMuhammadAnwer,Fa-
+had Shahbaz Khan, and Mubarak Shah. 2021. Handwriting transformers. InPro-
+ceedings of the International Conference on Computer Vision. 1086–1094.
+Mikolaj Binkowski, Danica J. Sutherland, Michael Arbel, and Arthur Gretton. 2018.
+Demystifying MMD GANs. In Proceedings of the International Conference on
+Learning Representations.
+Kaidi Cao, Jing Liao, and Lu Yuan. 2018. CariGANs: Unpaired photo-to-caricature
+translation.ACM Transactions on Graphics37, 6 (2018), 244:1–244:14.
+Junbum Cha, Sanghyuk Chun, Gayoung Lee, Bado Lee, Seonghyeon Kim, and Hwal-
+sukLee.2020.Few-shotcompositionalfontgenerationwithdualmemory.In Pro-
+ceedings of the European Conference on Computer Vision. 735–751.
+Bo Chang, Qiong Zhang, Shenyi Pan, and Lili Meng. 2018. Generating handwritten
+ChinesecharactersusingCycleGAN.In ProceedingsoftheIEEEWinterConference
+on Applications of Computer Vision. 199–207.
+XiChen,YanDuan,ReinHouthooft,JohnSchulman,IlyaSutskever,andPieterAbbeel.
+2016.InfoGAN:Interpretablerepresentationlearningbyinformationmaximizing
+generative adversarial nets. InProceedings of the 30thInternationalConference on
+Neural Information Processing Systems. 2172–2180.
+Yunjey Choi, Min-Je Choi, Munyoung Kim, Jung-Woo Ha, Sunghun Kim, and Jaegul
+Choo. 2018. StarGAN:Unified generative adversarial networks for multi-domain
+image-to-image translation. InProceedings of the IEEE Conference on Computer
+Vision and Pattern Recognition. 8789–8797.
+B. Davis, C. Tensmeyer, B. Price, C. Wigington, B. Morse, and R. Jain. 2020.
+Text and style conditioned GAN for generation of offline handwriting lines.
+arXiv:2009.00678. Retrieved fromhttps://arxiv.org/abs/2009.00678.
+KingmaP.DiederikandJimmyBa.2015.Adam:Amethodforstochasticoptimization.
+In Proceedings of the International Conference for Learning Representations.
+SharonFogel,HadarAverbuch-Elor,SarelCohen,ShaiMazor,andRoeeLitman.2020.
+ScrabbleGAN: Semi-supervised varying length handwritten text generation. In
+Proceedings of the IEEE Conference on Computer Vision and Pattern Recognition.
+4324–4333.
+Ji Gan and Weiqiang Wang. 2021. HiGAN: Handwriting imitation conditioned on
+arbitrary-length texts and disentangled styles. InProceedings of the AAAI Con-
+ference on Artificial Intelligence. 7484–7492.
+Yue Gao, Yuan Guo, Zhouhui Lian, Yingmin Tang, and Jianguo Xiao. 2019. Artis-
+tic glyph image synthesis via one-stage few-shot learning.ACM Transactions on
+Graphics38, 6 (2019), 185:1–185:12.
+Ian Goodfellow, Jean Pouget-Abadie, Mehdi Mirza, Bing Xu, David Warde-Farley,
+Sherjil Ozair, Aaron Courville, and Yoshua Bengio. 2014. Generative adversarial
+nets.In Proceedingsofthe27thInternationalConferenceonNeuralInformationPro-
+cessing Systems. 2672–2680.
+Alex Graves. 2013. Generating sequences with recurrent neural networks.
+arXiv:1308.0850. Retrieved fromhttps://arxiv.org/abs/1308.0850.
+AlexGraves,SantiagoFernández,andFaustinoGomez.2006.Connectionisttemporal
+classification: Labelling unsegmented sequence data with recurrent neural net-
+works. InProceedings of the International Conference on Machine Learning. 369–
+376.
+David Ha and Douglas Eck. 2018. A neural representation ofsketch drawings. InPro-
+ceedings of the International Conference on Learning Representations.
+Tom S. F. Haines, Oisin Mac Aodha, and Gabriel J. Brostow. 2016. My text in your
+handwriting.ACM Transactions on Graphics35, 3 (2016), 26:1–26:18.
+Martin Heusel, Hubert Ramsauer, Thomas Unterthiner, Bernhard Nessler, and Sepp
+Hochreiter. 2017. GANs trained by a two time-scale update rule converge to a lo-
+calnashequilibrium.In Proceedingsofthe31stInternationalConferenceonNeural
+Information Processing Systems. 6626–6637.
+Xun Huang, Ming-Yu Liu, Serge J. Belongie, and Jan Kautz. 2018. Multimodal unsu-
+pervised image-to-image translation. InProceedings of the European Conference
+on Computer Vision. Vol. 11207, 179–196.
+Satoshi Iizuka, Edgar Simo-Serra, and Hiroshi Ishikawa. 2017. Globally and locally
+consistent image completion.ACM Transactions on Graphics36, 4 (2017), 107:1–
+107:14.
+Phillip Isola, Jun-Yan Zhu, Tinghui Zhou, and Alexei A. Efros. 2017. Image-to-image
+translationwithconditionaladversarialnetworks.In ProceedingsoftheIEEECon-
+ference on Computer Vision and Pattern Recognition. 5967–5976.
+Yue Jiang, Zhouhui Lian, Yingmin Tang, and Jianguo Xiao. 2019. SCFont: Structure-
+guided Chinese font generation via deep stacked networks. InProceedings of the
+AAAI Conference on Artificial Intelligence. Vol. 33, 4015–4022.
+Lei Kang, Pau Riba, Yaxing Wang, Marçal Rusiñol, Alicia Fornés, and Mauricio Ville-
+gasy. 2020. GANwriting: Content-conditioned generation of styled handwritten
+word images. InProceedings of the European Conference on Computer Vision.
+Lei Kang, Pau Riba, Marcal Rusinol, Alicia Fornes, and Mauricio Villegas. 2021. Con-
+tent and style aware generation of text-line images for handwriting recogni-
+tion.IEEETransactionsonPatternAnalysisandMachineIntelligence .EarlyAccess.
+DOI:https://doi.org/10.1109/TPAMI.2021.3122572
+Taeksoo Kim, Moonsu Cha, Hyunsoo Kim, Jung Kwon Lee, and Jiwon Kim. 2017.
+Learning to discover cross-domain relations with generative adversarial net-
+works. InProceedings of the International Conference on Machine Learning. 1857–
+1865.
+Diederik P. Kingma and Max Welling. 2013. Auto-encoding variational bayes.
+arXiv:1312.6114. Retrieved fromhttps://arxiv.org/abs/1312.6114.
+Atsunobu Kotani, Stefanie Tellex, and James Tompkin. 2020. Generating handwrit-
+ing via decoupled style descriptors. InProceedings of the European Conference on
+Computer Vision. Vol. 12357, 764–780.
+Alex W. C. Lee, Jonathan Chung, and Marco Lee. 2021. GNHK: A dataset for English
+handwriting in the wild. InProceedings of the International Conference on Docu-
+ment Analysis and Recognition. Josep Lladós, Daniel Lopresti, and Seiichi Uchida
+(Eds.), Springer, Cham, 399–412.
+Hsin-Ying Lee, Hung-Yu Tseng, Jia-Bin Huang, Maneesh Singh, and Ming-Hsuan
+Yang.2018.Diverseimage-to-imagetranslationviadisentangledrepresentations.
+In Proceedings of the European Conference on Computer Vision. Vol. 11205, 36–52.
+ACM Transactions on Graphics, Vol. 42, No. 1, Article 11. Publication date: September 2022.
+
+--- PAGE 17 ---
+HiGAN+: Handwriting Imitation GAN with Disentangled Representations • 11:17
+Zhouchen Lin and Liang Wan. 2007. Style-preserving English handwriting synthesis.
+Pattern Recognition40, 7 (2007), 2097–2109.
+QiMao,Hsin-YingLee,Hung-YuTseng,SiweiMa,andMing-HsuanYang.2019.Mode
+seeking generative adversarial networks for diverse image synthesis. InProceed-
+ingsoftheIEEEConferenceonComputerVisionandPatternRecognition .1429–1437.
+ZU-V.MartiandHorstBunke.2002.TheIAM-Database:AnEnglishsentencedatabase
+for offline handwriting recognition.International Journal on Document Analysis
+and Recognition5, 1 (2002), 39–46.
+Roey Mechrez, Itamar Talmi, and Lihi Zelnik-Manor. 2018. The contextual loss for
+imagetransformationwithnon-aligneddata.In ProceedingsoftheEuropeanCon-
+ference on Computer Vision. Vol. 11218, 800–815.
+Mehdi Mirza and Simon Osindero. 2014. Conditional generative adversarial nets.
+arXiv:1411.1784. Retrieved fromhttps://arxiv.org/abs/1411.1784.
+Song Park, Sanghyuk Chun, Junbum Cha, Bado Lee, and Hyunjung Shim. 2021. Few-
+shotfontgenerationwithlocalizedstylerepresentationsandfactorization.In Pro-
+ceedings of the AAAI Conference on Artificial Intelligence.
+Adam Paszke, Sam Gross, Francisco Massa, Adam Lerer, James Bradbury, Gregory
+Chanan, Trevor Killeen, Zeming Lin, Natalia Gimelshein, Luca Antiga, Alban
+Desmaison, Andreas Köpf, Edward Yang, Zach DeVito, Martin Raison, Alykhan
+Tejani, Sasank Chilamkurthy, Benoit Steiner, Lu Fang, Junjie Bai, and Soumith
+Chintala.2019. PyTorch:Animperative style,high-performancedeep learningli-
+brary. InProceedings of the 33rd International Conference on Neural Information
+Processing Systems. 8024–8035.
+Tiziano Portenier, Qiyang Hu, Attila Szabó, Siavash Arjomand Bigdeli, Paolo Favaro,
+and Matthias Zwicker. 2018. Faceshop: Deep sketch-based face image editing.
+ACM Transactions on Graphics37, 4 (2018), 99:1–99:13.
+Alec Radford, Luke Metz, and Soumith Chintala. 2013. Unsupervised repre-
+sentation learning with deep convolutional generative adversarial networks.
+arXiv:1511.06434. Retrieved fromhttps://arxiv.org/abs/1511.06434.
+Tim Salimans, Ian J. Goodfellow, Wojciech Zaremba, Vicki Cheung, Alec Radford,
+and Xi Chen. 2016. Improved techniques for training GANs. In Proceedings
+of the 30th International Conference on Neural Information Processing Systems.
+2226–2234.
+Harm-de Vries, Florian Strub, Jeremie Mary, Hugo Larochelle, Olivier Pietquin, and
+AaronC.Courville.2017.Modulatingearlyvisualprocessingbylanguage.In Pro-
+ceedingsofthe31stInternationalConferenceonNeuralInformationProcessingSys-
+tems. 6594–6604.
+Yizhi Wang, Yue Gao, and Zhouhui Lian. 2020. Attribute2Font: Creating fonts you
+want from attributes. ACM Transactions on Graphics39, 4, Article 69 (2020),
+15 pages.
+Liang Wu, Chengquan Zhang, Jiaming Liu, Junyu Han, Jingtuo Liu, Errui Ding, and
+Xiang Bai. 2019. Editing text in the wild. InProceedings of the ACM International
+Conference on Multimedia. 1500–1508.
+X. Y. Zhang, F. Yin, Y. M. Zhang, C. L. Liu, and Y. Bengio. 2018. Drawing and recog-
+nizing Chinese characters with recurrent neural network.IEEE Transactions on
+Pattern Analysis and Machine Intelligence40, 4 (2018), 849–862.
+Jun-Yan Zhu, Richard Zhang, Deepak Pathak, Trevor Darrell, Alexei A. Efros, Oliver
+Wang, and Eli Shechtman. 2017. Toward multimodal image-to-image translation.
+InProceedingsofthe31stInternationalConferenceonNeuralInformationProcessing
+Systems. 465–476.
+Received July 2021; revised April 2022; accepted July 2022
+ACM Transactions on Graphics, Vol. 42, No. 1, Article 11. Publication date: September 2022.

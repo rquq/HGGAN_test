@@ -1,0 +1,457 @@
+{
+  "samples": 64,
+  "opposing_directions": 32,
+  "median_writer_to_adv_gradient_ratio": 0.2463962808251381,
+  "median_cosine": 2.0027626305818558e-05,
+  "note": "Online checkpoint, eval-mode modules, deterministic style means, 64 training refs and four fixed target words. Image gradients only. Critic augmentation/masking and other G losses omitted. Not proof of the cause of historical KID drift.",
+  "records": [
+    {
+      "sample": 42112,
+      "writer_to_adv_image_gradient_norm_ratio": 0.013077386654913425,
+      "cosine_writer_adv": -0.012037388980388641,
+      "real_teacher_correct": true,
+      "real_teacher_target_probability": 0.9999681711196899
+    },
+    {
+      "sample": 14679,
+      "writer_to_adv_image_gradient_norm_ratio": 1.4165668460464076e-07,
+      "cosine_writer_adv": 0.022445544600486755,
+      "real_teacher_correct": true,
+      "real_teacher_target_probability": 1.0
+    },
+    {
+      "sample": 16730,
+      "writer_to_adv_image_gradient_norm_ratio": 0.021323172375559807,
+      "cosine_writer_adv": 0.014785927720367908,
+      "real_teacher_correct": true,
+      "real_teacher_target_probability": 0.9997956156730652
+    },
+    {
+      "sample": 19015,
+      "writer_to_adv_image_gradient_norm_ratio": 6.814598560333252,
+      "cosine_writer_adv": -0.01188088022172451,
+      "real_teacher_correct": true,
+      "real_teacher_target_probability": 0.9999997615814209
+    },
+    {
+      "sample": 1377,
+      "writer_to_adv_image_gradient_norm_ratio": 24.24394989013672,
+      "cosine_writer_adv": -0.02905920147895813,
+      "real_teacher_correct": true,
+      "real_teacher_target_probability": 0.9999961853027344
+    },
+    {
+      "sample": 18756,
+      "writer_to_adv_image_gradient_norm_ratio": 0.00043373083462938666,
+      "cosine_writer_adv": -0.04268745332956314,
+      "real_teacher_correct": true,
+      "real_teacher_target_probability": 0.9999994039535522
+    },
+    {
+      "sample": 4271,
+      "writer_to_adv_image_gradient_norm_ratio": 2.25081467628479,
+      "cosine_writer_adv": 0.015016594901680946,
+      "real_teacher_correct": false,
+      "real_teacher_target_probability": 0.3650822341442108
+    },
+    {
+      "sample": 27383,
+      "writer_to_adv_image_gradient_norm_ratio": 0.07911459356546402,
+      "cosine_writer_adv": -9.466614574193954e-05,
+      "real_teacher_correct": true,
+      "real_teacher_target_probability": 1.0
+    },
+    {
+      "sample": 42338,
+      "writer_to_adv_image_gradient_norm_ratio": 0.018278736621141434,
+      "cosine_writer_adv": 0.027043018490076065,
+      "real_teacher_correct": true,
+      "real_teacher_target_probability": 0.9999997615814209
+    },
+    {
+      "sample": 20314,
+      "writer_to_adv_image_gradient_norm_ratio": 9.403624534606934,
+      "cosine_writer_adv": -0.01929163932800293,
+      "real_teacher_correct": true,
+      "real_teacher_target_probability": 1.0
+    },
+    {
+      "sample": 6863,
+      "writer_to_adv_image_gradient_norm_ratio": 24.71900177001953,
+      "cosine_writer_adv": -0.006763603538274765,
+      "real_teacher_correct": true,
+      "real_teacher_target_probability": 0.9987987279891968
+    },
+    {
+      "sample": 16824,
+      "writer_to_adv_image_gradient_norm_ratio": 0.32159802317619324,
+      "cosine_writer_adv": -0.021257152780890465,
+      "real_teacher_correct": true,
+      "real_teacher_target_probability": 0.9986110925674438
+    },
+    {
+      "sample": 7025,
+      "writer_to_adv_image_gradient_norm_ratio": 10.63235855102539,
+      "cosine_writer_adv": -0.010372970253229141,
+      "real_teacher_correct": true,
+      "real_teacher_target_probability": 0.7617882490158081
+    },
+    {
+      "sample": 1486,
+      "writer_to_adv_image_gradient_norm_ratio": 0.00012655423779506236,
+      "cosine_writer_adv": 0.0357201024889946,
+      "real_teacher_correct": true,
+      "real_teacher_target_probability": 0.9999915361404419
+    },
+    {
+      "sample": 38948,
+      "writer_to_adv_image_gradient_norm_ratio": 1.1655118214548565e-05,
+      "cosine_writer_adv": 0.014075180515646935,
+      "real_teacher_correct": true,
+      "real_teacher_target_probability": 1.0
+    },
+    {
+      "sample": 65273,
+      "writer_to_adv_image_gradient_norm_ratio": 49.188194274902344,
+      "cosine_writer_adv": -0.055829599499702454,
+      "real_teacher_correct": true,
+      "real_teacher_target_probability": 0.9999333620071411
+    },
+    {
+      "sample": 37808,
+      "writer_to_adv_image_gradient_norm_ratio": 0.029097827151417732,
+      "cosine_writer_adv": -0.009827827103435993,
+      "real_teacher_correct": true,
+      "real_teacher_target_probability": 1.0
+    },
+    {
+      "sample": 25746,
+      "writer_to_adv_image_gradient_norm_ratio": 0.11582936346530914,
+      "cosine_writer_adv": 0.00013472139835357666,
+      "real_teacher_correct": true,
+      "real_teacher_target_probability": 0.706488311290741
+    },
+    {
+      "sample": 30064,
+      "writer_to_adv_image_gradient_norm_ratio": 2.9628541597048752e-05,
+      "cosine_writer_adv": -0.009752929210662842,
+      "real_teacher_correct": true,
+      "real_teacher_target_probability": 1.0
+    },
+    {
+      "sample": 63569,
+      "writer_to_adv_image_gradient_norm_ratio": 0.6646268963813782,
+      "cosine_writer_adv": -0.037713758647441864,
+      "real_teacher_correct": true,
+      "real_teacher_target_probability": 1.0
+    },
+    {
+      "sample": 60296,
+      "writer_to_adv_image_gradient_norm_ratio": 23.338241577148438,
+      "cosine_writer_adv": -0.0423475056886673,
+      "real_teacher_correct": true,
+      "real_teacher_target_probability": 0.8863040208816528
+    },
+    {
+      "sample": 30411,
+      "writer_to_adv_image_gradient_norm_ratio": 3.609739724197425e-05,
+      "cosine_writer_adv": 0.05712293088436127,
+      "real_teacher_correct": true,
+      "real_teacher_target_probability": 0.9999998807907104
+    },
+    {
+      "sample": 32285,
+      "writer_to_adv_image_gradient_norm_ratio": 2.1460975403897464e-05,
+      "cosine_writer_adv": 0.013431780971586704,
+      "real_teacher_correct": true,
+      "real_teacher_target_probability": 1.0
+    },
+    {
+      "sample": 15050,
+      "writer_to_adv_image_gradient_norm_ratio": 9.12446182610438e-07,
+      "cosine_writer_adv": -0.022721197456121445,
+      "real_teacher_correct": true,
+      "real_teacher_target_probability": 1.0
+    },
+    {
+      "sample": 55880,
+      "writer_to_adv_image_gradient_norm_ratio": 24.25741195678711,
+      "cosine_writer_adv": -0.047786012291908264,
+      "real_teacher_correct": true,
+      "real_teacher_target_probability": 0.9999829530715942
+    },
+    {
+      "sample": 40249,
+      "writer_to_adv_image_gradient_norm_ratio": 0.18011905252933502,
+      "cosine_writer_adv": -0.02356070652604103,
+      "real_teacher_correct": true,
+      "real_teacher_target_probability": 0.9999996423721313
+    },
+    {
+      "sample": 52446,
+      "writer_to_adv_image_gradient_norm_ratio": 0.0003331386251375079,
+      "cosine_writer_adv": 0.04562414437532425,
+      "real_teacher_correct": true,
+      "real_teacher_target_probability": 0.9999998807907104
+    },
+    {
+      "sample": 3157,
+      "writer_to_adv_image_gradient_norm_ratio": 20.997478485107422,
+      "cosine_writer_adv": 0.05855339765548706,
+      "real_teacher_correct": true,
+      "real_teacher_target_probability": 0.9367175102233887
+    },
+    {
+      "sample": 25606,
+      "writer_to_adv_image_gradient_norm_ratio": 23.70651626586914,
+      "cosine_writer_adv": -0.014127708040177822,
+      "real_teacher_correct": true,
+      "real_teacher_target_probability": 0.9999566078186035
+    },
+    {
+      "sample": 54281,
+      "writer_to_adv_image_gradient_norm_ratio": 44.88595199584961,
+      "cosine_writer_adv": 0.012048792093992233,
+      "real_teacher_correct": true,
+      "real_teacher_target_probability": 0.9999979734420776
+    },
+    {
+      "sample": 1988,
+      "writer_to_adv_image_gradient_norm_ratio": 1.3653695583343506,
+      "cosine_writer_adv": 0.030792411416769028,
+      "real_teacher_correct": false,
+      "real_teacher_target_probability": 0.1530994027853012
+    },
+    {
+      "sample": 54074,
+      "writer_to_adv_image_gradient_norm_ratio": 0.08242955803871155,
+      "cosine_writer_adv": -0.017901400104165077,
+      "real_teacher_correct": true,
+      "real_teacher_target_probability": 0.9999967813491821
+    },
+    {
+      "sample": 22108,
+      "writer_to_adv_image_gradient_norm_ratio": 1.886370910142432e-06,
+      "cosine_writer_adv": -0.01925312727689743,
+      "real_teacher_correct": true,
+      "real_teacher_target_probability": 1.0
+    },
+    {
+      "sample": 52785,
+      "writer_to_adv_image_gradient_norm_ratio": 9.945158030433277e-10,
+      "cosine_writer_adv": 0.00044858240289613605,
+      "real_teacher_correct": true,
+      "real_teacher_target_probability": 1.0
+    },
+    {
+      "sample": 1207,
+      "writer_to_adv_image_gradient_norm_ratio": 29.194347381591797,
+      "cosine_writer_adv": -0.025718143209815025,
+      "real_teacher_correct": true,
+      "real_teacher_target_probability": 1.0
+    },
+    {
+      "sample": 36551,
+      "writer_to_adv_image_gradient_norm_ratio": 15.793191909790039,
+      "cosine_writer_adv": 0.012909580022096634,
+      "real_teacher_correct": true,
+      "real_teacher_target_probability": 0.9996833801269531
+    },
+    {
+      "sample": 38149,
+      "writer_to_adv_image_gradient_norm_ratio": 0.0024874706286937,
+      "cosine_writer_adv": -0.032816722989082336,
+      "real_teacher_correct": true,
+      "real_teacher_target_probability": 0.9999997615814209
+    },
+    {
+      "sample": 59239,
+      "writer_to_adv_image_gradient_norm_ratio": 43.28963088989258,
+      "cosine_writer_adv": 0.03152771294116974,
+      "real_teacher_correct": true,
+      "real_teacher_target_probability": 0.9999959468841553
+    },
+    {
+      "sample": 40115,
+      "writer_to_adv_image_gradient_norm_ratio": 32.50825119018555,
+      "cosine_writer_adv": -0.02483932301402092,
+      "real_teacher_correct": true,
+      "real_teacher_target_probability": 0.999160885810852
+    },
+    {
+      "sample": 37072,
+      "writer_to_adv_image_gradient_norm_ratio": 7.750101005399301e-09,
+      "cosine_writer_adv": 0.003372024744749069,
+      "real_teacher_correct": true,
+      "real_teacher_target_probability": 1.0
+    },
+    {
+      "sample": 6549,
+      "writer_to_adv_image_gradient_norm_ratio": 20.871355056762695,
+      "cosine_writer_adv": -0.019972119480371475,
+      "real_teacher_correct": false,
+      "real_teacher_target_probability": 0.19736871123313904
+    },
+    {
+      "sample": 29736,
+      "writer_to_adv_image_gradient_norm_ratio": 7.936389738461003e-05,
+      "cosine_writer_adv": 0.02414349466562271,
+      "real_teacher_correct": true,
+      "real_teacher_target_probability": 1.0
+    },
+    {
+      "sample": 5918,
+      "writer_to_adv_image_gradient_norm_ratio": 60.18609619140625,
+      "cosine_writer_adv": -0.0334477499127388,
+      "real_teacher_correct": true,
+      "real_teacher_target_probability": 0.9994794726371765
+    },
+    {
+      "sample": 42354,
+      "writer_to_adv_image_gradient_norm_ratio": 0.003404085524380207,
+      "cosine_writer_adv": 0.004323125816881657,
+      "real_teacher_correct": true,
+      "real_teacher_target_probability": 0.9999887943267822
+    },
+    {
+      "sample": 25560,
+      "writer_to_adv_image_gradient_norm_ratio": 0.13588674366474152,
+      "cosine_writer_adv": -0.015527738258242607,
+      "real_teacher_correct": true,
+      "real_teacher_target_probability": 0.9965345859527588
+    },
+    {
+      "sample": 18670,
+      "writer_to_adv_image_gradient_norm_ratio": 0.4064805805683136,
+      "cosine_writer_adv": 0.014602544717490673,
+      "real_teacher_correct": true,
+      "real_teacher_target_probability": 1.0
+    },
+    {
+      "sample": 51610,
+      "writer_to_adv_image_gradient_norm_ratio": 16.916460037231445,
+      "cosine_writer_adv": 0.01658722385764122,
+      "real_teacher_correct": true,
+      "real_teacher_target_probability": 0.9999943971633911
+    },
+    {
+      "sample": 24304,
+      "writer_to_adv_image_gradient_norm_ratio": 19.551748275756836,
+      "cosine_writer_adv": -0.0013920741621404886,
+      "real_teacher_correct": true,
+      "real_teacher_target_probability": 0.9999984502792358
+    },
+    {
+      "sample": 19965,
+      "writer_to_adv_image_gradient_norm_ratio": 8.24747621663846e-06,
+      "cosine_writer_adv": 0.006969298701733351,
+      "real_teacher_correct": true,
+      "real_teacher_target_probability": 1.0
+    },
+    {
+      "sample": 18671,
+      "writer_to_adv_image_gradient_norm_ratio": 5.360677719116211,
+      "cosine_writer_adv": 0.005412769503891468,
+      "real_teacher_correct": true,
+      "real_teacher_target_probability": 0.9999995231628418
+    },
+    {
+      "sample": 3688,
+      "writer_to_adv_image_gradient_norm_ratio": 2.104952812194824,
+      "cosine_writer_adv": -0.00260899867862463,
+      "real_teacher_correct": false,
+      "real_teacher_target_probability": 0.13267181813716888
+    },
+    {
+      "sample": 26794,
+      "writer_to_adv_image_gradient_norm_ratio": 0.002717128489166498,
+      "cosine_writer_adv": 0.031225666403770447,
+      "real_teacher_correct": true,
+      "real_teacher_target_probability": 0.9999961853027344
+    },
+    {
+      "sample": 48628,
+      "writer_to_adv_image_gradient_norm_ratio": 30.806163787841797,
+      "cosine_writer_adv": -0.01120127085596323,
+      "real_teacher_correct": true,
+      "real_teacher_target_probability": 0.9991887211799622
+    },
+    {
+      "sample": 23234,
+      "writer_to_adv_image_gradient_norm_ratio": 0.018503572791814804,
+      "cosine_writer_adv": 0.03289968520402908,
+      "real_teacher_correct": true,
+      "real_teacher_target_probability": 0.9926319122314453
+    },
+    {
+      "sample": 59818,
+      "writer_to_adv_image_gradient_norm_ratio": 55.08786392211914,
+      "cosine_writer_adv": 0.018678566440939903,
+      "real_teacher_correct": true,
+      "real_teacher_target_probability": 0.9999626874923706
+    },
+    {
+      "sample": 27439,
+      "writer_to_adv_image_gradient_norm_ratio": 0.00045995807158760726,
+      "cosine_writer_adv": 0.013346490450203419,
+      "real_teacher_correct": true,
+      "real_teacher_target_probability": 1.0
+    },
+    {
+      "sample": 20367,
+      "writer_to_adv_image_gradient_norm_ratio": 0.00011611454101512209,
+      "cosine_writer_adv": -0.02671034075319767,
+      "real_teacher_correct": true,
+      "real_teacher_target_probability": 0.9999998807907104
+    },
+    {
+      "sample": 15925,
+      "writer_to_adv_image_gradient_norm_ratio": 0.027364639565348625,
+      "cosine_writer_adv": 0.01232270896434784,
+      "real_teacher_correct": true,
+      "real_teacher_target_probability": 0.9999998807907104
+    },
+    {
+      "sample": 19136,
+      "writer_to_adv_image_gradient_norm_ratio": 0.003243399551138282,
+      "cosine_writer_adv": -0.018225189298391342,
+      "real_teacher_correct": true,
+      "real_teacher_target_probability": 0.9999278783798218
+    },
+    {
+      "sample": 22986,
+      "writer_to_adv_image_gradient_norm_ratio": 0.6855761408805847,
+      "cosine_writer_adv": 0.002546804491430521,
+      "real_teacher_correct": true,
+      "real_teacher_target_probability": 1.0
+    },
+    {
+      "sample": 41224,
+      "writer_to_adv_image_gradient_norm_ratio": 0.05245577543973923,
+      "cosine_writer_adv": 0.015710003674030304,
+      "real_teacher_correct": true,
+      "real_teacher_target_probability": 1.0
+    },
+    {
+      "sample": 24876,
+      "writer_to_adv_image_gradient_norm_ratio": 0.31267350912094116,
+      "cosine_writer_adv": 0.0012847790494561195,
+      "real_teacher_correct": true,
+      "real_teacher_target_probability": 0.999991774559021
+    },
+    {
+      "sample": 5213,
+      "writer_to_adv_image_gradient_norm_ratio": 18.187292098999023,
+      "cosine_writer_adv": -0.008824903517961502,
+      "real_teacher_correct": true,
+      "real_teacher_target_probability": 0.9947566986083984
+    },
+    {
+      "sample": 32544,
+      "writer_to_adv_image_gradient_norm_ratio": 1.7346543073654175,
+      "cosine_writer_adv": 0.018430691212415695,
+      "real_teacher_correct": true,
+      "real_teacher_target_probability": 0.8201096653938293
+    }
+  ]
+}

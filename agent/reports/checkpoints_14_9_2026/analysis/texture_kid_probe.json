@@ -1,0 +1,23 @@
+{
+  "samples": 1024,
+  "device": "NVIDIA GeForce RTX 4060 Laptop GPU",
+  "peak_GiB": 0.16762304306030273,
+  "note": "Screening only: 1024 fixed test refs, 50 paired subsets of 512, float64 KID arithmetic. Not a full benchmark or training ablation.",
+  "scores": {
+    "1.0": {
+      "mean": 0.09125155700989396,
+      "subset_std": 0.03978503541061884,
+      "mean_paired_delta_vs_original": 0.0
+    },
+    "0.5": {
+      "mean": 0.09212621122398357,
+      "subset_std": 0.03988873091867929,
+      "mean_paired_delta_vs_original": 0.0008746542140896096
+    },
+    "0.0": {
+      "mean": 0.09454290021360023,
+      "subset_std": 0.040547734390841125,
+      "mean_paired_delta_vs_original": 0.003291343203706276
+    }
+  }
+}

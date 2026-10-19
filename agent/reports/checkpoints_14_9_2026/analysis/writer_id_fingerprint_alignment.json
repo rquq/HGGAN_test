@@ -1,0 +1,2518 @@
+{
+  "train": {
+    "same_numeric_ID_overlap": 13734,
+    "overlap_after_inferred_permutation": 62989,
+    "different_numeric_ID_count": 335,
+    "caution": "Inferred from transcript-count fingerprints, not authenticated source-writer identities. Do not auto-relabel from this alone.",
+    "assignment": [
+      {
+        "id32": 0,
+        "id64": 15,
+        "shared_transcript_occurrences": 720
+      },
+      {
+        "id32": 1,
+        "id64": 219,
+        "shared_transcript_occurrences": 72
+      },
+      {
+        "id32": 2,
+        "id64": 217,
+        "shared_transcript_occurrences": 697
+      },
+      {
+        "id32": 3,
+        "id64": 0,
+        "shared_transcript_occurrences": 4192
+      },
+      {
+        "id32": 4,
+        "id64": 126,
+        "shared_transcript_occurrences": 699
+      },
+      {
+        "id32": 5,
+        "id64": 329,
+        "shared_transcript_occurrences": 143
+      },
+      {
+        "id32": 6,
+        "id64": 38,
+        "shared_transcript_occurrences": 148
+      },
+      {
+        "id32": 7,
+        "id64": 58,
+        "shared_transcript_occurrences": 835
+      },
+      {
+        "id32": 8,
+        "id64": 62,
+        "shared_transcript_occurrences": 721
+      },
+      {
+        "id32": 9,
+        "id64": 302,
+        "shared_transcript_occurrences": 82
+      },
+      {
+        "id32": 10,
+        "id64": 167,
+        "shared_transcript_occurrences": 124
+      },
+      {
+        "id32": 11,
+        "id64": 70,
+        "shared_transcript_occurrences": 61
+      },
+      {
+        "id32": 12,
+        "id64": 16,
+        "shared_transcript_occurrences": 349
+      },
+      {
+        "id32": 13,
+        "id64": 154,
+        "shared_transcript_occurrences": 293
+      },
+      {
+        "id32": 14,
+        "id64": 14,
+        "shared_transcript_occurrences": 358
+      },
+      {
+        "id32": 15,
+        "id64": 48,
+        "shared_transcript_occurrences": 481
+      },
+      {
+        "id32": 16,
+        "id64": 221,
+        "shared_transcript_occurrences": 280
+      },
+      {
+        "id32": 17,
+        "id64": 159,
+        "shared_transcript_occurrences": 169
+      },
+      {
+        "id32": 18,
+        "id64": 146,
+        "shared_transcript_occurrences": 205
+      },
+      {
+        "id32": 19,
+        "id64": 132,
+        "shared_transcript_occurrences": 286
+      },
+      {
+        "id32": 20,
+        "id64": 41,
+        "shared_transcript_occurrences": 739
+      },
+      {
+        "id32": 21,
+        "id64": 108,
+        "shared_transcript_occurrences": 62
+      },
+      {
+        "id32": 22,
+        "id64": 103,
+        "shared_transcript_occurrences": 363
+      },
+      {
+        "id32": 23,
+        "id64": 200,
+        "shared_transcript_occurrences": 146
+      },
+      {
+        "id32": 24,
+        "id64": 259,
+        "shared_transcript_occurrences": 186
+      },
+      {
+        "id32": 25,
+        "id64": 210,
+        "shared_transcript_occurrences": 135
+      },
+      {
+        "id32": 26,
+        "id64": 12,
+        "shared_transcript_occurrences": 647
+      },
+      {
+        "id32": 27,
+        "id64": 2,
+        "shared_transcript_occurrences": 220
+      },
+      {
+        "id32": 28,
+        "id64": 144,
+        "shared_transcript_occurrences": 153
+      },
+      {
+        "id32": 29,
+        "id64": 23,
+        "shared_transcript_occurrences": 607
+      },
+      {
+        "id32": 30,
+        "id64": 284,
+        "shared_transcript_occurrences": 67
+      },
+      {
+        "id32": 31,
+        "id64": 115,
+        "shared_transcript_occurrences": 291
+      },
+      {
+        "id32": 32,
+        "id64": 5,
+        "shared_transcript_occurrences": 313
+      },
+      {
+        "id32": 33,
+        "id64": 88,
+        "shared_transcript_occurrences": 357
+      },
+      {
+        "id32": 34,
+        "id64": 142,
+        "shared_transcript_occurrences": 76
+      },
+      {
+        "id32": 35,
+        "id64": 98,
+        "shared_transcript_occurrences": 156
+      },
+      {
+        "id32": 36,
+        "id64": 85,
+        "shared_transcript_occurrences": 190
+      },
+      {
+        "id32": 37,
+        "id64": 25,
+        "shared_transcript_occurrences": 736
+      },
+      {
+        "id32": 38,
+        "id64": 152,
+        "shared_transcript_occurrences": 365
+      },
+      {
+        "id32": 39,
+        "id64": 321,
+        "shared_transcript_occurrences": 80
+      },
+      {
+        "id32": 40,
+        "id64": 170,
+        "shared_transcript_occurrences": 155
+      },
+      {
+        "id32": 41,
+        "id64": 120,
+        "shared_transcript_occurrences": 233
+      },
+      {
+        "id32": 42,
+        "id64": 97,
+        "shared_transcript_occurrences": 144
+      },
+      {
+        "id32": 43,
+        "id64": 71,
+        "shared_transcript_occurrences": 361
+      },
+      {
+        "id32": 44,
+        "id64": 80,
+        "shared_transcript_occurrences": 397
+      },
+      {
+        "id32": 45,
+        "id64": 89,
+        "shared_transcript_occurrences": 685
+      },
+      {
+        "id32": 46,
+        "id64": 125,
+        "shared_transcript_occurrences": 100
+      },
+      {
+        "id32": 47,
+        "id64": 179,
+        "shared_transcript_occurrences": 141
+      },
+      {
+        "id32": 48,
+        "id64": 9,
+        "shared_transcript_occurrences": 691
+      },
+      {
+        "id32": 49,
+        "id64": 54,
+        "shared_transcript_occurrences": 197
+      },
+      {
+        "id32": 50,
+        "id64": 4,
+        "shared_transcript_occurrences": 718
+      },
+      {
+        "id32": 51,
+        "id64": 166,
+        "shared_transcript_occurrences": 403
+      },
+      {
+        "id32": 52,
+        "id64": 267,
+        "shared_transcript_occurrences": 65
+      },
+      {
+        "id32": 53,
+        "id64": 182,
+        "shared_transcript_occurrences": 148
+      },
+      {
+        "id32": 54,
+        "id64": 140,
+        "shared_transcript_occurrences": 317
+      },
+      {
+        "id32": 55,
+        "id64": 93,
+        "shared_transcript_occurrences": 274
+      },
+      {
+        "id32": 56,
+        "id64": 63,
+        "shared_transcript_occurrences": 226
+      },
+      {
+        "id32": 57,
+        "id64": 66,
+        "shared_transcript_occurrences": 187
+      },
+      {
+        "id32": 58,
+        "id64": 60,
+        "shared_transcript_occurrences": 743
+      },
+      {
+        "id32": 59,
+        "id64": 137,
+        "shared_transcript_occurrences": 413
+      },
+      {
+        "id32": 60,
+        "id64": 17,
+        "shared_transcript_occurrences": 153
+      },
+      {
+        "id32": 61,
+        "id64": 262,
+        "shared_transcript_occurrences": 129
+      },
+      {
+        "id32": 62,
+        "id64": 199,
+        "shared_transcript_occurrences": 346
+      },
+      {
+        "id32": 63,
+        "id64": 90,
+        "shared_transcript_occurrences": 80
+      },
+      {
+        "id32": 64,
+        "id64": 245,
+        "shared_transcript_occurrences": 176
+      },
+      {
+        "id32": 65,
+        "id64": 148,
+        "shared_transcript_occurrences": 98
+      },
+      {
+        "id32": 66,
+        "id64": 114,
+        "shared_transcript_occurrences": 644
+      },
+      {
+        "id32": 67,
+        "id64": 171,
+        "shared_transcript_occurrences": 212
+      },
+      {
+        "id32": 68,
+        "id64": 236,
+        "shared_transcript_occurrences": 71
+      },
+      {
+        "id32": 69,
+        "id64": 234,
+        "shared_transcript_occurrences": 72
+      },
+      {
+        "id32": 70,
+        "id64": 104,
+        "shared_transcript_occurrences": 159
+      },
+      {
+        "id32": 71,
+        "id64": 327,
+        "shared_transcript_occurrences": 60
+      },
+      {
+        "id32": 72,
+        "id64": 292,
+        "shared_transcript_occurrences": 151
+      },
+      {
+        "id32": 73,
+        "id64": 101,
+        "shared_transcript_occurrences": 295
+      },
+      {
+        "id32": 74,
+        "id64": 184,
+        "shared_transcript_occurrences": 88
+      },
+      {
+        "id32": 75,
+        "id64": 53,
+        "shared_transcript_occurrences": 232
+      },
+      {
+        "id32": 76,
+        "id64": 32,
+        "shared_transcript_occurrences": 210
+      },
+      {
+        "id32": 77,
+        "id64": 113,
+        "shared_transcript_occurrences": 139
+      },
+      {
+        "id32": 78,
+        "id64": 3,
+        "shared_transcript_occurrences": 382
+      },
+      {
+        "id32": 79,
+        "id64": 1,
+        "shared_transcript_occurrences": 57
+      },
+      {
+        "id32": 80,
+        "id64": 43,
+        "shared_transcript_occurrences": 356
+      },
+      {
+        "id32": 81,
+        "id64": 73,
+        "shared_transcript_occurrences": 768
+      },
+      {
+        "id32": 82,
+        "id64": 175,
+        "shared_transcript_occurrences": 69
+      },
+      {
+        "id32": 83,
+        "id64": 186,
+        "shared_transcript_occurrences": 75
+      },
+      {
+        "id32": 84,
+        "id64": 19,
+        "shared_transcript_occurrences": 697
+      },
+      {
+        "id32": 85,
+        "id64": 34,
+        "shared_transcript_occurrences": 148
+      },
+      {
+        "id32": 86,
+        "id64": 91,
+        "shared_transcript_occurrences": 694
+      },
+      {
+        "id32": 87,
+        "id64": 7,
+        "shared_transcript_occurrences": 683
+      },
+      {
+        "id32": 88,
+        "id64": 135,
+        "shared_transcript_occurrences": 698
+      },
+      {
+        "id32": 89,
+        "id64": 288,
+        "shared_transcript_occurrences": 30
+      },
+      {
+        "id32": 90,
+        "id64": 64,
+        "shared_transcript_occurrences": 117
+      },
+      {
+        "id32": 91,
+        "id64": 87,
+        "shared_transcript_occurrences": 141
+      },
+      {
+        "id32": 92,
+        "id64": 46,
+        "shared_transcript_occurrences": 298
+      },
+      {
+        "id32": 93,
+        "id64": 55,
+        "shared_transcript_occurrences": 588
+      },
+      {
+        "id32": 94,
+        "id64": 18,
+        "shared_transcript_occurrences": 691
+      },
+      {
+        "id32": 95,
+        "id64": 107,
+        "shared_transcript_occurrences": 383
+      },
+      {
+        "id32": 96,
+        "id64": 189,
+        "shared_transcript_occurrences": 80
+      },
+      {
+        "id32": 97,
+        "id64": 274,
+        "shared_transcript_occurrences": 71
+      },
+      {
+        "id32": 98,
+        "id64": 106,
+        "shared_transcript_occurrences": 268
+      },
+      {
+        "id32": 99,
+        "id64": 333,
+        "shared_transcript_occurrences": 66
+      },
+      {
+        "id32": 100,
+        "id64": 285,
+        "shared_transcript_occurrences": 265
+      },
+      {
+        "id32": 101,
+        "id64": 320,
+        "shared_transcript_occurrences": 71
+      },
+      {
+        "id32": 102,
+        "id64": 173,
+        "shared_transcript_occurrences": 235
+      },
+      {
+        "id32": 103,
+        "id64": 67,
+        "shared_transcript_occurrences": 358
+      },
+      {
+        "id32": 104,
+        "id64": 183,
+        "shared_transcript_occurrences": 173
+      },
+      {
+        "id32": 105,
+        "id64": 37,
+        "shared_transcript_occurrences": 68
+      },
+      {
+        "id32": 106,
+        "id64": 220,
+        "shared_transcript_occurrences": 153
+      },
+      {
+        "id32": 107,
+        "id64": 21,
+        "shared_transcript_occurrences": 59
+      },
+      {
+        "id32": 108,
+        "id64": 294,
+        "shared_transcript_occurrences": 70
+      },
+      {
+        "id32": 109,
+        "id64": 193,
+        "shared_transcript_occurrences": 77
+      },
+      {
+        "id32": 110,
+        "id64": 239,
+        "shared_transcript_occurrences": 180
+      },
+      {
+        "id32": 111,
+        "id64": 116,
+        "shared_transcript_occurrences": 357
+      },
+      {
+        "id32": 112,
+        "id64": 257,
+        "shared_transcript_occurrences": 66
+      },
+      {
+        "id32": 113,
+        "id64": 65,
+        "shared_transcript_occurrences": 326
+      },
+      {
+        "id32": 114,
+        "id64": 222,
+        "shared_transcript_occurrences": 350
+      },
+      {
+        "id32": 115,
+        "id64": 51,
+        "shared_transcript_occurrences": 62
+      },
+      {
+        "id32": 116,
+        "id64": 123,
+        "shared_transcript_occurrences": 109
+      },
+      {
+        "id32": 117,
+        "id64": 280,
+        "shared_transcript_occurrences": 83
+      },
+      {
+        "id32": 118,
+        "id64": 13,
+        "shared_transcript_occurrences": 382
+      },
+      {
+        "id32": 119,
+        "id64": 212,
+        "shared_transcript_occurrences": 136
+      },
+      {
+        "id32": 120,
+        "id64": 79,
+        "shared_transcript_occurrences": 279
+      },
+      {
+        "id32": 121,
+        "id64": 233,
+        "shared_transcript_occurrences": 156
+      },
+      {
+        "id32": 122,
+        "id64": 10,
+        "shared_transcript_occurrences": 344
+      },
+      {
+        "id32": 123,
+        "id64": 24,
+        "shared_transcript_occurrences": 264
+      },
+      {
+        "id32": 124,
+        "id64": 246,
+        "shared_transcript_occurrences": 199
+      },
+      {
+        "id32": 125,
+        "id64": 22,
+        "shared_transcript_occurrences": 154
+      },
+      {
+        "id32": 126,
+        "id64": 214,
+        "shared_transcript_occurrences": 70
+      },
+      {
+        "id32": 127,
+        "id64": 145,
+        "shared_transcript_occurrences": 194
+      },
+      {
+        "id32": 128,
+        "id64": 131,
+        "shared_transcript_occurrences": 71
+      },
+      {
+        "id32": 129,
+        "id64": 163,
+        "shared_transcript_occurrences": 114
+      },
+      {
+        "id32": 130,
+        "id64": 121,
+        "shared_transcript_occurrences": 223
+      },
+      {
+        "id32": 131,
+        "id64": 40,
+        "shared_transcript_occurrences": 58
+      },
+      {
+        "id32": 132,
+        "id64": 119,
+        "shared_transcript_occurrences": 131
+      },
+      {
+        "id32": 133,
+        "id64": 198,
+        "shared_transcript_occurrences": 322
+      },
+      {
+        "id32": 134,
+        "id64": 81,
+        "shared_transcript_occurrences": 293
+      },
+      {
+        "id32": 135,
+        "id64": 249,
+        "shared_transcript_occurrences": 86
+      },
+      {
+        "id32": 136,
+        "id64": 33,
+        "shared_transcript_occurrences": 56
+      },
+      {
+        "id32": 137,
+        "id64": 138,
+        "shared_transcript_occurrences": 78
+      },
+      {
+        "id32": 138,
+        "id64": 260,
+        "shared_transcript_occurrences": 57
+      },
+      {
+        "id32": 139,
+        "id64": 84,
+        "shared_transcript_occurrences": 164
+      },
+      {
+        "id32": 140,
+        "id64": 271,
+        "shared_transcript_occurrences": 45
+      },
+      {
+        "id32": 141,
+        "id64": 128,
+        "shared_transcript_occurrences": 150
+      },
+      {
+        "id32": 142,
+        "id64": 52,
+        "shared_transcript_occurrences": 66
+      },
+      {
+        "id32": 143,
+        "id64": 268,
+        "shared_transcript_occurrences": 74
+      },
+      {
+        "id32": 144,
+        "id64": 324,
+        "shared_transcript_occurrences": 81
+      },
+      {
+        "id32": 145,
+        "id64": 298,
+        "shared_transcript_occurrences": 103
+      },
+      {
+        "id32": 146,
+        "id64": 209,
+        "shared_transcript_occurrences": 686
+      },
+      {
+        "id32": 147,
+        "id64": 301,
+        "shared_transcript_occurrences": 78
+      },
+      {
+        "id32": 148,
+        "id64": 225,
+        "shared_transcript_occurrences": 58
+      },
+      {
+        "id32": 149,
+        "id64": 207,
+        "shared_transcript_occurrences": 361
+      },
+      {
+        "id32": 150,
+        "id64": 36,
+        "shared_transcript_occurrences": 84
+      },
+      {
+        "id32": 151,
+        "id64": 250,
+        "shared_transcript_occurrences": 63
+      },
+      {
+        "id32": 152,
+        "id64": 289,
+        "shared_transcript_occurrences": 41
+      },
+      {
+        "id32": 153,
+        "id64": 176,
+        "shared_transcript_occurrences": 281
+      },
+      {
+        "id32": 154,
+        "id64": 254,
+        "shared_transcript_occurrences": 200
+      },
+      {
+        "id32": 155,
+        "id64": 29,
+        "shared_transcript_occurrences": 62
+      },
+      {
+        "id32": 156,
+        "id64": 78,
+        "shared_transcript_occurrences": 153
+      },
+      {
+        "id32": 157,
+        "id64": 139,
+        "shared_transcript_occurrences": 66
+      },
+      {
+        "id32": 158,
+        "id64": 158,
+        "shared_transcript_occurrences": 173
+      },
+      {
+        "id32": 159,
+        "id64": 332,
+        "shared_transcript_occurrences": 65
+      },
+      {
+        "id32": 160,
+        "id64": 74,
+        "shared_transcript_occurrences": 745
+      },
+      {
+        "id32": 161,
+        "id64": 168,
+        "shared_transcript_occurrences": 292
+      },
+      {
+        "id32": 162,
+        "id64": 314,
+        "shared_transcript_occurrences": 78
+      },
+      {
+        "id32": 163,
+        "id64": 277,
+        "shared_transcript_occurrences": 136
+      },
+      {
+        "id32": 164,
+        "id64": 47,
+        "shared_transcript_occurrences": 282
+      },
+      {
+        "id32": 165,
+        "id64": 160,
+        "shared_transcript_occurrences": 289
+      },
+      {
+        "id32": 166,
+        "id64": 273,
+        "shared_transcript_occurrences": 148
+      },
+      {
+        "id32": 167,
+        "id64": 133,
+        "shared_transcript_occurrences": 395
+      },
+      {
+        "id32": 168,
+        "id64": 172,
+        "shared_transcript_occurrences": 325
+      },
+      {
+        "id32": 169,
+        "id64": 118,
+        "shared_transcript_occurrences": 144
+      },
+      {
+        "id32": 170,
+        "id64": 151,
+        "shared_transcript_occurrences": 72
+      },
+      {
+        "id32": 171,
+        "id64": 290,
+        "shared_transcript_occurrences": 61
+      },
+      {
+        "id32": 172,
+        "id64": 147,
+        "shared_transcript_occurrences": 241
+      },
+      {
+        "id32": 173,
+        "id64": 165,
+        "shared_transcript_occurrences": 85
+      },
+      {
+        "id32": 174,
+        "id64": 318,
+        "shared_transcript_occurrences": 74
+      },
+      {
+        "id32": 175,
+        "id64": 192,
+        "shared_transcript_occurrences": 221
+      },
+      {
+        "id32": 176,
+        "id64": 117,
+        "shared_transcript_occurrences": 68
+      },
+      {
+        "id32": 177,
+        "id64": 263,
+        "shared_transcript_occurrences": 89
+      },
+      {
+        "id32": 178,
+        "id64": 270,
+        "shared_transcript_occurrences": 58
+      },
+      {
+        "id32": 179,
+        "id64": 187,
+        "shared_transcript_occurrences": 59
+      },
+      {
+        "id32": 180,
+        "id64": 208,
+        "shared_transcript_occurrences": 81
+      },
+      {
+        "id32": 181,
+        "id64": 178,
+        "shared_transcript_occurrences": 80
+      },
+      {
+        "id32": 182,
+        "id64": 291,
+        "shared_transcript_occurrences": 142
+      },
+      {
+        "id32": 183,
+        "id64": 335,
+        "shared_transcript_occurrences": 78
+      },
+      {
+        "id32": 184,
+        "id64": 141,
+        "shared_transcript_occurrences": 42
+      },
+      {
+        "id32": 185,
+        "id64": 129,
+        "shared_transcript_occurrences": 82
+      },
+      {
+        "id32": 186,
+        "id64": 243,
+        "shared_transcript_occurrences": 243
+      },
+      {
+        "id32": 187,
+        "id64": 72,
+        "shared_transcript_occurrences": 129
+      },
+      {
+        "id32": 188,
+        "id64": 122,
+        "shared_transcript_occurrences": 147
+      },
+      {
+        "id32": 189,
+        "id64": 319,
+        "shared_transcript_occurrences": 78
+      },
+      {
+        "id32": 190,
+        "id64": 161,
+        "shared_transcript_occurrences": 213
+      },
+      {
+        "id32": 191,
+        "id64": 174,
+        "shared_transcript_occurrences": 75
+      },
+      {
+        "id32": 192,
+        "id64": 286,
+        "shared_transcript_occurrences": 62
+      },
+      {
+        "id32": 193,
+        "id64": 261,
+        "shared_transcript_occurrences": 113
+      },
+      {
+        "id32": 194,
+        "id64": 35,
+        "shared_transcript_occurrences": 62
+      },
+      {
+        "id32": 195,
+        "id64": 312,
+        "shared_transcript_occurrences": 69
+      },
+      {
+        "id32": 196,
+        "id64": 155,
+        "shared_transcript_occurrences": 109
+      },
+      {
+        "id32": 197,
+        "id64": 283,
+        "shared_transcript_occurrences": 70
+      },
+      {
+        "id32": 198,
+        "id64": 297,
+        "shared_transcript_occurrences": 69
+      },
+      {
+        "id32": 199,
+        "id64": 204,
+        "shared_transcript_occurrences": 128
+      },
+      {
+        "id32": 200,
+        "id64": 264,
+        "shared_transcript_occurrences": 143
+      },
+      {
+        "id32": 201,
+        "id64": 248,
+        "shared_transcript_occurrences": 82
+      },
+      {
+        "id32": 202,
+        "id64": 206,
+        "shared_transcript_occurrences": 72
+      },
+      {
+        "id32": 203,
+        "id64": 156,
+        "shared_transcript_occurrences": 187
+      },
+      {
+        "id32": 204,
+        "id64": 253,
+        "shared_transcript_occurrences": 71
+      },
+      {
+        "id32": 205,
+        "id64": 311,
+        "shared_transcript_occurrences": 78
+      },
+      {
+        "id32": 206,
+        "id64": 96,
+        "shared_transcript_occurrences": 87
+      },
+      {
+        "id32": 207,
+        "id64": 269,
+        "shared_transcript_occurrences": 81
+      },
+      {
+        "id32": 208,
+        "id64": 83,
+        "shared_transcript_occurrences": 517
+      },
+      {
+        "id32": 209,
+        "id64": 279,
+        "shared_transcript_occurrences": 131
+      },
+      {
+        "id32": 210,
+        "id64": 316,
+        "shared_transcript_occurrences": 154
+      },
+      {
+        "id32": 211,
+        "id64": 226,
+        "shared_transcript_occurrences": 79
+      },
+      {
+        "id32": 212,
+        "id64": 255,
+        "shared_transcript_occurrences": 131
+      },
+      {
+        "id32": 213,
+        "id64": 188,
+        "shared_transcript_occurrences": 77
+      },
+      {
+        "id32": 214,
+        "id64": 76,
+        "shared_transcript_occurrences": 90
+      },
+      {
+        "id32": 215,
+        "id64": 39,
+        "shared_transcript_occurrences": 103
+      },
+      {
+        "id32": 216,
+        "id64": 194,
+        "shared_transcript_occurrences": 52
+      },
+      {
+        "id32": 217,
+        "id64": 6,
+        "shared_transcript_occurrences": 72
+      },
+      {
+        "id32": 218,
+        "id64": 323,
+        "shared_transcript_occurrences": 79
+      },
+      {
+        "id32": 219,
+        "id64": 331,
+        "shared_transcript_occurrences": 72
+      },
+      {
+        "id32": 220,
+        "id64": 315,
+        "shared_transcript_occurrences": 69
+      },
+      {
+        "id32": 221,
+        "id64": 266,
+        "shared_transcript_occurrences": 73
+      },
+      {
+        "id32": 222,
+        "id64": 278,
+        "shared_transcript_occurrences": 63
+      },
+      {
+        "id32": 223,
+        "id64": 313,
+        "shared_transcript_occurrences": 64
+      },
+      {
+        "id32": 224,
+        "id64": 202,
+        "shared_transcript_occurrences": 164
+      },
+      {
+        "id32": 225,
+        "id64": 244,
+        "shared_transcript_occurrences": 69
+      },
+      {
+        "id32": 226,
+        "id64": 224,
+        "shared_transcript_occurrences": 134
+      },
+      {
+        "id32": 227,
+        "id64": 201,
+        "shared_transcript_occurrences": 250
+      },
+      {
+        "id32": 228,
+        "id64": 310,
+        "shared_transcript_occurrences": 77
+      },
+      {
+        "id32": 229,
+        "id64": 251,
+        "shared_transcript_occurrences": 64
+      },
+      {
+        "id32": 230,
+        "id64": 211,
+        "shared_transcript_occurrences": 94
+      },
+      {
+        "id32": 231,
+        "id64": 110,
+        "shared_transcript_occurrences": 97
+      },
+      {
+        "id32": 232,
+        "id64": 99,
+        "shared_transcript_occurrences": 215
+      },
+      {
+        "id32": 233,
+        "id64": 68,
+        "shared_transcript_occurrences": 128
+      },
+      {
+        "id32": 234,
+        "id64": 336,
+        "shared_transcript_occurrences": 72
+      },
+      {
+        "id32": 235,
+        "id64": 105,
+        "shared_transcript_occurrences": 63
+      },
+      {
+        "id32": 236,
+        "id64": 20,
+        "shared_transcript_occurrences": 166
+      },
+      {
+        "id32": 237,
+        "id64": 109,
+        "shared_transcript_occurrences": 211
+      },
+      {
+        "id32": 238,
+        "id64": 205,
+        "shared_transcript_occurrences": 80
+      },
+      {
+        "id32": 239,
+        "id64": 61,
+        "shared_transcript_occurrences": 176
+      },
+      {
+        "id32": 240,
+        "id64": 11,
+        "shared_transcript_occurrences": 75
+      },
+      {
+        "id32": 241,
+        "id64": 231,
+        "shared_transcript_occurrences": 74
+      },
+      {
+        "id32": 242,
+        "id64": 149,
+        "shared_transcript_occurrences": 67
+      },
+      {
+        "id32": 243,
+        "id64": 237,
+        "shared_transcript_occurrences": 63
+      },
+      {
+        "id32": 244,
+        "id64": 86,
+        "shared_transcript_occurrences": 162
+      },
+      {
+        "id32": 245,
+        "id64": 26,
+        "shared_transcript_occurrences": 150
+      },
+      {
+        "id32": 246,
+        "id64": 308,
+        "shared_transcript_occurrences": 100
+      },
+      {
+        "id32": 247,
+        "id64": 215,
+        "shared_transcript_occurrences": 70
+      },
+      {
+        "id32": 248,
+        "id64": 203,
+        "shared_transcript_occurrences": 79
+      },
+      {
+        "id32": 249,
+        "id64": 304,
+        "shared_transcript_occurrences": 11
+      },
+      {
+        "id32": 250,
+        "id64": 102,
+        "shared_transcript_occurrences": 85
+      },
+      {
+        "id32": 251,
+        "id64": 223,
+        "shared_transcript_occurrences": 70
+      },
+      {
+        "id32": 252,
+        "id64": 272,
+        "shared_transcript_occurrences": 146
+      },
+      {
+        "id32": 253,
+        "id64": 112,
+        "shared_transcript_occurrences": 222
+      },
+      {
+        "id32": 254,
+        "id64": 240,
+        "shared_transcript_occurrences": 69
+      },
+      {
+        "id32": 255,
+        "id64": 134,
+        "shared_transcript_occurrences": 74
+      },
+      {
+        "id32": 256,
+        "id64": 127,
+        "shared_transcript_occurrences": 75
+      },
+      {
+        "id32": 257,
+        "id64": 50,
+        "shared_transcript_occurrences": 145
+      },
+      {
+        "id32": 258,
+        "id64": 100,
+        "shared_transcript_occurrences": 66
+      },
+      {
+        "id32": 259,
+        "id64": 94,
+        "shared_transcript_occurrences": 50
+      },
+      {
+        "id32": 260,
+        "id64": 305,
+        "shared_transcript_occurrences": 82
+      },
+      {
+        "id32": 261,
+        "id64": 241,
+        "shared_transcript_occurrences": 69
+      },
+      {
+        "id32": 262,
+        "id64": 227,
+        "shared_transcript_occurrences": 69
+      },
+      {
+        "id32": 263,
+        "id64": 77,
+        "shared_transcript_occurrences": 71
+      },
+      {
+        "id32": 264,
+        "id64": 181,
+        "shared_transcript_occurrences": 59
+      },
+      {
+        "id32": 265,
+        "id64": 169,
+        "shared_transcript_occurrences": 65
+      },
+      {
+        "id32": 266,
+        "id64": 124,
+        "shared_transcript_occurrences": 64
+      },
+      {
+        "id32": 267,
+        "id64": 216,
+        "shared_transcript_occurrences": 235
+      },
+      {
+        "id32": 268,
+        "id64": 59,
+        "shared_transcript_occurrences": 159
+      },
+      {
+        "id32": 269,
+        "id64": 337,
+        "shared_transcript_occurrences": 77
+      },
+      {
+        "id32": 270,
+        "id64": 157,
+        "shared_transcript_occurrences": 67
+      },
+      {
+        "id32": 271,
+        "id64": 27,
+        "shared_transcript_occurrences": 52
+      },
+      {
+        "id32": 272,
+        "id64": 281,
+        "shared_transcript_occurrences": 79
+      },
+      {
+        "id32": 273,
+        "id64": 49,
+        "shared_transcript_occurrences": 129
+      },
+      {
+        "id32": 274,
+        "id64": 150,
+        "shared_transcript_occurrences": 85
+      },
+      {
+        "id32": 275,
+        "id64": 229,
+        "shared_transcript_occurrences": 96
+      },
+      {
+        "id32": 276,
+        "id64": 258,
+        "shared_transcript_occurrences": 58
+      },
+      {
+        "id32": 277,
+        "id64": 325,
+        "shared_transcript_occurrences": 82
+      },
+      {
+        "id32": 278,
+        "id64": 330,
+        "shared_transcript_occurrences": 74
+      },
+      {
+        "id32": 279,
+        "id64": 28,
+        "shared_transcript_occurrences": 136
+      },
+      {
+        "id32": 280,
+        "id64": 293,
+        "shared_transcript_occurrences": 62
+      },
+      {
+        "id32": 281,
+        "id64": 275,
+        "shared_transcript_occurrences": 61
+      },
+      {
+        "id32": 282,
+        "id64": 190,
+        "shared_transcript_occurrences": 128
+      },
+      {
+        "id32": 283,
+        "id64": 296,
+        "shared_transcript_occurrences": 75
+      },
+      {
+        "id32": 284,
+        "id64": 92,
+        "shared_transcript_occurrences": 135
+      },
+      {
+        "id32": 285,
+        "id64": 238,
+        "shared_transcript_occurrences": 75
+      },
+      {
+        "id32": 286,
+        "id64": 69,
+        "shared_transcript_occurrences": 76
+      },
+      {
+        "id32": 287,
+        "id64": 164,
+        "shared_transcript_occurrences": 61
+      },
+      {
+        "id32": 288,
+        "id64": 338,
+        "shared_transcript_occurrences": 69
+      },
+      {
+        "id32": 289,
+        "id64": 45,
+        "shared_transcript_occurrences": 226
+      },
+      {
+        "id32": 290,
+        "id64": 8,
+        "shared_transcript_occurrences": 64
+      },
+      {
+        "id32": 291,
+        "id64": 265,
+        "shared_transcript_occurrences": 81
+      },
+      {
+        "id32": 292,
+        "id64": 95,
+        "shared_transcript_occurrences": 60
+      },
+      {
+        "id32": 293,
+        "id64": 44,
+        "shared_transcript_occurrences": 104
+      },
+      {
+        "id32": 294,
+        "id64": 213,
+        "shared_transcript_occurrences": 75
+      },
+      {
+        "id32": 295,
+        "id64": 111,
+        "shared_transcript_occurrences": 147
+      },
+      {
+        "id32": 296,
+        "id64": 317,
+        "shared_transcript_occurrences": 77
+      },
+      {
+        "id32": 297,
+        "id64": 196,
+        "shared_transcript_occurrences": 143
+      },
+      {
+        "id32": 298,
+        "id64": 31,
+        "shared_transcript_occurrences": 68
+      },
+      {
+        "id32": 299,
+        "id64": 185,
+        "shared_transcript_occurrences": 71
+      },
+      {
+        "id32": 300,
+        "id64": 143,
+        "shared_transcript_occurrences": 78
+      },
+      {
+        "id32": 301,
+        "id64": 75,
+        "shared_transcript_occurrences": 79
+      },
+      {
+        "id32": 302,
+        "id64": 180,
+        "shared_transcript_occurrences": 141
+      },
+      {
+        "id32": 303,
+        "id64": 247,
+        "shared_transcript_occurrences": 63
+      },
+      {
+        "id32": 304,
+        "id64": 195,
+        "shared_transcript_occurrences": 148
+      },
+      {
+        "id32": 305,
+        "id64": 57,
+        "shared_transcript_occurrences": 145
+      },
+      {
+        "id32": 306,
+        "id64": 306,
+        "shared_transcript_occurrences": 65
+      },
+      {
+        "id32": 307,
+        "id64": 322,
+        "shared_transcript_occurrences": 65
+      },
+      {
+        "id32": 308,
+        "id64": 295,
+        "shared_transcript_occurrences": 45
+      },
+      {
+        "id32": 309,
+        "id64": 309,
+        "shared_transcript_occurrences": 81
+      },
+      {
+        "id32": 310,
+        "id64": 218,
+        "shared_transcript_occurrences": 64
+      },
+      {
+        "id32": 311,
+        "id64": 30,
+        "shared_transcript_occurrences": 74
+      },
+      {
+        "id32": 312,
+        "id64": 42,
+        "shared_transcript_occurrences": 63
+      },
+      {
+        "id32": 313,
+        "id64": 334,
+        "shared_transcript_occurrences": 79
+      },
+      {
+        "id32": 314,
+        "id64": 328,
+        "shared_transcript_occurrences": 64
+      },
+      {
+        "id32": 315,
+        "id64": 287,
+        "shared_transcript_occurrences": 60
+      },
+      {
+        "id32": 316,
+        "id64": 300,
+        "shared_transcript_occurrences": 55
+      },
+      {
+        "id32": 317,
+        "id64": 326,
+        "shared_transcript_occurrences": 66
+      },
+      {
+        "id32": 318,
+        "id64": 230,
+        "shared_transcript_occurrences": 70
+      },
+      {
+        "id32": 319,
+        "id64": 232,
+        "shared_transcript_occurrences": 75
+      },
+      {
+        "id32": 320,
+        "id64": 197,
+        "shared_transcript_occurrences": 66
+      },
+      {
+        "id32": 321,
+        "id64": 177,
+        "shared_transcript_occurrences": 62
+      },
+      {
+        "id32": 322,
+        "id64": 228,
+        "shared_transcript_occurrences": 66
+      },
+      {
+        "id32": 323,
+        "id64": 252,
+        "shared_transcript_occurrences": 58
+      },
+      {
+        "id32": 324,
+        "id64": 299,
+        "shared_transcript_occurrences": 75
+      },
+      {
+        "id32": 325,
+        "id64": 282,
+        "shared_transcript_occurrences": 72
+      },
+      {
+        "id32": 326,
+        "id64": 136,
+        "shared_transcript_occurrences": 89
+      },
+      {
+        "id32": 327,
+        "id64": 303,
+        "shared_transcript_occurrences": 69
+      },
+      {
+        "id32": 328,
+        "id64": 235,
+        "shared_transcript_occurrences": 117
+      },
+      {
+        "id32": 329,
+        "id64": 191,
+        "shared_transcript_occurrences": 70
+      },
+      {
+        "id32": 330,
+        "id64": 307,
+        "shared_transcript_occurrences": 89
+      },
+      {
+        "id32": 331,
+        "id64": 130,
+        "shared_transcript_occurrences": 75
+      },
+      {
+        "id32": 332,
+        "id64": 153,
+        "shared_transcript_occurrences": 89
+      },
+      {
+        "id32": 333,
+        "id64": 256,
+        "shared_transcript_occurrences": 74
+      },
+      {
+        "id32": 334,
+        "id64": 242,
+        "shared_transcript_occurrences": 71
+      },
+      {
+        "id32": 335,
+        "id64": 82,
+        "shared_transcript_occurrences": 68
+      },
+      {
+        "id32": 336,
+        "id64": 56,
+        "shared_transcript_occurrences": 76
+      },
+      {
+        "id32": 337,
+        "id64": 276,
+        "shared_transcript_occurrences": 58
+      },
+      {
+        "id32": 338,
+        "id64": 162,
+        "shared_transcript_occurrences": 65
+      }
+    ]
+  },
+  "test": {
+    "same_numeric_ID_overlap": 5646,
+    "overlap_after_inferred_permutation": 25343,
+    "different_numeric_ID_count": 160,
+    "caution": "Inferred from transcript-count fingerprints, not authenticated source-writer identities. Do not auto-relabel from this alone.",
+    "assignment": [
+      {
+        "id32": 0,
+        "id64": 25,
+        "shared_transcript_occurrences": 783
+      },
+      {
+        "id32": 1,
+        "id64": 53,
+        "shared_transcript_occurrences": 143
+      },
+      {
+        "id32": 2,
+        "id64": 38,
+        "shared_transcript_occurrences": 67
+      },
+      {
+        "id32": 3,
+        "id64": 159,
+        "shared_transcript_occurrences": 99
+      },
+      {
+        "id32": 4,
+        "id64": 26,
+        "shared_transcript_occurrences": 324
+      },
+      {
+        "id32": 5,
+        "id64": 49,
+        "shared_transcript_occurrences": 174
+      },
+      {
+        "id32": 6,
+        "id64": 110,
+        "shared_transcript_occurrences": 59
+      },
+      {
+        "id32": 7,
+        "id64": 108,
+        "shared_transcript_occurrences": 79
+      },
+      {
+        "id32": 8,
+        "id64": 48,
+        "shared_transcript_occurrences": 391
+      },
+      {
+        "id32": 9,
+        "id64": 98,
+        "shared_transcript_occurrences": 401
+      },
+      {
+        "id32": 10,
+        "id64": 62,
+        "shared_transcript_occurrences": 160
+      },
+      {
+        "id32": 11,
+        "id64": 143,
+        "shared_transcript_occurrences": 74
+      },
+      {
+        "id32": 12,
+        "id64": 116,
+        "shared_transcript_occurrences": 65
+      },
+      {
+        "id32": 13,
+        "id64": 157,
+        "shared_transcript_occurrences": 65
+      },
+      {
+        "id32": 14,
+        "id64": 30,
+        "shared_transcript_occurrences": 402
+      },
+      {
+        "id32": 15,
+        "id64": 104,
+        "shared_transcript_occurrences": 148
+      },
+      {
+        "id32": 16,
+        "id64": 52,
+        "shared_transcript_occurrences": 395
+      },
+      {
+        "id32": 17,
+        "id64": 107,
+        "shared_transcript_occurrences": 313
+      },
+      {
+        "id32": 18,
+        "id64": 146,
+        "shared_transcript_occurrences": 177
+      },
+      {
+        "id32": 19,
+        "id64": 119,
+        "shared_transcript_occurrences": 243
+      },
+      {
+        "id32": 20,
+        "id64": 13,
+        "shared_transcript_occurrences": 305
+      },
+      {
+        "id32": 21,
+        "id64": 118,
+        "shared_transcript_occurrences": 143
+      },
+      {
+        "id32": 22,
+        "id64": 6,
+        "shared_transcript_occurrences": 531
+      },
+      {
+        "id32": 23,
+        "id64": 10,
+        "shared_transcript_occurrences": 358
+      },
+      {
+        "id32": 24,
+        "id64": 33,
+        "shared_transcript_occurrences": 143
+      },
+      {
+        "id32": 25,
+        "id64": 37,
+        "shared_transcript_occurrences": 137
+      },
+      {
+        "id32": 26,
+        "id64": 56,
+        "shared_transcript_occurrences": 367
+      },
+      {
+        "id32": 27,
+        "id64": 36,
+        "shared_transcript_occurrences": 237
+      },
+      {
+        "id32": 28,
+        "id64": 5,
+        "shared_transcript_occurrences": 75
+      },
+      {
+        "id32": 29,
+        "id64": 79,
+        "shared_transcript_occurrences": 76
+      },
+      {
+        "id32": 30,
+        "id64": 45,
+        "shared_transcript_occurrences": 344
+      },
+      {
+        "id32": 31,
+        "id64": 28,
+        "shared_transcript_occurrences": 635
+      },
+      {
+        "id32": 32,
+        "id64": 17,
+        "shared_transcript_occurrences": 383
+      },
+      {
+        "id32": 33,
+        "id64": 3,
+        "shared_transcript_occurrences": 90
+      },
+      {
+        "id32": 34,
+        "id64": 92,
+        "shared_transcript_occurrences": 61
+      },
+      {
+        "id32": 35,
+        "id64": 83,
+        "shared_transcript_occurrences": 90
+      },
+      {
+        "id32": 36,
+        "id64": 97,
+        "shared_transcript_occurrences": 58
+      },
+      {
+        "id32": 37,
+        "id64": 138,
+        "shared_transcript_occurrences": 85
+      },
+      {
+        "id32": 38,
+        "id64": 65,
+        "shared_transcript_occurrences": 335
+      },
+      {
+        "id32": 39,
+        "id64": 44,
+        "shared_transcript_occurrences": 381
+      },
+      {
+        "id32": 40,
+        "id64": 154,
+        "shared_transcript_occurrences": 78
+      },
+      {
+        "id32": 41,
+        "id64": 75,
+        "shared_transcript_occurrences": 156
+      },
+      {
+        "id32": 42,
+        "id64": 34,
+        "shared_transcript_occurrences": 329
+      },
+      {
+        "id32": 43,
+        "id64": 128,
+        "shared_transcript_occurrences": 89
+      },
+      {
+        "id32": 44,
+        "id64": 101,
+        "shared_transcript_occurrences": 70
+      },
+      {
+        "id32": 45,
+        "id64": 102,
+        "shared_transcript_occurrences": 74
+      },
+      {
+        "id32": 46,
+        "id64": 81,
+        "shared_transcript_occurrences": 79
+      },
+      {
+        "id32": 47,
+        "id64": 14,
+        "shared_transcript_occurrences": 230
+      },
+      {
+        "id32": 48,
+        "id64": 27,
+        "shared_transcript_occurrences": 352
+      },
+      {
+        "id32": 49,
+        "id64": 109,
+        "shared_transcript_occurrences": 152
+      },
+      {
+        "id32": 50,
+        "id64": 144,
+        "shared_transcript_occurrences": 60
+      },
+      {
+        "id32": 51,
+        "id64": 60,
+        "shared_transcript_occurrences": 102
+      },
+      {
+        "id32": 52,
+        "id64": 76,
+        "shared_transcript_occurrences": 62
+      },
+      {
+        "id32": 53,
+        "id64": 106,
+        "shared_transcript_occurrences": 407
+      },
+      {
+        "id32": 54,
+        "id64": 148,
+        "shared_transcript_occurrences": 80
+      },
+      {
+        "id32": 55,
+        "id64": 70,
+        "shared_transcript_occurrences": 330
+      },
+      {
+        "id32": 56,
+        "id64": 46,
+        "shared_transcript_occurrences": 137
+      },
+      {
+        "id32": 57,
+        "id64": 132,
+        "shared_transcript_occurrences": 149
+      },
+      {
+        "id32": 58,
+        "id64": 115,
+        "shared_transcript_occurrences": 156
+      },
+      {
+        "id32": 59,
+        "id64": 68,
+        "shared_transcript_occurrences": 226
+      },
+      {
+        "id32": 60,
+        "id64": 137,
+        "shared_transcript_occurrences": 75
+      },
+      {
+        "id32": 61,
+        "id64": 100,
+        "shared_transcript_occurrences": 165
+      },
+      {
+        "id32": 62,
+        "id64": 64,
+        "shared_transcript_occurrences": 151
+      },
+      {
+        "id32": 63,
+        "id64": 39,
+        "shared_transcript_occurrences": 77
+      },
+      {
+        "id32": 64,
+        "id64": 24,
+        "shared_transcript_occurrences": 400
+      },
+      {
+        "id32": 65,
+        "id64": 103,
+        "shared_transcript_occurrences": 86
+      },
+      {
+        "id32": 66,
+        "id64": 126,
+        "shared_transcript_occurrences": 81
+      },
+      {
+        "id32": 67,
+        "id64": 123,
+        "shared_transcript_occurrences": 81
+      },
+      {
+        "id32": 68,
+        "id64": 71,
+        "shared_transcript_occurrences": 279
+      },
+      {
+        "id32": 69,
+        "id64": 129,
+        "shared_transcript_occurrences": 155
+      },
+      {
+        "id32": 70,
+        "id64": 72,
+        "shared_transcript_occurrences": 74
+      },
+      {
+        "id32": 71,
+        "id64": 43,
+        "shared_transcript_occurrences": 389
+      },
+      {
+        "id32": 72,
+        "id64": 57,
+        "shared_transcript_occurrences": 136
+      },
+      {
+        "id32": 73,
+        "id64": 19,
+        "shared_transcript_occurrences": 502
+      },
+      {
+        "id32": 74,
+        "id64": 42,
+        "shared_transcript_occurrences": 131
+      },
+      {
+        "id32": 75,
+        "id64": 78,
+        "shared_transcript_occurrences": 169
+      },
+      {
+        "id32": 76,
+        "id64": 88,
+        "shared_transcript_occurrences": 69
+      },
+      {
+        "id32": 77,
+        "id64": 21,
+        "shared_transcript_occurrences": 164
+      },
+      {
+        "id32": 78,
+        "id64": 95,
+        "shared_transcript_occurrences": 115
+      },
+      {
+        "id32": 79,
+        "id64": 96,
+        "shared_transcript_occurrences": 73
+      },
+      {
+        "id32": 80,
+        "id64": 32,
+        "shared_transcript_occurrences": 149
+      },
+      {
+        "id32": 81,
+        "id64": 156,
+        "shared_transcript_occurrences": 68
+      },
+      {
+        "id32": 82,
+        "id64": 80,
+        "shared_transcript_occurrences": 69
+      },
+      {
+        "id32": 83,
+        "id64": 50,
+        "shared_transcript_occurrences": 368
+      },
+      {
+        "id32": 84,
+        "id64": 141,
+        "shared_transcript_occurrences": 70
+      },
+      {
+        "id32": 85,
+        "id64": 18,
+        "shared_transcript_occurrences": 70
+      },
+      {
+        "id32": 86,
+        "id64": 12,
+        "shared_transcript_occurrences": 814
+      },
+      {
+        "id32": 87,
+        "id64": 58,
+        "shared_transcript_occurrences": 351
+      },
+      {
+        "id32": 88,
+        "id64": 69,
+        "shared_transcript_occurrences": 96
+      },
+      {
+        "id32": 89,
+        "id64": 139,
+        "shared_transcript_occurrences": 97
+      },
+      {
+        "id32": 90,
+        "id64": 1,
+        "shared_transcript_occurrences": 104
+      },
+      {
+        "id32": 91,
+        "id64": 91,
+        "shared_transcript_occurrences": 364
+      },
+      {
+        "id32": 92,
+        "id64": 113,
+        "shared_transcript_occurrences": 64
+      },
+      {
+        "id32": 93,
+        "id64": 0,
+        "shared_transcript_occurrences": 164
+      },
+      {
+        "id32": 94,
+        "id64": 145,
+        "shared_transcript_occurrences": 76
+      },
+      {
+        "id32": 95,
+        "id64": 135,
+        "shared_transcript_occurrences": 58
+      },
+      {
+        "id32": 96,
+        "id64": 63,
+        "shared_transcript_occurrences": 128
+      },
+      {
+        "id32": 97,
+        "id64": 85,
+        "shared_transcript_occurrences": 49
+      },
+      {
+        "id32": 98,
+        "id64": 47,
+        "shared_transcript_occurrences": 70
+      },
+      {
+        "id32": 99,
+        "id64": 151,
+        "shared_transcript_occurrences": 66
+      },
+      {
+        "id32": 100,
+        "id64": 51,
+        "shared_transcript_occurrences": 209
+      },
+      {
+        "id32": 101,
+        "id64": 90,
+        "shared_transcript_occurrences": 65
+      },
+      {
+        "id32": 102,
+        "id64": 29,
+        "shared_transcript_occurrences": 160
+      },
+      {
+        "id32": 103,
+        "id64": 136,
+        "shared_transcript_occurrences": 156
+      },
+      {
+        "id32": 104,
+        "id64": 94,
+        "shared_transcript_occurrences": 161
+      },
+      {
+        "id32": 105,
+        "id64": 59,
+        "shared_transcript_occurrences": 147
+      },
+      {
+        "id32": 106,
+        "id64": 158,
+        "shared_transcript_occurrences": 64
+      },
+      {
+        "id32": 107,
+        "id64": 73,
+        "shared_transcript_occurrences": 70
+      },
+      {
+        "id32": 108,
+        "id64": 67,
+        "shared_transcript_occurrences": 163
+      },
+      {
+        "id32": 109,
+        "id64": 4,
+        "shared_transcript_occurrences": 147
+      },
+      {
+        "id32": 110,
+        "id64": 55,
+        "shared_transcript_occurrences": 200
+      },
+      {
+        "id32": 111,
+        "id64": 133,
+        "shared_transcript_occurrences": 61
+      },
+      {
+        "id32": 112,
+        "id64": 84,
+        "shared_transcript_occurrences": 30
+      },
+      {
+        "id32": 113,
+        "id64": 130,
+        "shared_transcript_occurrences": 147
+      },
+      {
+        "id32": 114,
+        "id64": 23,
+        "shared_transcript_occurrences": 174
+      },
+      {
+        "id32": 115,
+        "id64": 16,
+        "shared_transcript_occurrences": 235
+      },
+      {
+        "id32": 116,
+        "id64": 61,
+        "shared_transcript_occurrences": 63
+      },
+      {
+        "id32": 117,
+        "id64": 111,
+        "shared_transcript_occurrences": 74
+      },
+      {
+        "id32": 118,
+        "id64": 22,
+        "shared_transcript_occurrences": 62
+      },
+      {
+        "id32": 119,
+        "id64": 147,
+        "shared_transcript_occurrences": 87
+      },
+      {
+        "id32": 120,
+        "id64": 121,
+        "shared_transcript_occurrences": 82
+      },
+      {
+        "id32": 121,
+        "id64": 120,
+        "shared_transcript_occurrences": 97
+      },
+      {
+        "id32": 122,
+        "id64": 152,
+        "shared_transcript_occurrences": 61
+      },
+      {
+        "id32": 123,
+        "id64": 125,
+        "shared_transcript_occurrences": 75
+      },
+      {
+        "id32": 124,
+        "id64": 2,
+        "shared_transcript_occurrences": 64
+      },
+      {
+        "id32": 125,
+        "id64": 31,
+        "shared_transcript_occurrences": 87
+      },
+      {
+        "id32": 126,
+        "id64": 15,
+        "shared_transcript_occurrences": 71
+      },
+      {
+        "id32": 127,
+        "id64": 66,
+        "shared_transcript_occurrences": 146
+      },
+      {
+        "id32": 128,
+        "id64": 9,
+        "shared_transcript_occurrences": 71
+      },
+      {
+        "id32": 129,
+        "id64": 155,
+        "shared_transcript_occurrences": 74
+      },
+      {
+        "id32": 130,
+        "id64": 153,
+        "shared_transcript_occurrences": 78
+      },
+      {
+        "id32": 131,
+        "id64": 134,
+        "shared_transcript_occurrences": 81
+      },
+      {
+        "id32": 132,
+        "id64": 140,
+        "shared_transcript_occurrences": 88
+      },
+      {
+        "id32": 133,
+        "id64": 160,
+        "shared_transcript_occurrences": 78
+      },
+      {
+        "id32": 134,
+        "id64": 93,
+        "shared_transcript_occurrences": 93
+      },
+      {
+        "id32": 135,
+        "id64": 11,
+        "shared_transcript_occurrences": 133
+      },
+      {
+        "id32": 136,
+        "id64": 41,
+        "shared_transcript_occurrences": 87
+      },
+      {
+        "id32": 137,
+        "id64": 124,
+        "shared_transcript_occurrences": 152
+      },
+      {
+        "id32": 138,
+        "id64": 40,
+        "shared_transcript_occurrences": 80
+      },
+      {
+        "id32": 139,
+        "id64": 112,
+        "shared_transcript_occurrences": 83
+      },
+      {
+        "id32": 140,
+        "id64": 54,
+        "shared_transcript_occurrences": 83
+      },
+      {
+        "id32": 141,
+        "id64": 131,
+        "shared_transcript_occurrences": 79
+      },
+      {
+        "id32": 142,
+        "id64": 77,
+        "shared_transcript_occurrences": 70
+      },
+      {
+        "id32": 143,
+        "id64": 86,
+        "shared_transcript_occurrences": 118
+      },
+      {
+        "id32": 144,
+        "id64": 127,
+        "shared_transcript_occurrences": 71
+      },
+      {
+        "id32": 145,
+        "id64": 35,
+        "shared_transcript_occurrences": 155
+      },
+      {
+        "id32": 146,
+        "id64": 82,
+        "shared_transcript_occurrences": 164
+      },
+      {
+        "id32": 147,
+        "id64": 142,
+        "shared_transcript_occurrences": 69
+      },
+      {
+        "id32": 148,
+        "id64": 8,
+        "shared_transcript_occurrences": 88
+      },
+      {
+        "id32": 149,
+        "id64": 87,
+        "shared_transcript_occurrences": 88
+      },
+      {
+        "id32": 150,
+        "id64": 7,
+        "shared_transcript_occurrences": 53
+      },
+      {
+        "id32": 151,
+        "id64": 117,
+        "shared_transcript_occurrences": 74
+      },
+      {
+        "id32": 152,
+        "id64": 20,
+        "shared_transcript_occurrences": 77
+      },
+      {
+        "id32": 153,
+        "id64": 122,
+        "shared_transcript_occurrences": 102
+      },
+      {
+        "id32": 154,
+        "id64": 150,
+        "shared_transcript_occurrences": 62
+      },
+      {
+        "id32": 155,
+        "id64": 114,
+        "shared_transcript_occurrences": 65
+      },
+      {
+        "id32": 156,
+        "id64": 105,
+        "shared_transcript_occurrences": 69
+      },
+      {
+        "id32": 157,
+        "id64": 74,
+        "shared_transcript_occurrences": 68
+      },
+      {
+        "id32": 158,
+        "id64": 149,
+        "shared_transcript_occurrences": 56
+      },
+      {
+        "id32": 159,
+        "id64": 89,
+        "shared_transcript_occurrences": 50
+      },
+      {
+        "id32": 160,
+        "id64": 99,
+        "shared_transcript_occurrences": 45
+      }
+    ]
+  }
+}

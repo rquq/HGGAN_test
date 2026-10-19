@@ -1,0 +1,230 @@
+{
+  "date": "2026-10-20",
+  "moves": [
+    {
+      "source": "HGGAN_test/agent/reports/random_crop_vs_higanplus_2026_10_15/drawio_5_panels_expanded/random_crop_training_architecture.drawio",
+      "destination": "HGGAN_test/agent/reports/random_crop_vs_higanplus_2026_10_15/drawio_5_panels_expanded/alpha_training_architecture.drawio",
+      "sha256": "47430b8a800a1ca65e0b9cfe0bebd869d1aa0140affb842cdfcd1ebe95fb4562"
+    },
+    {
+      "source": "HGGAN_test/agent/reports/random_crop_vs_higanplus_2026_10_15/drawio/random_crop_training_architecture.drawio",
+      "destination": "HGGAN_test/agent/reports/random_crop_vs_higanplus_2026_10_15/drawio/alpha_training_architecture.drawio",
+      "sha256": "a13e87efedf150edd437f47b00b626dd45f0f6ee455c5fa3d5a21a2371ce6353"
+    },
+    {
+      "source": "HGGAN_test/agent/reports/random_crop_vs_higanplus_2026_10_15/drawio_5_panels/random_crop_training_architecture.drawio",
+      "destination": "HGGAN_test/agent/reports/random_crop_vs_higanplus_2026_10_15/drawio_5_panels/alpha_training_architecture.drawio",
+      "sha256": "58126a903a2f26b8d2954a5a83455d719572778ce22fa77562febbe23a904273"
+    },
+    {
+      "source": "HGGAN_test/random_crop_recog/test_artifacts/checkpoint_analysis_14_10/best_fid_2.4463_random_crop_probe.json",
+      "destination": "HGGAN_test/random_crop_recog/test_artifacts/checkpoint_analysis_14_10/best_fid_2.4463_alpha_probe.json",
+      "sha256": "e7a5077e42d9e431a0da8120c33d3fe9a6845b1a8d6ccb5a7d986abef338cbb8"
+    },
+    {
+      "source": "HGGAN_test/agent/reports/random_crop_vs_higanplus_2026_10_15/random_crop_vs_higanplus_vi.pdf",
+      "destination": "HGGAN_test/agent/reports/random_crop_vs_higanplus_2026_10_15/alpha_vs_higanplus_vi.pdf",
+      "sha256": "f9f70f239ced11b68d04cb0aa573b137ff0eb803de55d7a76a440b915ba90e82"
+    },
+    {
+      "source": "HGGAN_test/random_crop_recog/test_artifacts/checkpoint_analysis_14_10/best_fid_2.5052_random_crop.csv",
+      "destination": "HGGAN_test/random_crop_recog/test_artifacts/checkpoint_analysis_14_10/best_fid_2.5052_alpha.csv",
+      "sha256": "8782571d2bf4c0947352880ec45b40d816df1a786db3bc1f9777e9edb404fc5f"
+    },
+    {
+      "source": "HGGAN_test/agent/reports/random_crop_vs_higanplus_2026_10_15/random_crop_vs_higanplus_vi.md",
+      "destination": "HGGAN_test/agent/reports/random_crop_vs_higanplus_2026_10_15/alpha_vs_higanplus_vi.md",
+      "sha256": "bcde0c4d19ef2625eecd184f7a441c6fca42b71d356c8c29b6dca19d76b2bc7f"
+    },
+    {
+      "source": "HGGAN_test/random_crop_recog/test_artifacts/checkpoint_analysis_14_10/best_fid_2.4463_random_crop.csv",
+      "destination": "HGGAN_test/random_crop_recog/test_artifacts/checkpoint_analysis_14_10/best_fid_2.4463_alpha.csv",
+      "sha256": "efe5a814d117318ee02252643175632732c61d14f9cd11addcb4ac64b6c6f1c4"
+    },
+    {
+      "source": "HGGAN_test/random_crop_recog/test_artifacts/checkpoint_analysis_14_10/best_fid_2.5052_random_crop_samples.png",
+      "destination": "HGGAN_test/random_crop_recog/test_artifacts/checkpoint_analysis_14_10/best_fid_2.5052_alpha_samples.png",
+      "sha256": "e23a45c1464be682b79c79fef2b43a7339c285dc23964de0454cc6cc45a80094"
+    },
+    {
+      "source": "HGGAN_test/random_crop_recog/test_artifacts/checkpoint_analysis_14_10/best_fid_2.4463_random_crop_samples.png",
+      "destination": "HGGAN_test/random_crop_recog/test_artifacts/checkpoint_analysis_14_10/best_fid_2.4463_alpha_samples.png",
+      "sha256": "449f51c975a9d03a9cc65798e2270e231d09783537b96f714a7da22bc746fef1"
+    },
+    {
+      "source": "HGGAN_test/random_crop_recog/test_artifacts/checkpoint_analysis_7_10/last_fid_3.3180_random_crop.csv",
+      "destination": "HGGAN_test/random_crop_recog/test_artifacts/checkpoint_analysis_7_10/last_fid_3.3180_alpha.csv",
+      "sha256": "fe3aedf9bc8b3c4c0b47c951faddddf68a0393f91af7802d334737d886155063"
+    },
+    {
+      "source": "HGGAN_test/random_crop_recog/test_artifacts/checkpoint_analysis_14_10/last_fid_2.8220_random_crop_probe.json",
+      "destination": "HGGAN_test/random_crop_recog/test_artifacts/checkpoint_analysis_14_10/last_fid_2.8220_alpha_probe.json",
+      "sha256": "c22886e2e7336b786a7cabd956a313f5683e3c7fbe88d0b553d170db5591d017"
+    },
+    {
+      "source": "HGGAN_test/random_crop_recog/test_artifacts/checkpoint_analysis_7_10/best_fid_3.2614_random_crop.csv",
+      "destination": "HGGAN_test/random_crop_recog/test_artifacts/checkpoint_analysis_7_10/best_fid_3.2614_alpha.csv",
+      "sha256": "fb2f087b64a581a1e22685fd70ba3fffbb2ce693d4cb258f2e7c03844cb84724"
+    },
+    {
+      "source": "HGGAN_test/random_crop_recog/test_artifacts/checkpoint_analysis_14_10/best_fid_2.5052_random_crop_probe.json",
+      "destination": "HGGAN_test/random_crop_recog/test_artifacts/checkpoint_analysis_14_10/best_fid_2.5052_alpha_probe.json",
+      "sha256": "792bab052de14b5c73d88ce843e76d203b96b980841e2ba62f3592649c7a1832"
+    },
+    {
+      "source": "HGGAN_test/random_crop_recog/test_artifacts/checkpoint_analysis_14_10/last_fid_2.8220_random_crop.csv",
+      "destination": "HGGAN_test/random_crop_recog/test_artifacts/checkpoint_analysis_14_10/last_fid_2.8220_alpha.csv",
+      "sha256": "c7b2ddc877eecccdfa2c51b5d29cf30b893498776c48bcf610c3f5e74ab2dd1e"
+    },
+    {
+      "source": "HGGAN_test/random_crop_recog/test_artifacts/checkpoint_analysis_14_10/last_fid_2.8220_random_crop_samples.png",
+      "destination": "HGGAN_test/random_crop_recog/test_artifacts/checkpoint_analysis_14_10/last_fid_2.8220_alpha_samples.png",
+      "sha256": "c40be8446e4a8807bd8e69ab8ef7fc9a00890e0e8e879cdac356d34a657911ea"
+    },
+    {
+      "source": "HGGAN_test/agent/reports/random_crop_vs_higanplus_2026_10_15/random_crop_vs_higanplus_vi.html",
+      "destination": "HGGAN_test/agent/reports/random_crop_vs_higanplus_2026_10_15/alpha_vs_higanplus_vi.html",
+      "sha256": "5f427dd28c162b4fa533b59c1740cdc88cd48573f92338ce04733386d0f46b7d"
+    },
+    {
+      "source": "chkpoints/30_9_2026/analysis/target_padding_random_crop.png",
+      "destination": "chkpoints/30_9_2026/analysis/target_padding_alpha.png",
+      "sha256": "4c4c738b942b4e4d31f3734d5e14b3dc84517d6023c6befcd8ff2cc5fe774786"
+    },
+    {
+      "source": "HGGAN_test/agent/shared/REPORT_DEV_MAIN_RANDOM_CROP_VI.md",
+      "destination": "HGGAN_test/agent/shared/REPORT_DEV_MAIN_ALPHA_VI.md",
+      "sha256": "0d74ae86961d6c7711e8f3e079a25253f5d995b87d36ac559aebe1fb75340400"
+    },
+    {
+      "source": "chkpoints/30_9_2026/analysis/target_symbols_random_crop.png",
+      "destination": "chkpoints/30_9_2026/analysis/target_symbols_alpha.png",
+      "sha256": "fea3261381415824878a2fcf15c6554819b550dd19de3c45f20de65345f47419"
+    },
+    {
+      "source": "HGGAN_test/agent/branches/random_crop_recog",
+      "destination": "HGGAN_test/agent/branches/alpha",
+      "sha256": null
+    },
+    {
+      "source": "chkpoints/30_9_2026/analysis/backgrounds_random_crop.png",
+      "destination": "chkpoints/30_9_2026/analysis/backgrounds_alpha.png",
+      "sha256": "d776d0a9ef8dfb9d8b0bdbf2f0b4a2cfc369194c3904ee56f26983d336f72579"
+    },
+    {
+      "source": "HGGAN_test/agent/shared/random_crop_design_vs_higanplus_vi.html",
+      "destination": "HGGAN_test/agent/shared/alpha_design_vs_higanplus_vi.html",
+      "sha256": "e399e8d60fbc0e846dd1ad399ae85daad85ce84f1dd81366192d9051178a739b"
+    },
+    {
+      "source": "HGGAN_test/agent/reports/random_crop_vs_higanplus_2026_10_15",
+      "destination": "HGGAN_test/agent/reports/alpha_vs_higanplus_2026_10_15",
+      "sha256": null
+    },
+    {
+      "source": "chkpoints/30_9_2026/analysis/generator_routes_random_crop.png",
+      "destination": "chkpoints/30_9_2026/analysis/generator_routes_alpha.png",
+      "sha256": "694ba186b09bcdb7e8548819ac8f3d0487f04dc5a76d43e95f4ca3ff556c865a"
+    },
+    {
+      "source": "chkpoints/30_9_2026/analysis/raw_vs_ema_random_crop.png",
+      "destination": "chkpoints/30_9_2026/analysis/raw_vs_ema_alpha.png",
+      "sha256": "1a7b2109969cf5891275d3fc5f910a2615596362fc1703612039e5d0d907aad5"
+    },
+    {
+      "source": "HGGAN_test/agent/shared/DEV_VS_RANDOM_CROP_REPORT.md",
+      "destination": "HGGAN_test/agent/shared/DEV_VS_ALPHA_REPORT.md",
+      "sha256": "1677131d73b2181073e102c738b3b1fe86355552bb2086c91e8dc9e688658b82"
+    },
+    {
+      "source": "chkpoints/30_9_2026/analysis/random_crop_metrics.csv",
+      "destination": "chkpoints/30_9_2026/analysis/alpha_metrics.csv",
+      "sha256": "19afb732ce4d6053435af2721f74d5427dfb6bd4fb72975f6d0290e68d0db942"
+    },
+    {
+      "source": "reports/checkpoints_19_10_2026/random_crop_ocr_320",
+      "destination": "reports/checkpoints_19_10_2026/alpha_ocr_320",
+      "sha256": null
+    },
+    {
+      "source": "reports/checkpoints_19_10_2026/smoke_random_crop_recog_32",
+      "destination": "reports/checkpoints_19_10_2026/smoke_alpha_32",
+      "sha256": null
+    },
+    {
+      "source": "reports/checkpoints_19_10_2026/last_fid_2.8067_random_crop.csv",
+      "destination": "reports/checkpoints_19_10_2026/last_fid_2.8067_alpha.csv",
+      "sha256": "e266e6e89b45ede39aab0be021b5858135243b5c92865eab7b727f578374e0a5"
+    },
+    {
+      "source": "chkpoints/7_10_2026/best_fid_3.2614_random_crop.pth",
+      "destination": "chkpoints/7_10_2026/best_fid_3.2614_alpha.pth",
+      "sha256": "86e78a0be30d531e76d66cce613b86aa76410522bcb07846518fbefbbaa5d47c"
+    },
+    {
+      "source": "chkpoints/19_10_2026/best_fid_2.7509_random_crop.pth",
+      "destination": "chkpoints/19_10_2026/best_fid_2.7509_alpha.pth",
+      "sha256": "d068f0fc3e0144b9ab61a682257df5b477dc7610bc6efb9d0094363ce9af0587"
+    },
+    {
+      "source": "chkpoints/14_10_2026/best_fid_2.5052_random_crop.pth",
+      "destination": "chkpoints/14_10_2026/best_fid_2.5052_alpha.pth",
+      "sha256": "6d22a7b3b68434f1fd56c82e2ab78b6eaab2ed00b0bb29559388fa10136af9bd"
+    },
+    {
+      "source": "chkpoints/7_10_2026/last_fid_3.3180_random_crop.pth",
+      "destination": "chkpoints/7_10_2026/last_fid_3.3180_alpha.pth",
+      "sha256": "15b8872ee8cab7665d784ed1ec25dc64eec682e6d322d88f6a056b331bd66e76"
+    },
+    {
+      "source": "chkpoints/14_10_2026/best_fid_2.4463_random_crop.pth",
+      "destination": "chkpoints/14_10_2026/best_fid_2.4463_alpha.pth",
+      "sha256": "a37fa7c6ce8ee1245194020b14e4e3484b14127f85bfff8cb943a21a5e2f5ea7"
+    },
+    {
+      "source": "reports/checkpoints_19_10_2026/smoke_random_crop_recog_64",
+      "destination": "reports/checkpoints_19_10_2026/smoke_alpha_64",
+      "sha256": null
+    },
+    {
+      "source": "reports/checkpoints_19_10_2026/random_crop_ocr_final",
+      "destination": "reports/checkpoints_19_10_2026/alpha_ocr_final",
+      "sha256": null
+    },
+    {
+      "source": "chkpoints/23_9_2026/last_fid_3.4563_random_crop.pth",
+      "destination": "chkpoints/23_9_2026/last_fid_3.4563_alpha.pth",
+      "sha256": "6c4cbf5c75ecbf81b71a8c9b0f20beda62ec844aec7c6c3f1ddccd7c0ca26856"
+    },
+    {
+      "source": "reports/checkpoints_19_10_2026/best_fid_2.7509_random_crop.csv",
+      "destination": "reports/checkpoints_19_10_2026/best_fid_2.7509_alpha.csv",
+      "sha256": "0115d95fdc4e28c910f9826d3568a2ee5826da8ff66571bee745cf06055bfbb0"
+    },
+    {
+      "source": "chkpoints/30_9_2026/best_fid_2.6892_random_crop_branch.pth",
+      "destination": "chkpoints/30_9_2026/best_fid_2.6892_alpha.pth",
+      "sha256": "63b089ae01e96d692b06f8a9ae77acc2e489510dcd0f78be6b0fe97ab12f8ce7"
+    },
+    {
+      "source": "chkpoints/19_10_2026/last_fid_2.8067_random_crop.pth",
+      "destination": "chkpoints/19_10_2026/last_fid_2.8067_alpha.pth",
+      "sha256": "90d46db33a872bf646a092cb057df76ce85a075a16aed58cdce5dc2d57b19d6e"
+    },
+    {
+      "source": "chkpoints/14_10_2026/last_fid_2.8220_random_crop.pth",
+      "destination": "chkpoints/14_10_2026/last_fid_2.8220_alpha.pth",
+      "sha256": "2e7475f1d3ed8a7d840cf844f0c3ad90853973dce23edeac0162a66e2e1a8bf6"
+    },
+    {
+      "source": "reports/random_crop_vs_higanplus_2026_10_15",
+      "destination": "reports/alpha_vs_higanplus_2026_10_15",
+      "sha256": null
+    },
+    {
+      "source": "HGGAN_test/random_crop_recog",
+      "destination": "HGGAN_test/alpha",
+      "sha256": null
+    }
+  ]
+}

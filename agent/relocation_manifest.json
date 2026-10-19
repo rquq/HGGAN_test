@@ -1,0 +1,1717 @@
+{
+  "date": "2026-10-20",
+  "runtime_files_verified": 239,
+  "records": [
+    {
+      "kind": "moved",
+      "source": "HGGAN_test/DEV_VS_RANDOM_CROP_REPORT.md",
+      "destination": "shared/DEV_VS_RANDOM_CROP_REPORT.md",
+      "sha256": "80148e39cd80f8766830468747463f89bc8e497bc6340c8ec8741389877cd573"
+    },
+    {
+      "kind": "moved",
+      "source": "HGGAN_test/REPORT_DEV_MAIN_RANDOM_CROP_VI.md",
+      "destination": "shared/REPORT_DEV_MAIN_RANDOM_CROP_VI.md",
+      "sha256": "236a577da28e7ae677c01d56b4f939e50fd2966225c3b5e723d616ba0669779b"
+    },
+    {
+      "kind": "moved",
+      "source": "HGGAN_test/dev/BAO_CAO_CAI_TIEN_DEV_01-10_09_2026.md",
+      "destination": "branches/dev/BAO_CAO_CAI_TIEN_DEV_01-10_09_2026.md",
+      "sha256": "a31a03e4459f5b8509200e9587d6690dc711f89e725020ddac7c8d510b79bbe2"
+    },
+    {
+      "kind": "moved",
+      "source": "HGGAN_test/dev/DEV_WEEKLY_COMMIT_REPORT_2026-09-18_to_25.md",
+      "destination": "branches/dev/DEV_WEEKLY_COMMIT_REPORT_2026-09-18_to_25.md",
+      "sha256": "49f0873df36ce0ed6d2a9340ceb6e1042549774712c47e7b5517ee60a609c0c2"
+    },
+    {
+      "kind": "moved",
+      "source": "HGGAN_test/dev/DEV_WEEKLY_SCORE_IMPROVEMENT_2026-09-24_to_30.md",
+      "destination": "branches/dev/DEV_WEEKLY_SCORE_IMPROVEMENT_2026-09-24_to_30.md",
+      "sha256": "c521a0199ea63d06f28e2a8286d4b22d04542abd64e5a9f255a5821f9e00c71b"
+    },
+    {
+      "kind": "moved",
+      "source": "HGGAN_test/dev/docs/diagrams/__pycache__/build_dev_loss_map.cpython-310.pyc",
+      "destination": "branches/dev/docs/diagrams/__pycache__/build_dev_loss_map.cpython-310.pyc",
+      "sha256": "9edbe8a23a9e8182fda5230d1abf3334441c26e72667b6562421eb467a7900b6"
+    },
+    {
+      "kind": "moved",
+      "source": "HGGAN_test/dev/docs/diagrams/__pycache__/build_dev_overview.cpython-310.pyc",
+      "destination": "branches/dev/docs/diagrams/__pycache__/build_dev_overview.cpython-310.pyc",
+      "sha256": "2c32e56a769987f5264ce8e72e5ebfdaf557b17b91870846cb5db6269f8ea757"
+    },
+    {
+      "kind": "moved",
+      "source": "HGGAN_test/dev/docs/diagrams/__pycache__/build_dev_three_flows.cpython-310.pyc",
+      "destination": "branches/dev/docs/diagrams/__pycache__/build_dev_three_flows.cpython-310.pyc",
+      "sha256": "413641fdc04186c1c366e3d13551755656d64cf920238a3978a49a5730d33000"
+    },
+    {
+      "kind": "moved",
+      "source": "HGGAN_test/dev/docs/diagrams/__pycache__/generate_dev_diagrams.cpython-310.pyc",
+      "destination": "branches/dev/docs/diagrams/__pycache__/generate_dev_diagrams.cpython-310.pyc",
+      "sha256": "c947095ef310a03ac44a9050ecea00ae15bd1c7a2d00fa911588b325358e0b57"
+    },
+    {
+      "kind": "moved",
+      "source": "HGGAN_test/dev/docs/diagrams/build_dev_loss_map.py",
+      "destination": "branches/dev/docs/diagrams/build_dev_loss_map.py",
+      "sha256": "c3431663327f5beabe16d01c7007922ca8e64a32602645020da101cec31ff631"
+    },
+    {
+      "kind": "moved",
+      "source": "HGGAN_test/dev/docs/diagrams/build_dev_overview.py",
+      "destination": "branches/dev/docs/diagrams/build_dev_overview.py",
+      "sha256": "8257f002a3bdee7f46720763f0dec89eaf551ea85dc060f1457e4c0137bdaa74"
+    },
+    {
+      "kind": "moved",
+      "source": "HGGAN_test/dev/docs/diagrams/build_dev_three_flows.py",
+      "destination": "branches/dev/docs/diagrams/build_dev_three_flows.py",
+      "sha256": "1a9f6195d423c1868dd520d28ff2e35d2c4b00bf86606452e9ade2434dcd2289"
+    },
+    {
+      "kind": "moved",
+      "source": "HGGAN_test/dev/docs/diagrams/dev_fusion.png",
+      "destination": "branches/dev/docs/diagrams/dev_fusion.png",
+      "sha256": "43a108a18990bc34192a304fdb3ea54647f85308a90844cd1d03670e3c59c537"
+    },
+    {
+      "kind": "moved",
+      "source": "HGGAN_test/dev/docs/diagrams/dev_fusion.svg",
+      "destination": "branches/dev/docs/diagrams/dev_fusion.svg",
+      "sha256": "2610580c28c0e0b1b9d5e615a77c9e69b9b33a8e2843f4953095671354be5f9c"
+    },
+    {
+      "kind": "moved",
+      "source": "HGGAN_test/dev/docs/diagrams/dev_model_loss_map.html",
+      "destination": "branches/dev/docs/diagrams/dev_model_loss_map.html",
+      "sha256": "84ecae34c577c9dec842dacd60b8b48693a19d4c6dd23a9ed60777b3c868cce5"
+    },
+    {
+      "kind": "moved",
+      "source": "HGGAN_test/dev/docs/diagrams/dev_model_loss_map.png",
+      "destination": "branches/dev/docs/diagrams/dev_model_loss_map.png",
+      "sha256": "0e3c45a2db0404097198e5773a7216e17b9292859e072bb76c4854147b19de0f"
+    },
+    {
+      "kind": "moved",
+      "source": "HGGAN_test/dev/docs/diagrams/dev_model_loss_map.svg",
+      "destination": "branches/dev/docs/diagrams/dev_model_loss_map.svg",
+      "sha256": "17f0bdd8334ece0514b20fa1647c0dc44bdb09b238acff830608c8ba465a8382"
+    },
+    {
+      "kind": "moved",
+      "source": "HGGAN_test/dev/docs/diagrams/dev_model_overview.html",
+      "destination": "branches/dev/docs/diagrams/dev_model_overview.html",
+      "sha256": "8b34960d6472192fa3e6fb964a728c2f39217b865e1e56e38d0eda4918e8f02d"
+    },
+    {
+      "kind": "moved",
+      "source": "HGGAN_test/dev/docs/diagrams/dev_model_overview.png",
+      "destination": "branches/dev/docs/diagrams/dev_model_overview.png",
+      "sha256": "24db194dcccadc63e9dd72e9a3b9dfe228acede0f3124f9dcaa01b5247798f4b"
+    },
+    {
+      "kind": "moved",
+      "source": "HGGAN_test/dev/docs/diagrams/dev_model_overview.svg",
+      "destination": "branches/dev/docs/diagrams/dev_model_overview.svg",
+      "sha256": "0052b9256171240480311a30fe847cde9833c7ebf8d9ef9b1747ca2ad3b8a62b"
+    },
+    {
+      "kind": "moved",
+      "source": "HGGAN_test/dev/docs/diagrams/dev_strokepatchd.png",
+      "destination": "branches/dev/docs/diagrams/dev_strokepatchd.png",
+      "sha256": "416b1b8dadc72dc594ca17d5c8503b05cb509c03bfb9c8d144481a3d14451bf6"
+    },
+    {
+      "kind": "moved",
+      "source": "HGGAN_test/dev/docs/diagrams/dev_strokepatchd.svg",
+      "destination": "branches/dev/docs/diagrams/dev_strokepatchd.svg",
+      "sha256": "15a0e2ac339d2f7279e37e8af2efbd3bff946da08767f8dfed208963589dcd61"
+    },
+    {
+      "kind": "moved",
+      "source": "HGGAN_test/dev/docs/diagrams/dev_three_training_flows.html",
+      "destination": "branches/dev/docs/diagrams/dev_three_training_flows.html",
+      "sha256": "b498f106afda705a8c95565d1d8d343c1b70051b018d1f1486b33e431087c38d"
+    },
+    {
+      "kind": "moved",
+      "source": "HGGAN_test/dev/docs/diagrams/dev_three_training_flows.png",
+      "destination": "branches/dev/docs/diagrams/dev_three_training_flows.png",
+      "sha256": "6ab62e6b6b3d986a759ade9bdbad0f464cd6c38c6e1f6f86e892f78cd2ca2dcd"
+    },
+    {
+      "kind": "moved",
+      "source": "HGGAN_test/dev/docs/diagrams/dev_three_training_flows.svg",
+      "destination": "branches/dev/docs/diagrams/dev_three_training_flows.svg",
+      "sha256": "42c4559a07947efc17b690369d96c95383d8ef5ce33f9eb0515e6dc84212e7ca"
+    },
+    {
+      "kind": "moved",
+      "source": "HGGAN_test/dev/docs/diagrams/generate_dev_diagrams.py",
+      "destination": "branches/dev/docs/diagrams/generate_dev_diagrams.py",
+      "sha256": "faf4fd65c8e406042365188b9444cafc1729362c5642084834da6d20a8621977"
+    },
+    {
+      "kind": "moved",
+      "source": "HGGAN_test/dev/docs/diagrams/hggan_dev_four_stage_architecture.png",
+      "destination": "branches/dev/docs/diagrams/hggan_dev_four_stage_architecture.png",
+      "sha256": "cca8ac82d7ac8858582111b02f188f0e0f5d08016da207e0bdb2e89ccdec5af7"
+    },
+    {
+      "kind": "moved",
+      "source": "HGGAN_test/dev/docs/diagrams/higanplus_baseline_reference.png",
+      "destination": "branches/dev/docs/diagrams/higanplus_baseline_reference.png",
+      "sha256": "42c6bd01d8c1f64897802daae561856a46db9eb3c7b271ebda824027a4c401df"
+    },
+    {
+      "kind": "moved",
+      "source": "HGGAN_test/dev/docs/diagrams/latex/README.md",
+      "destination": "branches/dev/docs/diagrams/latex/README.md",
+      "sha256": "6206f689912ea0c05b031efa1d8f5f7bc461c54ac594d8b45b04ad31126aa1ea"
+    },
+    {
+      "kind": "moved",
+      "source": "HGGAN_test/dev/docs/diagrams/latex/dev_diagram_style.tex",
+      "destination": "branches/dev/docs/diagrams/latex/dev_diagram_style.tex",
+      "sha256": "1305e4254aa3d5e388392b3659011f08cf9bb1bee666243324915ce8b2e87fc2"
+    },
+    {
+      "kind": "moved",
+      "source": "HGGAN_test/dev/docs/diagrams/latex/dev_full_architecture.pdf",
+      "destination": "branches/dev/docs/diagrams/latex/dev_full_architecture.pdf",
+      "sha256": "2aaf060ecff9889dd933826069a807cb54487830a4c1ee0029bbf5b761727ab3"
+    },
+    {
+      "kind": "moved",
+      "source": "HGGAN_test/dev/docs/diagrams/latex/dev_full_architecture.tex",
+      "destination": "branches/dev/docs/diagrams/latex/dev_full_architecture.tex",
+      "sha256": "059fe36ed61dea6796dcdfcc10e79f3a374de70dfdbba2a6779660ba1d7b8980"
+    },
+    {
+      "kind": "moved",
+      "source": "HGGAN_test/dev/docs/diagrams/latex/dev_full_architecture_latex.png",
+      "destination": "branches/dev/docs/diagrams/latex/dev_full_architecture_latex.png",
+      "sha256": "2c8eb63fbcac52935f70ae148c35c6769bebb7d1c1581d44bb8d631545b289d7"
+    },
+    {
+      "kind": "moved",
+      "source": "HGGAN_test/dev/docs/diagrams/latex/dev_fusion.pdf",
+      "destination": "branches/dev/docs/diagrams/latex/dev_fusion.pdf",
+      "sha256": "a3178c7b3809cf05bd120fb7a1df5da6c697abc84b85e28ce191a2246676c284"
+    },
+    {
+      "kind": "moved",
+      "source": "HGGAN_test/dev/docs/diagrams/latex/dev_fusion.tex",
+      "destination": "branches/dev/docs/diagrams/latex/dev_fusion.tex",
+      "sha256": "2f9e9d1999cf9320ace73256524f3f9cbe6692cc4c56614c62f56b388e0b8373"
+    },
+    {
+      "kind": "moved",
+      "source": "HGGAN_test/dev/docs/diagrams/latex/dev_fusion_latex.png",
+      "destination": "branches/dev/docs/diagrams/latex/dev_fusion_latex.png",
+      "sha256": "4f43e2b7bc2a3a9e95cd18c38552ab66f977cc78bcefcd51525fbd9b6809bbb6"
+    },
+    {
+      "kind": "moved",
+      "source": "HGGAN_test/dev/docs/diagrams/latex/dev_strokepatchd.pdf",
+      "destination": "branches/dev/docs/diagrams/latex/dev_strokepatchd.pdf",
+      "sha256": "39924bec873c8751996a8459e1174f665472b018c27c8d7896389789a19735ef"
+    },
+    {
+      "kind": "moved",
+      "source": "HGGAN_test/dev/docs/diagrams/latex/dev_strokepatchd.tex",
+      "destination": "branches/dev/docs/diagrams/latex/dev_strokepatchd.tex",
+      "sha256": "b3d545e47863d105d381a2a1b6e0dfb0b1c9c55457465f9726632a5a2c8618a1"
+    },
+    {
+      "kind": "moved",
+      "source": "HGGAN_test/dev/docs/diagrams/latex/dev_strokepatchd_latex.png",
+      "destination": "branches/dev/docs/diagrams/latex/dev_strokepatchd_latex.png",
+      "sha256": "4c29aad719dd695fb453066535c36aafcc2c42bf18b51d698beb6067de857f4a"
+    },
+    {
+      "kind": "moved",
+      "source": "HGGAN_test/dev/docs/diagrams/latex/dev_strokepatchd_mechanism.pdf",
+      "destination": "branches/dev/docs/diagrams/latex/dev_strokepatchd_mechanism.pdf",
+      "sha256": "e202090f6ff95ff495b4bdf584e81ea9047188dbb47530df5129639a79515f6f"
+    },
+    {
+      "kind": "moved",
+      "source": "HGGAN_test/dev/docs/diagrams/latex/dev_strokepatchd_mechanism.png",
+      "destination": "branches/dev/docs/diagrams/latex/dev_strokepatchd_mechanism.png",
+      "sha256": "b179912d7e2cf45d6fe0ed817f1149af0959b1a32a452a00b7cc8a9e37807fe6"
+    },
+    {
+      "kind": "moved",
+      "source": "HGGAN_test/dev/docs/diagrams/latex/dev_strokepatchd_mechanism.tex",
+      "destination": "branches/dev/docs/diagrams/latex/dev_strokepatchd_mechanism.tex",
+      "sha256": "f25792f6a91b69828f4900a1093ac598fe181aeefab84184d29c38f5efaf460b"
+    },
+    {
+      "kind": "moved",
+      "source": "HGGAN_test/dev/docs/diagrams/latex/dev_style_encoder.pdf",
+      "destination": "branches/dev/docs/diagrams/latex/dev_style_encoder.pdf",
+      "sha256": "9a22aa81215472f4fd79c8d07259823f2efd469010c285b0aaeec2deb9c177ca"
+    },
+    {
+      "kind": "moved",
+      "source": "HGGAN_test/dev/docs/diagrams/latex/dev_style_encoder.tex",
+      "destination": "branches/dev/docs/diagrams/latex/dev_style_encoder.tex",
+      "sha256": "6b94319c377e23044247d17a706b216bdc6ea3b43718bf7711aba409dd52bf61"
+    },
+    {
+      "kind": "moved",
+      "source": "HGGAN_test/dev/docs/diagrams/latex/dev_style_encoder_latex.png",
+      "destination": "branches/dev/docs/diagrams/latex/dev_style_encoder_latex.png",
+      "sha256": "13be7ab9da1a2ef69fca950b4acfe2233d59ed9c2226a94a2500b69886ccd390"
+    },
+    {
+      "kind": "moved",
+      "source": "HGGAN_test/dev/networks/backups/dev_6955ee7/README.md",
+      "destination": "branches/dev/networks/backups/dev_6955ee7/README.md",
+      "sha256": "cc5c8ae815e6bd33fe57a1075df7f7b8a6126434fd710b6f72f950ee772545d3"
+    },
+    {
+      "kind": "moved",
+      "source": "HGGAN_test/dev/networks/backups/pre_main_discriminator_20260730/README.md",
+      "destination": "branches/dev/networks/backups/pre_main_discriminator_20260730/README.md",
+      "sha256": "e52ca940eeaeb0c22506286c2923a6abac79e7a4575029f04334fd2c7cc3e6eb"
+    },
+    {
+      "kind": "moved",
+      "source": "HGGAN_test/main/BAO_CAO_CAI_TIEN_DEV_01-10_09_2026.md",
+      "destination": "branches/main/BAO_CAO_CAI_TIEN_DEV_01-10_09_2026.md",
+      "sha256": "031d68e6fe0461cbab5be2660828544b255a5daec89bc8aa0917954bea9a44ee"
+    },
+    {
+      "kind": "moved",
+      "source": "HGGAN_test/main/docs/style_encoder_context.md",
+      "destination": "branches/main/docs/style_encoder_context.md",
+      "sha256": "47ff0a1598253c6529f798f4346619d74f0a7b49c5785986225e1a3a83fba9da"
+    },
+    {
+      "kind": "moved",
+      "source": "HGGAN_test/random_crop_recog/.superpowers/sdd/.gitignore",
+      "destination": "branches/random_crop_recog/.superpowers/sdd/.gitignore",
+      "sha256": "cdbcae15105d6b781e620813c79c7e868740d4e9cc53ce6f5fcbbc12387adf4b"
+    },
+    {
+      "kind": "moved",
+      "source": "HGGAN_test/random_crop_recog/.superpowers/sdd/implementation_plan/constraints.md",
+      "destination": "branches/random_crop_recog/.superpowers/sdd/implementation_plan/constraints.md",
+      "sha256": "8c19918d65f453a085669390a75a437638a415cb44794b6c3bdfd37f6dde0396"
+    },
+    {
+      "kind": "moved",
+      "source": "HGGAN_test/random_crop_recog/.superpowers/sdd/implementation_plan/final-baseline.json",
+      "destination": "branches/random_crop_recog/.superpowers/sdd/implementation_plan/final-baseline.json",
+      "sha256": "6fb2756bcf118ee839942f550636db0b68187d95396dc537ed817861dcd803a3"
+    },
+    {
+      "kind": "moved",
+      "source": "HGGAN_test/random_crop_recog/.superpowers/sdd/implementation_plan/final-fix-baseline.json",
+      "destination": "branches/random_crop_recog/.superpowers/sdd/implementation_plan/final-fix-baseline.json",
+      "sha256": "974b518d2d30f02baf2b760b3ee87b6ce46c28fbf332c05abade7d2278ec33a3"
+    },
+    {
+      "kind": "moved",
+      "source": "HGGAN_test/random_crop_recog/.superpowers/sdd/implementation_plan/final-fix-review-package.md",
+      "destination": "branches/random_crop_recog/.superpowers/sdd/implementation_plan/final-fix-review-package.md",
+      "sha256": "a0182acd9c08b2b13701fb0ec12548fcffa71de6e4bdcfc9fa6f3a1eac024c1d"
+    },
+    {
+      "kind": "moved",
+      "source": "HGGAN_test/random_crop_recog/.superpowers/sdd/implementation_plan/final-review-package.md",
+      "destination": "branches/random_crop_recog/.superpowers/sdd/implementation_plan/final-review-package.md",
+      "sha256": "15bc85da3bf6f0efc4a91da87a4834c281d918975a49348b865206791ba4b91a"
+    },
+    {
+      "kind": "moved",
+      "source": "HGGAN_test/random_crop_recog/.superpowers/sdd/implementation_plan/package_review.py",
+      "destination": "branches/random_crop_recog/.superpowers/sdd/implementation_plan/package_review.py",
+      "sha256": "cabcd303f45db0b97c05e30e1bf8917016fc3c266855c45dd8adeab2649cc6ea"
+    },
+    {
+      "kind": "moved",
+      "source": "HGGAN_test/random_crop_recog/.superpowers/sdd/implementation_plan/plan-path",
+      "destination": "branches/random_crop_recog/.superpowers/sdd/implementation_plan/plan-path",
+      "sha256": "cc4edb1f3f200c515119304f92974659490f3ea246e6a41acc4aa2efa9e737d2"
+    },
+    {
+      "kind": "moved",
+      "source": "HGGAN_test/random_crop_recog/.superpowers/sdd/implementation_plan/progress.md",
+      "destination": "branches/random_crop_recog/.superpowers/sdd/implementation_plan/progress.md",
+      "sha256": "db1592694cae5800981179199c025ddd8538138b97efedf6970c55a75f1f72cc"
+    },
+    {
+      "kind": "moved",
+      "source": "HGGAN_test/random_crop_recog/.superpowers/sdd/implementation_plan/task-1-baseline.json",
+      "destination": "branches/random_crop_recog/.superpowers/sdd/implementation_plan/task-1-baseline.json",
+      "sha256": "4b1754a2096a1c4eabff8432aa187b3627adc25177e9b4b8e1c22940b011f772"
+    },
+    {
+      "kind": "moved",
+      "source": "HGGAN_test/random_crop_recog/.superpowers/sdd/implementation_plan/task-1-brief.md",
+      "destination": "branches/random_crop_recog/.superpowers/sdd/implementation_plan/task-1-brief.md",
+      "sha256": "2dfc5d3903deba8d2c38da044479a7ca11fd423894efcee229f318c7b50e14a9"
+    },
+    {
+      "kind": "moved",
+      "source": "HGGAN_test/random_crop_recog/.superpowers/sdd/implementation_plan/task-1-report.md",
+      "destination": "branches/random_crop_recog/.superpowers/sdd/implementation_plan/task-1-report.md",
+      "sha256": "d35a7ddb72e93a83f5856db4f341514f10533f40cbbe29a23cff7f4ef7cc51b9"
+    },
+    {
+      "kind": "moved",
+      "source": "HGGAN_test/random_crop_recog/.superpowers/sdd/implementation_plan/task-1-review-package.md",
+      "destination": "branches/random_crop_recog/.superpowers/sdd/implementation_plan/task-1-review-package.md",
+      "sha256": "5deaf5f48357f4f03ef8ff41e04dde756e48b50209b23f3fa5afaa1935061270"
+    },
+    {
+      "kind": "moved",
+      "source": "HGGAN_test/random_crop_recog/.superpowers/sdd/implementation_plan/task-2-baseline.json",
+      "destination": "branches/random_crop_recog/.superpowers/sdd/implementation_plan/task-2-baseline.json",
+      "sha256": "0dcd82f9c398c7b4605cbad0c73d622232b9bbccfc52915d5edb45ee353ffbfa"
+    },
+    {
+      "kind": "moved",
+      "source": "HGGAN_test/random_crop_recog/.superpowers/sdd/implementation_plan/task-2-brief.md",
+      "destination": "branches/random_crop_recog/.superpowers/sdd/implementation_plan/task-2-brief.md",
+      "sha256": "899e8c157649639d6ab146da0d66382f98934709e2d3e0e69581c1c8f6235fa9"
+    },
+    {
+      "kind": "moved",
+      "source": "HGGAN_test/random_crop_recog/.superpowers/sdd/implementation_plan/task-2-report.md",
+      "destination": "branches/random_crop_recog/.superpowers/sdd/implementation_plan/task-2-report.md",
+      "sha256": "d5d03f9b36d5f3f1e6ba3a13cff71329695e9ffb6edf437fcb8e2f9f702d5402"
+    },
+    {
+      "kind": "moved",
+      "source": "HGGAN_test/random_crop_recog/.superpowers/sdd/implementation_plan/task-2-review-package.md",
+      "destination": "branches/random_crop_recog/.superpowers/sdd/implementation_plan/task-2-review-package.md",
+      "sha256": "8375a827b51d6ce7c7a9ca581cc97eb94f867bb0e451d458fd5ecad62b28cece"
+    },
+    {
+      "kind": "moved",
+      "source": "HGGAN_test/random_crop_recog/.superpowers/sdd/implementation_plan/task-3-baseline.json",
+      "destination": "branches/random_crop_recog/.superpowers/sdd/implementation_plan/task-3-baseline.json",
+      "sha256": "aa848e3799b6f6405804c67cb489504d35d8c3fc95bad86626d865ebaf2f0883"
+    },
+    {
+      "kind": "moved",
+      "source": "HGGAN_test/random_crop_recog/.superpowers/sdd/implementation_plan/task-3-brief.md",
+      "destination": "branches/random_crop_recog/.superpowers/sdd/implementation_plan/task-3-brief.md",
+      "sha256": "c7e66e727a3b40e2095b211fcc11087a33a8486e0b67c234d585358ebd9736b0"
+    },
+    {
+      "kind": "moved",
+      "source": "HGGAN_test/random_crop_recog/.superpowers/sdd/implementation_plan/task-3-report.md",
+      "destination": "branches/random_crop_recog/.superpowers/sdd/implementation_plan/task-3-report.md",
+      "sha256": "bfde4817057efca51332f53d4fdd299b6e0e78e7bef3c99ee37eb6b5807c0c6d"
+    },
+    {
+      "kind": "moved",
+      "source": "HGGAN_test/random_crop_recog/.superpowers/sdd/implementation_plan/task-3-review-package.md",
+      "destination": "branches/random_crop_recog/.superpowers/sdd/implementation_plan/task-3-review-package.md",
+      "sha256": "e9fc51f5362ab10b267ff20b454eeeab09ca83aaabce716cafedce5eff917582"
+    },
+    {
+      "kind": "moved",
+      "source": "HGGAN_test/random_crop_recog/.superpowers/sdd/implementation_plan/task-4-baseline.json",
+      "destination": "branches/random_crop_recog/.superpowers/sdd/implementation_plan/task-4-baseline.json",
+      "sha256": "a590e08c47af6e5439be4ab7d094b9f004e8e9d99e4e4d1689392be04a9247d4"
+    },
+    {
+      "kind": "moved",
+      "source": "HGGAN_test/random_crop_recog/.superpowers/sdd/implementation_plan/task-4-brief.md",
+      "destination": "branches/random_crop_recog/.superpowers/sdd/implementation_plan/task-4-brief.md",
+      "sha256": "8317271eff03b405738c928181a2a6fafc02b8a51bb34ff363bcad795aeb151b"
+    },
+    {
+      "kind": "moved",
+      "source": "HGGAN_test/random_crop_recog/.superpowers/sdd/implementation_plan/task-4-report.md",
+      "destination": "branches/random_crop_recog/.superpowers/sdd/implementation_plan/task-4-report.md",
+      "sha256": "0951b890e82a5331e48ad533ea32b5c479a03eb1ebb77362b4e207bd9af6051e"
+    },
+    {
+      "kind": "moved",
+      "source": "HGGAN_test/random_crop_recog/.superpowers/sdd/implementation_plan/task-4-review-package.md",
+      "destination": "branches/random_crop_recog/.superpowers/sdd/implementation_plan/task-4-review-package.md",
+      "sha256": "a070700dcf1fde379aac88991eaca3d63f8057a2ccfc79e7ee748cd942cfbffd"
+    },
+    {
+      "kind": "moved",
+      "source": "HGGAN_test/random_crop_recog/.superpowers/sdd/implementation_plan/task-5-baseline.json",
+      "destination": "branches/random_crop_recog/.superpowers/sdd/implementation_plan/task-5-baseline.json",
+      "sha256": "ad2afa010bf43ba8826633490ccfc56ecab6fe72de41cb1e84a7c8c1f7d83aa9"
+    },
+    {
+      "kind": "moved",
+      "source": "HGGAN_test/random_crop_recog/.superpowers/sdd/implementation_plan/task-5-brief.md",
+      "destination": "branches/random_crop_recog/.superpowers/sdd/implementation_plan/task-5-brief.md",
+      "sha256": "7dd87c6b35e9e348442e423442222346871dd683427111ae95e62baec2041252"
+    },
+    {
+      "kind": "moved",
+      "source": "HGGAN_test/random_crop_recog/.superpowers/sdd/implementation_plan/task-5-report.md",
+      "destination": "branches/random_crop_recog/.superpowers/sdd/implementation_plan/task-5-report.md",
+      "sha256": "31fcc1bcc8d5854af52121286aebbf15b17764617c986e8124524e65551b8e0c"
+    },
+    {
+      "kind": "moved",
+      "source": "HGGAN_test/random_crop_recog/.superpowers/sdd/implementation_plan/task-5-review-package.md",
+      "destination": "branches/random_crop_recog/.superpowers/sdd/implementation_plan/task-5-review-package.md",
+      "sha256": "44392dd9fc18374084fec75f6619e32ce48cddfb2129c7124de152e497d803ac"
+    },
+    {
+      "kind": "moved",
+      "source": "HGGAN_test/random_crop_recog/BAO_CAO_CAI_TIEN_DEV_01-10_09_2026.md",
+      "destination": "branches/random_crop_recog/BAO_CAO_CAI_TIEN_DEV_01-10_09_2026.md",
+      "sha256": "a31a03e4459f5b8509200e9587d6690dc711f89e725020ddac7c8d510b79bbe2"
+    },
+    {
+      "kind": "moved",
+      "source": "HGGAN_test/random_crop_recog/docs/style_encoder_context.md",
+      "destination": "branches/random_crop_recog/docs/style_encoder_context.md",
+      "sha256": "47ff0a1598253c6529f798f4346619d74f0a7b49c5785986225e1a3a83fba9da"
+    },
+    {
+      "kind": "moved",
+      "source": "HGGAN_test/random_crop_recog/networks/backups/dev_6955ee7/README.md",
+      "destination": "branches/random_crop_recog/networks/backups/dev_6955ee7/README.md",
+      "sha256": "cc5c8ae815e6bd33fe57a1075df7f7b8a6126434fd710b6f72f950ee772545d3"
+    },
+    {
+      "kind": "moved",
+      "source": "HGGAN_test/random_crop_recog/networks/backups/pre_main_discriminator_20260730/README.md",
+      "destination": "branches/random_crop_recog/networks/backups/pre_main_discriminator_20260730/README.md",
+      "sha256": "e52ca940eeaeb0c22506286c2923a6abac79e7a4575029f04334fd2c7cc3e6eb"
+    },
+    {
+      "kind": "moved",
+      "source": "main-htg-test-specia-degits.docx",
+      "destination": "shared/main-htg-test-specia-degits.docx",
+      "sha256": "2afb168d0ed14c764264e212e33c09e474e1ef3e598a1d56f5b8da2672663bf3"
+    },
+    {
+      "kind": "moved",
+      "source": "main-htg-test-specia-degits.html",
+      "destination": "shared/main-htg-test-specia-degits.html",
+      "sha256": "505cc5a5ca004ebb17ec11a87c1778b432ff661383b68d5303ac2e0b481d2169"
+    },
+    {
+      "kind": "moved",
+      "source": "main-htg-test-specia-degits.md",
+      "destination": "shared/main-htg-test-specia-degits.md",
+      "sha256": "c8d23dd7d8a355150b5af633f8c9ad666d4688bb4050d9cb2cb2bbffaf48854b"
+    },
+    {
+      "kind": "moved",
+      "source": "main_design_vs_higanplus_vi.html",
+      "destination": "shared/main_design_vs_higanplus_vi.html",
+      "sha256": "9d748c2f2545b565961c0881bcb00418bd1c234b7615d04dd7660a6a578394ad"
+    },
+    {
+      "kind": "moved",
+      "source": "main_vs_dev_generator_report.tex",
+      "destination": "shared/main_vs_dev_generator_report.tex",
+      "sha256": "cb308006e42d4255bc285580023a22270dcc6bcea1742f411e3b1ac67309afca"
+    },
+    {
+      "kind": "moved",
+      "source": "main_vs_dev_generator_report_vi.tex",
+      "destination": "shared/main_vs_dev_generator_report_vi.tex",
+      "sha256": "0f6c7689235a5763c62d51e69d518951381661af8d6d51f8260883ef4a89a34b"
+    },
+    {
+      "kind": "moved",
+      "source": "random_crop_design_vs_higanplus_vi.html",
+      "destination": "shared/random_crop_design_vs_higanplus_vi.html",
+      "sha256": "0ff6af8d9ba2f9ad4425888a6a1ee66c1031326ca20e2a4b5cc514ea5c5291e5"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/checkpoints_19_10_2026/REPORT.md",
+      "destination": "reports/checkpoints_19_10_2026/REPORT.md",
+      "sha256": "c43e0db332b39cafbc434af4949cdb15069dc01c3285f9f4d8d56750ba9ceb9e"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/artifact_verification.json",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/artifact_verification.json",
+      "sha256": "c2622586f1ea5541d962b0aff926f6684b8bcf6886c5644cf54b8f02d08851be"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/build_report.py",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/build_report.py",
+      "sha256": "a9afc387c94ef891590ac7a910d78d5befe7361dc614200af73fdcdc14806b14"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/drawio/README.md",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/drawio/README.md",
+      "sha256": "c8ff45b34ca2b1193daad57e3bf7cb6b22eb1580ac6a1adafeb1cf85f3cc4d07"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/drawio/__pycache__/build_drawio.cpython-310.pyc",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/drawio/__pycache__/build_drawio.cpython-310.pyc",
+      "sha256": "6dbe9e6dc19330ca03d514a2664623fd747449d96b8a75179a1031941311afc6"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/drawio/build_drawio.py",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/drawio/build_drawio.py",
+      "sha256": "e4b02d0b6d7f0de37a1dfb5e15f9ff39e4b9ba12290e3ac4dea781fec282c949"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/drawio/check_editor.cjs",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/drawio/check_editor.cjs",
+      "sha256": "df5124949b1a39646e5c9c488b72c74655e10de11d698c20b6252564585e81c5"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/drawio/check_native_renderer.cjs",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/drawio/check_native_renderer.cjs",
+      "sha256": "96d0dcab5514bc68ce84bc67e8b3ed6ce666e90efdf021e9081808c76b16d623"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/drawio/diagram_graph.json",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/drawio/diagram_graph.json",
+      "sha256": "33ffe840fa55234d9a688687bde6cd501f0ed2501da412db477d04e09f4df782"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/drawio/editor_attempt.png",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/drawio/editor_attempt.png",
+      "sha256": "108bbcf0b0eef8884459d4b954c2166f5df8846917aa4d5ea20542730b93958c"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/drawio/native_00.png",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/drawio/native_00.png",
+      "sha256": "4293eba7a46c2ba41f68df7fcd56a6d4c5c1dc1fbfa3599f3c3cd55358079291"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/drawio/native_01.png",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/drawio/native_01.png",
+      "sha256": "1d13f0b7517037ad8169ee191f1bf8628f19522dedf67228b4f19945511e357e"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/drawio/native_02.png",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/drawio/native_02.png",
+      "sha256": "aae3c6d135c43ca4a32ba7610f09dc4050ce099d53891ddfe1b400d2e096678b"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/drawio/native_03.png",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/drawio/native_03.png",
+      "sha256": "6827626728c933a90cb331c237a2fa78563561b3dcde8bc8eb362bcd1488b4b8"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/drawio/native_04.png",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/drawio/native_04.png",
+      "sha256": "c8625565d3f94f80402cabc3ec447ed37c787627bb14431dc3912e5d3b0131b4"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/drawio/native_05.png",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/drawio/native_05.png",
+      "sha256": "72e299961d00ffc7b0bf7b78d595edb1de34aed745d43b61db0cb303a2fca761"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/drawio/native_06.png",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/drawio/native_06.png",
+      "sha256": "c3f98d0b5a1a678c413be2e6a868d4df250a164e7281a034d1f2d859c4d3180a"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/drawio/native_07.png",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/drawio/native_07.png",
+      "sha256": "1364c8c072164401bb5ebce7987008f8f150612ad784f35b7f5c459d3f99ec5e"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/drawio/native_08.png",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/drawio/native_08.png",
+      "sha256": "9c3e922e784d1c31386a88ff052d5626c19b043fdf0cc574ad00b4335d4b5447"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/drawio/native_09.png",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/drawio/native_09.png",
+      "sha256": "5d5babd6ace5ac848c119a8555f44999dce2b20ff39eb4d140a3a476e75ed47e"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/drawio/native_10.png",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/drawio/native_10.png",
+      "sha256": "210df31e89c229af6fbdaf546ad2f30354d8c97d4d431378b1be00847b4a8bd3"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/drawio/native_11.png",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/drawio/native_11.png",
+      "sha256": "675b306c0e46df19bdf2c7934c067ff88f8b5aa8fde51c4a8576ec32dd829503"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/drawio/native_12.png",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/drawio/native_12.png",
+      "sha256": "49ef27913bdff5b8ef34ce8c7fa88291fd624d30d578fcf8bdaa7ef0a3695600"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/drawio/native_13.png",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/drawio/native_13.png",
+      "sha256": "728d2ae6b958eff34ca051075f05315cd9031f2c0d85673f568b68e9966728aa"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/drawio/native_14.png",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/drawio/native_14.png",
+      "sha256": "b3d20820cdcd50df3c146e5642249fe6d932a8f7bec9622027aac575fe930fc9"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/drawio/native_renderer_verification.json",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/drawio/native_renderer_verification.json",
+      "sha256": "26a461469f16c8689bf1d2b1567b8ebc5c50c80fe5ce188cf9b804a9cf75e1a9"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/drawio/preview.html",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/drawio/preview.html",
+      "sha256": "70af2df36d4054265e452ef7386998b9c8eb6551c0d79919607ffcf527ecd1d9"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/drawio/qa_00.png",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/drawio/qa_00.png",
+      "sha256": "f27841f098090187fc6ebf14bc2a1d23df14c88b1a3e0f739ff8313096835e7c"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/drawio/qa_01.png",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/drawio/qa_01.png",
+      "sha256": "579c007e3b5cb1449ecc9ff24e1ea46dcca261b3a8e5da15b6aa6aaa5c2c68e5"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/drawio/qa_02.png",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/drawio/qa_02.png",
+      "sha256": "0b348e462e2330dfa7fdf470b0594c2bd06c939b051eed2f51b75e7fd21ce4fc"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/drawio/qa_03.png",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/drawio/qa_03.png",
+      "sha256": "078ad80210b52947197789d66fad37ff7ff641b6469906b4680cd74301d7d6a0"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/drawio/qa_04.png",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/drawio/qa_04.png",
+      "sha256": "0c43bad0228446786b5f6a43ce69c93d40098308150a36a335a32f7708aa4bf5"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/drawio/qa_05.png",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/drawio/qa_05.png",
+      "sha256": "1856fafcdf96e409d3e264ed49fc180d68fb1028ffd4779ff1a090e83f4ad10f"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/drawio/qa_06.png",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/drawio/qa_06.png",
+      "sha256": "ba7b4e4cf3da269ad75fa059b4abfaaed1c094e5d8d9afbeda110efbc622977a"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/drawio/qa_07.png",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/drawio/qa_07.png",
+      "sha256": "8c88acbfe64371ce864f25d3726c102173fc47c7eac0898c24894d2fdae6a191"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/drawio/qa_08.png",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/drawio/qa_08.png",
+      "sha256": "79db4543630021bdf75800df06930b1d30f054c7408288d9325ace459c61b7a8"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/drawio/qa_09.png",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/drawio/qa_09.png",
+      "sha256": "2b9c267cb3ec577c46edfc992b3d6e35ff0e0bd6a7bebefb6b028f49f603b025"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/drawio/qa_10.png",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/drawio/qa_10.png",
+      "sha256": "0d493b2169454ed71befb64663124afc9275885b0319d243961db158c03b5a15"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/drawio/qa_11.png",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/drawio/qa_11.png",
+      "sha256": "faca6c6debd1102eb9c403709818bc72266a21d1d7f2145af9a924942c6771a4"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/drawio/qa_12.png",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/drawio/qa_12.png",
+      "sha256": "4811772c9eeb5c296d8d55543d41c97e7d88040e1951b4fa07d616ae2accae10"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/drawio/qa_13.png",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/drawio/qa_13.png",
+      "sha256": "63a11e83ac4f51afe9e0e42e80969f529920c6a12818575a73c30dbf14b65b8a"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/drawio/qa_14.png",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/drawio/qa_14.png",
+      "sha256": "e82dcfb6b01e5667f09ed6924d429ec353bf235252f2bde95df52694a06036a7"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/drawio/random_crop_training_architecture.drawio",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/drawio/random_crop_training_architecture.drawio",
+      "sha256": "c4b7d0a1b8e83a0741fa467489f18543fe9f65b4ed85e1cec77319101bf8f73b"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/drawio/render_preview.cjs",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/drawio/render_preview.cjs",
+      "sha256": "1664fe5486de89acbf5775a0668533c78cbf7e95e7f09028a3444e99c70e0652"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/drawio/verification.json",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/drawio/verification.json",
+      "sha256": "d964a263d886188375b93973310f4a68d07442910c7ceaf056424d074ea3f454"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/drawio_5_panels/README.md",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/drawio_5_panels/README.md",
+      "sha256": "a574c1388a01847f3284c65e40bd08cb9817fd74fe386ae8130c2e104fdffd37"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/drawio_5_panels/__pycache__/build_five_panels.cpython-310.pyc",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/drawio_5_panels/__pycache__/build_five_panels.cpython-310.pyc",
+      "sha256": "c448237a770b51c787527a01171a1b8a1bfd4b5d1826285f9175ea2256b9a4a8"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/drawio_5_panels/build_five_panels.py",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/drawio_5_panels/build_five_panels.py",
+      "sha256": "7d54cd815775773db1ca42b068b6c5fa7a3cd4c53ad8b6eb7ce6d864d45aec95"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/drawio_5_panels/diagram_graph.json",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/drawio_5_panels/diagram_graph.json",
+      "sha256": "663ac4b8e55476a190eb8174b4feac19028f17fca4e2e8fc21d11c1d26687449"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/drawio_5_panels/native_00.png",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/drawio_5_panels/native_00.png",
+      "sha256": "604d66073e40aefef3402d6d9d1402364fd789e132c1b465b7e3cca70f2025e8"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/drawio_5_panels/native_01.png",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/drawio_5_panels/native_01.png",
+      "sha256": "3e47cd6e50db0813e7b87f3b71e10d266d31933ea1c2699b7d79965666b722d9"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/drawio_5_panels/native_02.png",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/drawio_5_panels/native_02.png",
+      "sha256": "c9a23b35fa91e2965cfb2895f3359dfd532753b0d1b3ee4b1aef54c2fe129bd1"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/drawio_5_panels/native_03.png",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/drawio_5_panels/native_03.png",
+      "sha256": "078ab2dbe5c7971985c7ceaade2b9d0f6c97e8faae59f490bb65970f00be7a25"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/drawio_5_panels/native_04.png",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/drawio_5_panels/native_04.png",
+      "sha256": "4fdd54cde18ad8ab9b3638300c2935b0e6db8ed4c9b18e7cc96e061fc4fc672b"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/drawio_5_panels/native_renderer_verification.json",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/drawio_5_panels/native_renderer_verification.json",
+      "sha256": "9ab2acd7976b9f3674204d51b5565ca3458e42d5490d5adc9d48b3402ef18d51"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/drawio_5_panels/preview.html",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/drawio_5_panels/preview.html",
+      "sha256": "569b1c71cb88a56065044599dd9ddf9d8c6190f45e588a6e98719cf1d4f6cea4"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/drawio_5_panels/random_crop_training_architecture.drawio",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/drawio_5_panels/random_crop_training_architecture.drawio",
+      "sha256": "37470b05c38b03aacbce89ec578c8d8ad50e732b86329c0fe66bc642852dc1fd"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/drawio_5_panels/verification.json",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/drawio_5_panels/verification.json",
+      "sha256": "da07e17ca998dcf395e1fe6a3bc63a51d77e1e8fa76eee565c32ad621786ac1d"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/drawio_5_panels_expanded/README.md",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/drawio_5_panels_expanded/README.md",
+      "sha256": "77b0a340818192a5b71d7cd72ec9644d075235d3c1d667c244f6969391eb5808"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/drawio_5_panels_expanded/__pycache__/build_expanded.cpython-310.pyc",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/drawio_5_panels_expanded/__pycache__/build_expanded.cpython-310.pyc",
+      "sha256": "69a431003d6de7d8fb689bd12c8f921ce91bfb9e38f71ee5b142af9ac022729d"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/drawio_5_panels_expanded/build_expanded.py",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/drawio_5_panels_expanded/build_expanded.py",
+      "sha256": "b8972a048e09c14d362508e765756a6bee80b090d90adfdd8a936c91795a1252"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/drawio_5_panels_expanded/comparison_panel.py",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/drawio_5_panels_expanded/comparison_panel.py",
+      "sha256": "6815ba88903fd7eeb92fcf26db544033103945a5282f875dbe0d1ebe2dbeba93"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/drawio_5_panels_expanded/native_00.png",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/drawio_5_panels_expanded/native_00.png",
+      "sha256": "a7d582a2725be93129d6ca023d8fde4153c028eba884e5b7c187bd579e51d7d2"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/drawio_5_panels_expanded/native_01.png",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/drawio_5_panels_expanded/native_01.png",
+      "sha256": "550934d8921c5b23064f7401ccbacb8662606e9a9343eec45d27ca341177a8b9"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/drawio_5_panels_expanded/native_02.png",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/drawio_5_panels_expanded/native_02.png",
+      "sha256": "3a81132cfb8c8d4e2dc71e4d9752575d4c5c99f78a799ff64acae022987bfec4"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/drawio_5_panels_expanded/native_03.png",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/drawio_5_panels_expanded/native_03.png",
+      "sha256": "29bb4c69a334249a0fd5658aeeef52715c2a350150d0046be86f2fe8207db583"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/drawio_5_panels_expanded/native_04.png",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/drawio_5_panels_expanded/native_04.png",
+      "sha256": "84963582df8fc87e8f26f3ff60fe0e38b58d0f5fabb7ba37d8037b561644f1a1"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/drawio_5_panels_expanded/native_05.png",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/drawio_5_panels_expanded/native_05.png",
+      "sha256": "87cdd39460a2eaec2cb8e055405722d297579ab4ee2e65f298ced35db7ca3787"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/drawio_5_panels_expanded/native_renderer_verification.json",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/drawio_5_panels_expanded/native_renderer_verification.json",
+      "sha256": "422211b8d5c9ea3cfc4a48f2fb09a1a1de394dac4fa203d8b5511f326852e47c"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/drawio_5_panels_expanded/preview.html",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/drawio_5_panels_expanded/preview.html",
+      "sha256": "f9986ad01ace1dd7f32a198416401843b11332f6a504a37d6e58b1c88fd519d4"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/drawio_5_panels_expanded/random_crop_training_architecture.drawio",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/drawio_5_panels_expanded/random_crop_training_architecture.drawio",
+      "sha256": "5966b3f85b78ee18a3767b6b82b4737b55fc1c04ed9d57036378a55f974f3903"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/drawio_5_panels_expanded/verification.json",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/drawio_5_panels_expanded/verification.json",
+      "sha256": "2ee3f8a75e643996bdb91e39edd44f0d3e5e285854a9a0a6cd8f06f0cf7762a9"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/evidence/checkpoint_metrics_extract.csv",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/evidence/checkpoint_metrics_extract.csv",
+      "sha256": "ca9ecdb1171a76a0ab0a0f44a2a943d728a493c8be4f76af32498526c4307e45"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/evidence/external_baseline_metrics_extract.csv",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/evidence/external_baseline_metrics_extract.csv",
+      "sha256": "17528c22e073cecb61fe4856c4aa5819e22c9d4e4330775e269b516142536676"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/evidence/extract_checkpoint_metadata.py",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/evidence/extract_checkpoint_metadata.py",
+      "sha256": "ca32f179e1e35f06334711779ff2dfdeabaf554e2717b16e7a9004be30baadea"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/evidence/metrics_evidence_summary.json",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/evidence/metrics_evidence_summary.json",
+      "sha256": "80d5894f6652450837eeaad6f1b231c90776ffc543e1fa006a135c99ed146d8f"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/evidence/papers/2021_Handwriting_Transformers.txt",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/evidence/papers/2021_Handwriting_Transformers.txt",
+      "sha256": "8cc671ade095a9946b3f11a25309e3e468631812f86eb4398ad25fd29899956b"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/evidence/papers/2024_VATr_PlusPlus.txt",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/evidence/papers/2024_VATr_PlusPlus.txt",
+      "sha256": "cf59f6da3c3033a7d5e7c8d0ce47dc9c0260032388162d19f49fbf0082838ccc"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/evidence/papers/higanplus.txt",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/evidence/papers/higanplus.txt",
+      "sha256": "ba3836ba71e5b032d469c594cfc2f786328a40179d841b737f98ba7f13357bd3"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/evidence/papers/spis-gan.txt",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/evidence/papers/spis-gan.txt",
+      "sha256": "a51098a0ba6d02bbeff8bac719501f53174387cb5723895f90a539f4b24e2f8d"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/extract_papers.py",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/extract_papers.py",
+      "sha256": "85355835816cd5234e3572b324d66078105128446ba5e492efebe5141723d84d"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/figures/01_overview.pdf",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/figures/01_overview.pdf",
+      "sha256": "d847c934e8dfb95059f150b7c75f629c18ab9d8a473c7746e124518642ff8a76"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/figures/01_overview.svg",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/figures/01_overview.svg",
+      "sha256": "5bfdaa0dec65b78172f7feed6ac50ea83065806e436d61a43acd59a49f70051e"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/figures/02_style_encoder.pdf",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/figures/02_style_encoder.pdf",
+      "sha256": "654546300321b536a2ea6d05e3125550778f6e8caef4e510410fbcb13a7423dd"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/figures/02_style_encoder.svg",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/figures/02_style_encoder.svg",
+      "sha256": "d8ed509d749f4893e1a37186306eca0638e4a2cecd2f6c3bae5af878ccb20960"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/figures/03_fusion_generator.pdf",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/figures/03_fusion_generator.pdf",
+      "sha256": "d21b836df939fb2ec425972e0ffcdfa056d5bd5a5ca5b49a818c8ccc48171902"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/figures/03_fusion_generator.svg",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/figures/03_fusion_generator.svg",
+      "sha256": "9b190fb1891b1e9f826d24b7f1f24a912fcc575072fe1a876377b277db0b66c4"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/figures/04_strokepatchd.pdf",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/figures/04_strokepatchd.pdf",
+      "sha256": "7259d32b9e609c69688056dabc24077f0a41fa230644c1dae75240fa587cf352"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/figures/04_strokepatchd.svg",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/figures/04_strokepatchd.svg",
+      "sha256": "1f3ba643463067ff062995defbd7b467f26e69ee4ce672bf2365bba7e75b7b99"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/figures/05_random_flow.pdf",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/figures/05_random_flow.pdf",
+      "sha256": "5cb559b813c294656a28cca9c675b038a476e03a51fbac16cce609dacaebe11c"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/figures/05_random_flow.svg",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/figures/05_random_flow.svg",
+      "sha256": "10415c05250ec046c4d64e1460a6f8fdb0623ce569eeee18d6a550e5a6c405b3"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/figures/06_transfer_flow.pdf",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/figures/06_transfer_flow.pdf",
+      "sha256": "c0a727bd06ad2da1723b44825ada48b1dd8c58432b6e4a4fa539c77e3dc2cc44"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/figures/06_transfer_flow.svg",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/figures/06_transfer_flow.svg",
+      "sha256": "146283ae4d52ab0dafa48b1baf20c56bf5daab152d78c1e458da000ecc7e81af"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/figures/07_reconstruction_flow.pdf",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/figures/07_reconstruction_flow.pdf",
+      "sha256": "01166c6992ed85a602d9efe11ca9e5998241a72894450b4dc6ab1dc9d786f408"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/figures/07_reconstruction_flow.svg",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/figures/07_reconstruction_flow.svg",
+      "sha256": "421dcdcad8af0381ae12439c8555591f352a473a31202e8d0ecf84987eeaae6f"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/figures.py",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/figures.py",
+      "sha256": "7492bf4666f38748066afe36af634ab40401db42aec1e114ab241ee24c23ede3"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/preview_encoder.png",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/preview_encoder.png",
+      "sha256": "e2354974bc7b21a35f938cddb75d4386c81c1a687c30f8eb21416cb61c25453c"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/preview_fusion.png",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/preview_fusion.png",
+      "sha256": "70934e9466b999a7e9a09e6423c190d24a486cbd3524a79e51108201b04eb763"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/preview_overview.png",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/preview_overview.png",
+      "sha256": "50ad3d93c545bc6b43541e6ffa11477e966ca07e30cf4c1cd179c2ab850e2651"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/preview_patch.png",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/preview_patch.png",
+      "sha256": "84da8a32f7c1effc4b5898b46704879c85c6315b42aed583680bdca7c0dd7b62"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/preview_reconstruction.png",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/preview_reconstruction.png",
+      "sha256": "ade959129bfce17403e453a1e4c176b7eb9dfaa42c412e022c9a22a61063b03d"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/preview_text.png",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/preview_text.png",
+      "sha256": "2c0028fea9ca1ad9507e1c9e193f316e3178b01bd8ed818047c29fe67be4c66f"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/random_crop_vs_higanplus_vi.html",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/random_crop_vs_higanplus_vi.html",
+      "sha256": "a7941e956bc76872c83b10d8b77292601610513f0519862329fe8ba8398a9c04"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/random_crop_vs_higanplus_vi.md",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/random_crop_vs_higanplus_vi.md",
+      "sha256": "9ab0eca7e7722fb8059ff373e71a0eadfa29b98df1c9a1cde14d8fd29e36e085"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/random_crop_vs_higanplus_vi.pdf",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/random_crop_vs_higanplus_vi.pdf",
+      "sha256": "f9f70f239ced11b68d04cb0aa573b137ff0eb803de55d7a76a440b915ba90e82"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/render_pdf.py",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/render_pdf.py",
+      "sha256": "670f8bc19e4af9c38f308bdd59d9802bbb7156f74d4fece972800a152dbd32a6"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/report_blocks.json",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/report_blocks.json",
+      "sha256": "2d3c4146d115eb7f1967b88583ecb24298c7c1a5d6727bd03ba0100aa2a8cf32"
+    },
+    {
+      "kind": "moved",
+      "source": "reports/random_crop_vs_higanplus_2026_10_15/verify_artifact.py",
+      "destination": "reports/random_crop_vs_higanplus_2026_10_15/verify_artifact.py",
+      "sha256": "8824d5f559456faed13adfde58fa7180c1896c440e036b60ac447a84ef0c1b52"
+    },
+    {
+      "kind": "moved",
+      "source": "spis-gan-test-special-degits.docx",
+      "destination": "shared/spis-gan-test-special-degits.docx",
+      "sha256": "6dc4d82a300df790030b9afd01573ef214d7116bdcf43a93a79ead02aa769bd9"
+    },
+    {
+      "kind": "moved",
+      "source": "spis-gan-test-special-degits.html",
+      "destination": "shared/spis-gan-test-special-degits.html",
+      "sha256": "92178493f884e0dfe6a9c5134cdf61383d029c33dc870bd4c51a521a1e1f60fb"
+    },
+    {
+      "kind": "moved",
+      "source": "spis-gan-test-special-degits.md",
+      "destination": "shared/spis-gan-test-special-degits.md",
+      "sha256": "465263505e42ae9a0a57052b3a872414f2d4e69855be9f2970b383bcdf716329"
+    },
+    {
+      "kind": "historical-identical",
+      "source": "HGGAN_test/main/DEV_WEEKLY_COMMIT_REPORT_2026-09-18_to_25.md",
+      "destination": "branches/dev/DEV_WEEKLY_COMMIT_REPORT_2026-09-18_to_25.md",
+      "sha256": "49f0873df36ce0ed6d2a9340ceb6e1042549774712c47e7b5517ee60a609c0c2",
+      "revision": "10c66e580a1ed8891a8bf79d9c89419eadaa9d8f"
+    },
+    {
+      "kind": "historical-identical",
+      "source": "HGGAN_test/main/docs/diagrams/dev_model_loss_map.html",
+      "destination": "branches/dev/docs/diagrams/dev_model_loss_map.html",
+      "sha256": "84ecae34c577c9dec842dacd60b8b48693a19d4c6dd23a9ed60777b3c868cce5",
+      "revision": "23dace1b999d071a5f3e4312944367864792e85d"
+    },
+    {
+      "kind": "historical-identical",
+      "source": "HGGAN_test/main/docs/diagrams/dev_model_overview.html",
+      "destination": "branches/dev/docs/diagrams/dev_model_overview.html",
+      "sha256": "8b34960d6472192fa3e6fb964a728c2f39217b865e1e56e38d0eda4918e8f02d",
+      "revision": "23dace1b999d071a5f3e4312944367864792e85d"
+    },
+    {
+      "kind": "historical-identical",
+      "source": "HGGAN_test/main/docs/diagrams/dev_three_training_flows.html",
+      "destination": "branches/dev/docs/diagrams/dev_three_training_flows.html",
+      "sha256": "b498f106afda705a8c95565d1d8d343c1b70051b018d1f1486b33e431087c38d",
+      "revision": "23dace1b999d071a5f3e4312944367864792e85d"
+    },
+    {
+      "kind": "historical-identical",
+      "source": "HGGAN_test/main/docs/diagrams/latex/README.md",
+      "destination": "branches/dev/docs/diagrams/latex/README.md",
+      "sha256": "6206f689912ea0c05b031efa1d8f5f7bc461c54ac594d8b45b04ad31126aa1ea",
+      "revision": "0cc658064983536df734d2c053f6363bf1035ef5"
+    },
+    {
+      "kind": "historical-identical",
+      "source": "HGGAN_test/main/docs/diagrams/latex/dev_diagram_style.tex",
+      "destination": "branches/dev/docs/diagrams/latex/dev_diagram_style.tex",
+      "sha256": "1305e4254aa3d5e388392b3659011f08cf9bb1bee666243324915ce8b2e87fc2",
+      "revision": "0cc658064983536df734d2c053f6363bf1035ef5"
+    },
+    {
+      "kind": "historical-identical",
+      "source": "HGGAN_test/main/docs/diagrams/latex/dev_full_architecture.pdf",
+      "destination": "branches/dev/docs/diagrams/latex/dev_full_architecture.pdf",
+      "sha256": "2aaf060ecff9889dd933826069a807cb54487830a4c1ee0029bbf5b761727ab3",
+      "revision": "0cc658064983536df734d2c053f6363bf1035ef5"
+    },
+    {
+      "kind": "historical-identical",
+      "source": "HGGAN_test/main/docs/diagrams/latex/dev_full_architecture.tex",
+      "destination": "branches/dev/docs/diagrams/latex/dev_full_architecture.tex",
+      "sha256": "059fe36ed61dea6796dcdfcc10e79f3a374de70dfdbba2a6779660ba1d7b8980",
+      "revision": "0cc658064983536df734d2c053f6363bf1035ef5"
+    },
+    {
+      "kind": "historical-identical",
+      "source": "HGGAN_test/main/docs/diagrams/latex/dev_fusion.pdf",
+      "destination": "branches/dev/docs/diagrams/latex/dev_fusion.pdf",
+      "sha256": "a3178c7b3809cf05bd120fb7a1df5da6c697abc84b85e28ce191a2246676c284",
+      "revision": "0cc658064983536df734d2c053f6363bf1035ef5"
+    },
+    {
+      "kind": "historical-identical",
+      "source": "HGGAN_test/main/docs/diagrams/latex/dev_fusion.tex",
+      "destination": "branches/dev/docs/diagrams/latex/dev_fusion.tex",
+      "sha256": "2f9e9d1999cf9320ace73256524f3f9cbe6692cc4c56614c62f56b388e0b8373",
+      "revision": "0cc658064983536df734d2c053f6363bf1035ef5"
+    },
+    {
+      "kind": "historical-identical",
+      "source": "HGGAN_test/main/docs/diagrams/latex/dev_strokepatchd.pdf",
+      "destination": "branches/dev/docs/diagrams/latex/dev_strokepatchd.pdf",
+      "sha256": "39924bec873c8751996a8459e1174f665472b018c27c8d7896389789a19735ef",
+      "revision": "0cc658064983536df734d2c053f6363bf1035ef5"
+    },
+    {
+      "kind": "historical-identical",
+      "source": "HGGAN_test/main/docs/diagrams/latex/dev_strokepatchd.tex",
+      "destination": "branches/dev/docs/diagrams/latex/dev_strokepatchd.tex",
+      "sha256": "b3d545e47863d105d381a2a1b6e0dfb0b1c9c55457465f9726632a5a2c8618a1",
+      "revision": "0cc658064983536df734d2c053f6363bf1035ef5"
+    },
+    {
+      "kind": "historical-identical",
+      "source": "HGGAN_test/main/docs/diagrams/latex/dev_strokepatchd_mechanism.pdf",
+      "destination": "branches/dev/docs/diagrams/latex/dev_strokepatchd_mechanism.pdf",
+      "sha256": "e202090f6ff95ff495b4bdf584e81ea9047188dbb47530df5129639a79515f6f",
+      "revision": "0cc658064983536df734d2c053f6363bf1035ef5"
+    },
+    {
+      "kind": "historical-identical",
+      "source": "HGGAN_test/main/docs/diagrams/latex/dev_strokepatchd_mechanism.tex",
+      "destination": "branches/dev/docs/diagrams/latex/dev_strokepatchd_mechanism.tex",
+      "sha256": "f25792f6a91b69828f4900a1093ac598fe181aeefab84184d29c38f5efaf460b",
+      "revision": "0cc658064983536df734d2c053f6363bf1035ef5"
+    },
+    {
+      "kind": "historical-identical",
+      "source": "HGGAN_test/main/docs/diagrams/latex/dev_style_encoder.pdf",
+      "destination": "branches/dev/docs/diagrams/latex/dev_style_encoder.pdf",
+      "sha256": "9a22aa81215472f4fd79c8d07259823f2efd469010c285b0aaeec2deb9c177ca",
+      "revision": "0cc658064983536df734d2c053f6363bf1035ef5"
+    },
+    {
+      "kind": "historical-identical",
+      "source": "HGGAN_test/main/docs/diagrams/latex/dev_style_encoder.tex",
+      "destination": "branches/dev/docs/diagrams/latex/dev_style_encoder.tex",
+      "sha256": "6b94319c377e23044247d17a706b216bdc6ea3b43718bf7711aba409dd52bf61",
+      "revision": "0cc658064983536df734d2c053f6363bf1035ef5"
+    },
+    {
+      "kind": "historical-recovered",
+      "source": "HGGAN_test/main/findings.md",
+      "destination": "history/main/findings.md",
+      "sha256": "5ead3bff330c6f39c9cad5214bb8083e0010ffbd7739d97d3d0e226799cfdc12",
+      "revision": "009014e4e67c147710c65d12db6ad0a137b8efc6"
+    },
+    {
+      "kind": "historical-identical",
+      "source": "HGGAN_test/main/networks/backups/dev_6955ee7/README.md",
+      "destination": "branches/dev/networks/backups/dev_6955ee7/README.md",
+      "sha256": "cc5c8ae815e6bd33fe57a1075df7f7b8a6126434fd710b6f72f950ee772545d3",
+      "revision": "f80a3de9d335552121648127317986a01c378cd8"
+    },
+    {
+      "kind": "historical-identical",
+      "source": "HGGAN_test/main/networks/backups/pre_main_discriminator_20260730/README.md",
+      "destination": "branches/dev/networks/backups/pre_main_discriminator_20260730/README.md",
+      "sha256": "e52ca940eeaeb0c22506286c2923a6abac79e7a4575029f04334fd2c7cc3e6eb",
+      "revision": "f80a3de9d335552121648127317986a01c378cd8"
+    },
+    {
+      "kind": "historical-identical",
+      "source": "HGGAN_test/main/output/pdf/dev_full_architecture.pdf",
+      "destination": "branches/dev/docs/diagrams/latex/dev_full_architecture.pdf",
+      "sha256": "2aaf060ecff9889dd933826069a807cb54487830a4c1ee0029bbf5b761727ab3",
+      "revision": "0cc658064983536df734d2c053f6363bf1035ef5"
+    },
+    {
+      "kind": "historical-identical",
+      "source": "HGGAN_test/main/output/pdf/dev_strokepatchd_mechanism.pdf",
+      "destination": "branches/dev/docs/diagrams/latex/dev_strokepatchd_mechanism.pdf",
+      "sha256": "e202090f6ff95ff495b4bdf584e81ea9047188dbb47530df5129639a79515f6f",
+      "revision": "0cc658064983536df734d2c053f6363bf1035ef5"
+    },
+    {
+      "kind": "historical-recovered",
+      "source": "HGGAN_test/main/research-log.md",
+      "destination": "history/main/research-log.md",
+      "sha256": "e0be0bd5bfc14e3c282e7dad8e5f27a5ace92ded5e132a7829faebd7552aad61",
+      "revision": "009014e4e67c147710c65d12db6ad0a137b8efc6"
+    },
+    {
+      "kind": "historical-recovered",
+      "source": "HGGAN_test/main/to_human/kaggle_optimization_report.html",
+      "destination": "history/main/to_human/kaggle_optimization_report.html",
+      "sha256": "0a3eb30b091fe0e3f744d18ec7dc39537fd43f180193f554fcd644064b17537e",
+      "revision": "009014e4e67c147710c65d12db6ad0a137b8efc6"
+    },
+    {
+      "kind": "historical-identical",
+      "source": "HGGAN_test/dev/findings.md",
+      "destination": "history/main/findings.md",
+      "sha256": "5ead3bff330c6f39c9cad5214bb8083e0010ffbd7739d97d3d0e226799cfdc12",
+      "revision": "009014e4e67c147710c65d12db6ad0a137b8efc6"
+    },
+    {
+      "kind": "historical-identical",
+      "source": "HGGAN_test/dev/output/pdf/dev_full_architecture.pdf",
+      "destination": "branches/dev/docs/diagrams/latex/dev_full_architecture.pdf",
+      "sha256": "2aaf060ecff9889dd933826069a807cb54487830a4c1ee0029bbf5b761727ab3",
+      "revision": "0cc658064983536df734d2c053f6363bf1035ef5"
+    },
+    {
+      "kind": "historical-identical",
+      "source": "HGGAN_test/dev/output/pdf/dev_strokepatchd_mechanism.pdf",
+      "destination": "branches/dev/docs/diagrams/latex/dev_strokepatchd_mechanism.pdf",
+      "sha256": "e202090f6ff95ff495b4bdf584e81ea9047188dbb47530df5129639a79515f6f",
+      "revision": "0cc658064983536df734d2c053f6363bf1035ef5"
+    },
+    {
+      "kind": "historical-identical",
+      "source": "HGGAN_test/dev/research-log.md",
+      "destination": "history/main/research-log.md",
+      "sha256": "e0be0bd5bfc14e3c282e7dad8e5f27a5ace92ded5e132a7829faebd7552aad61",
+      "revision": "009014e4e67c147710c65d12db6ad0a137b8efc6"
+    },
+    {
+      "kind": "historical-identical",
+      "source": "HGGAN_test/dev/to_human/kaggle_optimization_report.html",
+      "destination": "history/main/to_human/kaggle_optimization_report.html",
+      "sha256": "0a3eb30b091fe0e3f744d18ec7dc39537fd43f180193f554fcd644064b17537e",
+      "revision": "009014e4e67c147710c65d12db6ad0a137b8efc6"
+    },
+    {
+      "kind": "historical-identical",
+      "source": "HGGAN_test/random_crop_recog/DEV_WEEKLY_COMMIT_REPORT_2026-09-18_to_25.md",
+      "destination": "branches/dev/DEV_WEEKLY_COMMIT_REPORT_2026-09-18_to_25.md",
+      "sha256": "49f0873df36ce0ed6d2a9340ceb6e1042549774712c47e7b5517ee60a609c0c2",
+      "revision": "10c66e580a1ed8891a8bf79d9c89419eadaa9d8f"
+    },
+    {
+      "kind": "historical-identical",
+      "source": "HGGAN_test/random_crop_recog/docs/diagrams/dev_model_loss_map.html",
+      "destination": "branches/dev/docs/diagrams/dev_model_loss_map.html",
+      "sha256": "84ecae34c577c9dec842dacd60b8b48693a19d4c6dd23a9ed60777b3c868cce5",
+      "revision": "23dace1b999d071a5f3e4312944367864792e85d"
+    },
+    {
+      "kind": "historical-identical",
+      "source": "HGGAN_test/random_crop_recog/docs/diagrams/dev_model_overview.html",
+      "destination": "branches/dev/docs/diagrams/dev_model_overview.html",
+      "sha256": "8b34960d6472192fa3e6fb964a728c2f39217b865e1e56e38d0eda4918e8f02d",
+      "revision": "23dace1b999d071a5f3e4312944367864792e85d"
+    },
+    {
+      "kind": "historical-identical",
+      "source": "HGGAN_test/random_crop_recog/docs/diagrams/dev_three_training_flows.html",
+      "destination": "branches/dev/docs/diagrams/dev_three_training_flows.html",
+      "sha256": "b498f106afda705a8c95565d1d8d343c1b70051b018d1f1486b33e431087c38d",
+      "revision": "23dace1b999d071a5f3e4312944367864792e85d"
+    },
+    {
+      "kind": "historical-identical",
+      "source": "HGGAN_test/random_crop_recog/docs/diagrams/latex/README.md",
+      "destination": "branches/dev/docs/diagrams/latex/README.md",
+      "sha256": "6206f689912ea0c05b031efa1d8f5f7bc461c54ac594d8b45b04ad31126aa1ea",
+      "revision": "0cc658064983536df734d2c053f6363bf1035ef5"
+    },
+    {
+      "kind": "historical-identical",
+      "source": "HGGAN_test/random_crop_recog/docs/diagrams/latex/dev_diagram_style.tex",
+      "destination": "branches/dev/docs/diagrams/latex/dev_diagram_style.tex",
+      "sha256": "1305e4254aa3d5e388392b3659011f08cf9bb1bee666243324915ce8b2e87fc2",
+      "revision": "0cc658064983536df734d2c053f6363bf1035ef5"
+    },
+    {
+      "kind": "historical-identical",
+      "source": "HGGAN_test/random_crop_recog/docs/diagrams/latex/dev_full_architecture.pdf",
+      "destination": "branches/dev/docs/diagrams/latex/dev_full_architecture.pdf",
+      "sha256": "2aaf060ecff9889dd933826069a807cb54487830a4c1ee0029bbf5b761727ab3",
+      "revision": "0cc658064983536df734d2c053f6363bf1035ef5"
+    },
+    {
+      "kind": "historical-identical",
+      "source": "HGGAN_test/random_crop_recog/docs/diagrams/latex/dev_full_architecture.tex",
+      "destination": "branches/dev/docs/diagrams/latex/dev_full_architecture.tex",
+      "sha256": "059fe36ed61dea6796dcdfcc10e79f3a374de70dfdbba2a6779660ba1d7b8980",
+      "revision": "0cc658064983536df734d2c053f6363bf1035ef5"
+    },
+    {
+      "kind": "historical-identical",
+      "source": "HGGAN_test/random_crop_recog/docs/diagrams/latex/dev_fusion.pdf",
+      "destination": "branches/dev/docs/diagrams/latex/dev_fusion.pdf",
+      "sha256": "a3178c7b3809cf05bd120fb7a1df5da6c697abc84b85e28ce191a2246676c284",
+      "revision": "0cc658064983536df734d2c053f6363bf1035ef5"
+    },
+    {
+      "kind": "historical-identical",
+      "source": "HGGAN_test/random_crop_recog/docs/diagrams/latex/dev_fusion.tex",
+      "destination": "branches/dev/docs/diagrams/latex/dev_fusion.tex",
+      "sha256": "2f9e9d1999cf9320ace73256524f3f9cbe6692cc4c56614c62f56b388e0b8373",
+      "revision": "0cc658064983536df734d2c053f6363bf1035ef5"
+    },
+    {
+      "kind": "historical-identical",
+      "source": "HGGAN_test/random_crop_recog/docs/diagrams/latex/dev_strokepatchd.pdf",
+      "destination": "branches/dev/docs/diagrams/latex/dev_strokepatchd.pdf",
+      "sha256": "39924bec873c8751996a8459e1174f665472b018c27c8d7896389789a19735ef",
+      "revision": "0cc658064983536df734d2c053f6363bf1035ef5"
+    },
+    {
+      "kind": "historical-identical",
+      "source": "HGGAN_test/random_crop_recog/docs/diagrams/latex/dev_strokepatchd.tex",
+      "destination": "branches/dev/docs/diagrams/latex/dev_strokepatchd.tex",
+      "sha256": "b3d545e47863d105d381a2a1b6e0dfb0b1c9c55457465f9726632a5a2c8618a1",
+      "revision": "0cc658064983536df734d2c053f6363bf1035ef5"
+    },
+    {
+      "kind": "historical-identical",
+      "source": "HGGAN_test/random_crop_recog/docs/diagrams/latex/dev_strokepatchd_mechanism.pdf",
+      "destination": "branches/dev/docs/diagrams/latex/dev_strokepatchd_mechanism.pdf",
+      "sha256": "e202090f6ff95ff495b4bdf584e81ea9047188dbb47530df5129639a79515f6f",
+      "revision": "0cc658064983536df734d2c053f6363bf1035ef5"
+    },
+    {
+      "kind": "historical-identical",
+      "source": "HGGAN_test/random_crop_recog/docs/diagrams/latex/dev_strokepatchd_mechanism.tex",
+      "destination": "branches/dev/docs/diagrams/latex/dev_strokepatchd_mechanism.tex",
+      "sha256": "f25792f6a91b69828f4900a1093ac598fe181aeefab84184d29c38f5efaf460b",
+      "revision": "0cc658064983536df734d2c053f6363bf1035ef5"
+    },
+    {
+      "kind": "historical-identical",
+      "source": "HGGAN_test/random_crop_recog/docs/diagrams/latex/dev_style_encoder.pdf",
+      "destination": "branches/dev/docs/diagrams/latex/dev_style_encoder.pdf",
+      "sha256": "9a22aa81215472f4fd79c8d07259823f2efd469010c285b0aaeec2deb9c177ca",
+      "revision": "0cc658064983536df734d2c053f6363bf1035ef5"
+    },
+    {
+      "kind": "historical-identical",
+      "source": "HGGAN_test/random_crop_recog/docs/diagrams/latex/dev_style_encoder.tex",
+      "destination": "branches/dev/docs/diagrams/latex/dev_style_encoder.tex",
+      "sha256": "6b94319c377e23044247d17a706b216bdc6ea3b43718bf7711aba409dd52bf61",
+      "revision": "0cc658064983536df734d2c053f6363bf1035ef5"
+    },
+    {
+      "kind": "historical-identical",
+      "source": "HGGAN_test/random_crop_recog/findings.md",
+      "destination": "history/main/findings.md",
+      "sha256": "5ead3bff330c6f39c9cad5214bb8083e0010ffbd7739d97d3d0e226799cfdc12",
+      "revision": "009014e4e67c147710c65d12db6ad0a137b8efc6"
+    },
+    {
+      "kind": "historical-identical",
+      "source": "HGGAN_test/random_crop_recog/output/pdf/dev_full_architecture.pdf",
+      "destination": "branches/dev/docs/diagrams/latex/dev_full_architecture.pdf",
+      "sha256": "2aaf060ecff9889dd933826069a807cb54487830a4c1ee0029bbf5b761727ab3",
+      "revision": "0cc658064983536df734d2c053f6363bf1035ef5"
+    },
+    {
+      "kind": "historical-identical",
+      "source": "HGGAN_test/random_crop_recog/output/pdf/dev_strokepatchd_mechanism.pdf",
+      "destination": "branches/dev/docs/diagrams/latex/dev_strokepatchd_mechanism.pdf",
+      "sha256": "e202090f6ff95ff495b4bdf584e81ea9047188dbb47530df5129639a79515f6f",
+      "revision": "0cc658064983536df734d2c053f6363bf1035ef5"
+    },
+    {
+      "kind": "historical-identical",
+      "source": "HGGAN_test/random_crop_recog/research-log.md",
+      "destination": "history/main/research-log.md",
+      "sha256": "e0be0bd5bfc14e3c282e7dad8e5f27a5ace92ded5e132a7829faebd7552aad61",
+      "revision": "009014e4e67c147710c65d12db6ad0a137b8efc6"
+    },
+    {
+      "kind": "historical-identical",
+      "source": "HGGAN_test/random_crop_recog/to_human/kaggle_optimization_report.html",
+      "destination": "history/main/to_human/kaggle_optimization_report.html",
+      "sha256": "0a3eb30b091fe0e3f744d18ec7dc39537fd43f180193f554fcd644064b17537e",
+      "revision": "009014e4e67c147710c65d12db6ad0a137b8efc6"
+    },
+    {
+      "kind": "historical-identical",
+      "source": "HGGAN_test/classic_optimized/BAO_CAO_CAI_TIEN_DEV_01-10_09_2026.md",
+      "destination": "branches/random_crop_recog/BAO_CAO_CAI_TIEN_DEV_01-10_09_2026.md",
+      "sha256": "a31a03e4459f5b8509200e9587d6690dc711f89e725020ddac7c8d510b79bbe2",
+      "revision": "f80a3de9d335552121648127317986a01c378cd8"
+    },
+    {
+      "kind": "historical-identical",
+      "source": "HGGAN_test/classic_optimized/DEV_WEEKLY_COMMIT_REPORT_2026-09-18_to_25.md",
+      "destination": "branches/dev/DEV_WEEKLY_COMMIT_REPORT_2026-09-18_to_25.md",
+      "sha256": "49f0873df36ce0ed6d2a9340ceb6e1042549774712c47e7b5517ee60a609c0c2",
+      "revision": "10c66e580a1ed8891a8bf79d9c89419eadaa9d8f"
+    },
+    {
+      "kind": "historical-identical",
+      "source": "HGGAN_test/classic_optimized/docs/diagrams/dev_model_loss_map.html",
+      "destination": "branches/dev/docs/diagrams/dev_model_loss_map.html",
+      "sha256": "84ecae34c577c9dec842dacd60b8b48693a19d4c6dd23a9ed60777b3c868cce5",
+      "revision": "23dace1b999d071a5f3e4312944367864792e85d"
+    },
+    {
+      "kind": "historical-identical",
+      "source": "HGGAN_test/classic_optimized/docs/diagrams/dev_model_overview.html",
+      "destination": "branches/dev/docs/diagrams/dev_model_overview.html",
+      "sha256": "8b34960d6472192fa3e6fb964a728c2f39217b865e1e56e38d0eda4918e8f02d",
+      "revision": "23dace1b999d071a5f3e4312944367864792e85d"
+    },
+    {
+      "kind": "historical-identical",
+      "source": "HGGAN_test/classic_optimized/docs/diagrams/dev_three_training_flows.html",
+      "destination": "branches/dev/docs/diagrams/dev_three_training_flows.html",
+      "sha256": "b498f106afda705a8c95565d1d8d343c1b70051b018d1f1486b33e431087c38d",
+      "revision": "23dace1b999d071a5f3e4312944367864792e85d"
+    },
+    {
+      "kind": "historical-identical",
+      "source": "HGGAN_test/classic_optimized/docs/diagrams/latex/README.md",
+      "destination": "branches/dev/docs/diagrams/latex/README.md",
+      "sha256": "6206f689912ea0c05b031efa1d8f5f7bc461c54ac594d8b45b04ad31126aa1ea",
+      "revision": "0cc658064983536df734d2c053f6363bf1035ef5"
+    },
+    {
+      "kind": "historical-identical",
+      "source": "HGGAN_test/classic_optimized/docs/diagrams/latex/dev_diagram_style.tex",
+      "destination": "branches/dev/docs/diagrams/latex/dev_diagram_style.tex",
+      "sha256": "1305e4254aa3d5e388392b3659011f08cf9bb1bee666243324915ce8b2e87fc2",
+      "revision": "0cc658064983536df734d2c053f6363bf1035ef5"
+    },
+    {
+      "kind": "historical-identical",
+      "source": "HGGAN_test/classic_optimized/docs/diagrams/latex/dev_full_architecture.pdf",
+      "destination": "branches/dev/docs/diagrams/latex/dev_full_architecture.pdf",
+      "sha256": "2aaf060ecff9889dd933826069a807cb54487830a4c1ee0029bbf5b761727ab3",
+      "revision": "0cc658064983536df734d2c053f6363bf1035ef5"
+    },
+    {
+      "kind": "historical-identical",
+      "source": "HGGAN_test/classic_optimized/docs/diagrams/latex/dev_full_architecture.tex",
+      "destination": "branches/dev/docs/diagrams/latex/dev_full_architecture.tex",
+      "sha256": "059fe36ed61dea6796dcdfcc10e79f3a374de70dfdbba2a6779660ba1d7b8980",
+      "revision": "0cc658064983536df734d2c053f6363bf1035ef5"
+    },
+    {
+      "kind": "historical-identical",
+      "source": "HGGAN_test/classic_optimized/docs/diagrams/latex/dev_fusion.pdf",
+      "destination": "branches/dev/docs/diagrams/latex/dev_fusion.pdf",
+      "sha256": "a3178c7b3809cf05bd120fb7a1df5da6c697abc84b85e28ce191a2246676c284",
+      "revision": "0cc658064983536df734d2c053f6363bf1035ef5"
+    },
+    {
+      "kind": "historical-identical",
+      "source": "HGGAN_test/classic_optimized/docs/diagrams/latex/dev_fusion.tex",
+      "destination": "branches/dev/docs/diagrams/latex/dev_fusion.tex",
+      "sha256": "2f9e9d1999cf9320ace73256524f3f9cbe6692cc4c56614c62f56b388e0b8373",
+      "revision": "0cc658064983536df734d2c053f6363bf1035ef5"
+    },
+    {
+      "kind": "historical-identical",
+      "source": "HGGAN_test/classic_optimized/docs/diagrams/latex/dev_strokepatchd.pdf",
+      "destination": "branches/dev/docs/diagrams/latex/dev_strokepatchd.pdf",
+      "sha256": "39924bec873c8751996a8459e1174f665472b018c27c8d7896389789a19735ef",
+      "revision": "0cc658064983536df734d2c053f6363bf1035ef5"
+    },
+    {
+      "kind": "historical-identical",
+      "source": "HGGAN_test/classic_optimized/docs/diagrams/latex/dev_strokepatchd.tex",
+      "destination": "branches/dev/docs/diagrams/latex/dev_strokepatchd.tex",
+      "sha256": "b3d545e47863d105d381a2a1b6e0dfb0b1c9c55457465f9726632a5a2c8618a1",
+      "revision": "0cc658064983536df734d2c053f6363bf1035ef5"
+    },
+    {
+      "kind": "historical-identical",
+      "source": "HGGAN_test/classic_optimized/docs/diagrams/latex/dev_strokepatchd_mechanism.pdf",
+      "destination": "branches/dev/docs/diagrams/latex/dev_strokepatchd_mechanism.pdf",
+      "sha256": "e202090f6ff95ff495b4bdf584e81ea9047188dbb47530df5129639a79515f6f",
+      "revision": "0cc658064983536df734d2c053f6363bf1035ef5"
+    },
+    {
+      "kind": "historical-identical",
+      "source": "HGGAN_test/classic_optimized/docs/diagrams/latex/dev_strokepatchd_mechanism.tex",
+      "destination": "branches/dev/docs/diagrams/latex/dev_strokepatchd_mechanism.tex",
+      "sha256": "f25792f6a91b69828f4900a1093ac598fe181aeefab84184d29c38f5efaf460b",
+      "revision": "0cc658064983536df734d2c053f6363bf1035ef5"
+    },
+    {
+      "kind": "historical-identical",
+      "source": "HGGAN_test/classic_optimized/docs/diagrams/latex/dev_style_encoder.pdf",
+      "destination": "branches/dev/docs/diagrams/latex/dev_style_encoder.pdf",
+      "sha256": "9a22aa81215472f4fd79c8d07259823f2efd469010c285b0aaeec2deb9c177ca",
+      "revision": "0cc658064983536df734d2c053f6363bf1035ef5"
+    },
+    {
+      "kind": "historical-identical",
+      "source": "HGGAN_test/classic_optimized/docs/diagrams/latex/dev_style_encoder.tex",
+      "destination": "branches/dev/docs/diagrams/latex/dev_style_encoder.tex",
+      "sha256": "6b94319c377e23044247d17a706b216bdc6ea3b43718bf7711aba409dd52bf61",
+      "revision": "0cc658064983536df734d2c053f6363bf1035ef5"
+    },
+    {
+      "kind": "historical-identical",
+      "source": "HGGAN_test/classic_optimized/findings.md",
+      "destination": "history/main/findings.md",
+      "sha256": "5ead3bff330c6f39c9cad5214bb8083e0010ffbd7739d97d3d0e226799cfdc12",
+      "revision": "009014e4e67c147710c65d12db6ad0a137b8efc6"
+    },
+    {
+      "kind": "historical-identical",
+      "source": "HGGAN_test/classic_optimized/networks/backups/dev_6955ee7/README.md",
+      "destination": "branches/dev/networks/backups/dev_6955ee7/README.md",
+      "sha256": "cc5c8ae815e6bd33fe57a1075df7f7b8a6126434fd710b6f72f950ee772545d3",
+      "revision": "f80a3de9d335552121648127317986a01c378cd8"
+    },
+    {
+      "kind": "historical-identical",
+      "source": "HGGAN_test/classic_optimized/networks/backups/pre_main_discriminator_20260730/README.md",
+      "destination": "branches/dev/networks/backups/pre_main_discriminator_20260730/README.md",
+      "sha256": "e52ca940eeaeb0c22506286c2923a6abac79e7a4575029f04334fd2c7cc3e6eb",
+      "revision": "f80a3de9d335552121648127317986a01c378cd8"
+    },
+    {
+      "kind": "historical-identical",
+      "source": "HGGAN_test/classic_optimized/output/pdf/dev_full_architecture.pdf",
+      "destination": "branches/dev/docs/diagrams/latex/dev_full_architecture.pdf",
+      "sha256": "2aaf060ecff9889dd933826069a807cb54487830a4c1ee0029bbf5b761727ab3",
+      "revision": "0cc658064983536df734d2c053f6363bf1035ef5"
+    },
+    {
+      "kind": "historical-identical",
+      "source": "HGGAN_test/classic_optimized/output/pdf/dev_strokepatchd_mechanism.pdf",
+      "destination": "branches/dev/docs/diagrams/latex/dev_strokepatchd_mechanism.pdf",
+      "sha256": "e202090f6ff95ff495b4bdf584e81ea9047188dbb47530df5129639a79515f6f",
+      "revision": "0cc658064983536df734d2c053f6363bf1035ef5"
+    },
+    {
+      "kind": "historical-identical",
+      "source": "HGGAN_test/classic_optimized/research-log.md",
+      "destination": "history/main/research-log.md",
+      "sha256": "e0be0bd5bfc14e3c282e7dad8e5f27a5ace92ded5e132a7829faebd7552aad61",
+      "revision": "009014e4e67c147710c65d12db6ad0a137b8efc6"
+    },
+    {
+      "kind": "historical-identical",
+      "source": "HGGAN_test/classic_optimized/to_human/kaggle_optimization_report.html",
+      "destination": "history/main/to_human/kaggle_optimization_report.html",
+      "sha256": "0a3eb30b091fe0e3f744d18ec7dc39537fd43f180193f554fcd644064b17537e",
+      "revision": "009014e4e67c147710c65d12db6ad0a137b8efc6"
+    }
+  ]
+}

@@ -1,0 +1,1318 @@
+<!doctype html><html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ALPHA so với HiGAN+ — báo cáo contribution</title><style>
+    :root { color-scheme:light; --ink:#233344; --accent:#255e78; }
+    body { margin:0; color:var(--ink); background:#eef1f4; font:17px/1.75 Arial,"DejaVu Sans",sans-serif; }
+    article { max-width:1120px; margin:32px auto; padding:56px 64px; background:white; box-shadow:0 3px 24px #18202a12; }
+    h1 { font:700 37px/1.25 Georgia,serif; margin-bottom:26px; }
+    h2 { font-size:26px; margin-top:46px; border-bottom:1px solid #cfd9e0; padding-bottom:10px; }
+    h3 { font-size:20px; margin-top:30px; color:#255e78; }
+    p { margin:12px 0 18px; } a { color:#175e88; overflow-wrap:anywhere; }
+    table { border-collapse:collapse; width:100%; font-size:14px; line-height:1.5; margin:24px 0; }
+    th { background:#eaf0f5; text-align:left; } td,th { border-bottom:1px solid #d6dfe6; padding:10px 11px; vertical-align:top; }
+    tr:nth-child(even) td { background:#fafbfc; }
+    code { font:0.85em "DejaVu Sans Mono",Consolas,monospace; background:#f0f4f7; padding:2px 4px; border-radius:3px; overflow-wrap:anywhere; }
+    pre { background:#f4f7f9; padding:18px; border-left:3px solid #668fa7; white-space:pre-wrap; line-height:1.6; }
+    pre code { background:none; padding:0; } figure { margin:34px -28px; break-inside:avoid; }
+    svg { width:100%; height:auto; } figcaption { font-size:14px; line-height:1.6; padding:12px 28px; color:#45586b; }
+    .notice { background:#fff5df; padding:15px 20px; border-left:4px solid #b38325; }
+    .contents { padding:18px 22px; border:1px solid #d6dfe6; margin-bottom:36px; background:#f8fafc; }
+    .contents summary { cursor:pointer; font-weight:700; } .contents ul { font-size:14px;line-height:1.65; }
+    @media print { body {background:white;font-size:10pt;} article {padding:0;margin:0;max-width:none;box-shadow:none;}
+       h2 {break-after:avoid;} figure {margin:15px 0;} table {font-size:8pt;} a {color:inherit;} }
+    </style></head><body><article><details class="contents"><summary>Mục lục</summary><div class="toc">
+<ul>
+<li><a href="#alpha-so-voi-higan-thiet-ke-contribution-va-bang-chung">ALPHA so với HiGAN+: thiết kế, contribution và bằng chứng</a><ul>
+<li><a href="#tom-tat">Tóm tắt</a></li>
+<li><a href="#1-pham-vi-phien-ban-va-cach-oc">1. Phạm vi, phiên bản và cách đọc</a></li>
+<li><a href="#2-higan-a-lam-uoc-gi-truoc-khi-co-cac-thay-oi">2. HiGAN+ đã làm được gì trước khi có các thay đổi?</a><ul>
+<li><a href="#21-ban-o-khac-biet">2.1 Bản đồ khác biệt</a></li>
+</ul>
+</li>
+<li><a href="#3-tong-quan-mo-hinh-hien-tai">3. Tổng quan mô hình hiện tại</a></li>
+<li><a href="#4-contribution-1-globallocal-style-representation-lay-evidence-tu-reference">4. Contribution 1 — Global–local style representation lấy evidence từ reference</a><ul>
+<li><a href="#41-motivation-tai-sao-mot-global-vector-chua-u">4.1 Motivation: tại sao một global vector chưa đủ?</a></li>
+<li><a href="#42-backbone-b-va-encoder-e-phai-uoc-phan-biet">4.2 Backbone B và encoder E phải được phân biệt</a></li>
+<li><a href="#43-global-branch-gom-phong-cach-sau-khi-a-nhin-ngu-canh">4.3 Global branch: gom phong cách sau khi đã nhìn ngữ cảnh</a></li>
+<li><a href="#44-local-branch-chon-evidence-khac-voi-tao-appearance">4.4 Local branch: chọn evidence khác với tạo appearance</a></li>
+<li><a href="#45-tai-sao-center-locals-va-gioi-han-cua-lua-chon-nay">4.5 Tại sao center locals? Và giới hạn của lựa chọn này</a></li>
+<li><a href="#46-contribution-uoc-nhan-en-au">4.6 Contribution được nhận đến đâu?</a></li>
+</ul>
+</li>
+<li><a href="#5-contribution-2-content-first-generation-va-spatial-style-retrieval">5. Contribution 2 — Content-first generation và spatial style retrieval</a><ul>
+<li><a href="#51-motivation-tron-style-som-co-van-e-gi">5.1 Motivation: trộn style sớm có vấn đề gì?</a></li>
+<li><a href="#52-contentcontext-self-attention-va-local-mixing-co-hai-vai-tro">5.2 ContentContext: self-attention và local mixing có hai vai trò</a></li>
+<li><a href="#53-global-path-block-specific-khong-co-nghia-moi-block-nhan-style-khac-writer">5.3 Global path: block-specific không có nghĩa mỗi block nhận style khác writer</a></li>
+<li><a href="#54-local-path-vi-sao-ua-style-vao-sau-gblock-1">5.4 Local path: vì sao đưa style vào sau GBlock 1?</a></li>
+<li><a href="#55-allograph-learning-dien-giai-ung-muc-tieu">5.5 Allograph learning: diễn giải đúng mục tiêu</a></li>
+<li><a href="#56-multi-resolution-khong-tao-hai-mo-hinh-rieng">5.6 Multi-resolution không tạo hai mô hình riêng</a></li>
+</ul>
+</li>
+<li><a href="#6-contribution-3-giam-sat-net-bang-strokepatchd-phu-hop-hinh-hoc">6. Contribution 3 — Giám sát nét bằng StrokePatchD phù hợp hình học</a><ul>
+<li><a href="#61-motivation-anh-toan-tu-ung-chua-co-nghia-tung-net-ung">6.1 Motivation: ảnh toàn từ đúng chưa có nghĩa từng nét đúng</a></li>
+<li><a href="#62-crop-policy-hien-tai-khong-con-co-inh-3232-o-moi-resolution">6.2 Crop policy hiện tại — không còn cố định 32×32 ở mọi resolution</a></li>
+<li><a href="#63-p-nhin-gi-trong-moi-crop">6.3 P nhìn gì trong mỗi crop?</a></li>
+<li><a href="#64-vi-sao-thu-tu-tinh-hinge-va-averaging-quan-trong">6.4 Vì sao thứ tự tính hinge và averaging quan trọng?</a></li>
+<li><a href="#65-global-d-uoc-giu-e-nhin-toan-tu">6.5 Global D được giữ để nhìn toàn từ</a></li>
+<li><a href="#66-lien-he-voi-spis-gan-khac-huong-giai-quyet">6.6 Liên hệ với SpiS-GAN — khác hướng giải quyết</a></li>
+</ul>
+</li>
+<li><a href="#7-toan-bo-training-objective-loss-nao-so-voi-cai-gi">7. Toàn bộ training objective: loss nào so với cái gì?</a><ul>
+<li><a href="#71-ba-anh-gia-khong-phai-ba-generator-oc-lap">7.1 Ba ảnh giả, không phải ba generator độc lập</a></li>
+<li><a href="#72-bang-losstargetgradient">7.2 Bảng loss/target/gradient</a></li>
+<li><a href="#73-cong-thuc-tong-hop-va-cac-weights-ang-dung">7.3 Công thức tổng hợp và các weights đang dùng</a></li>
+<li><a href="#74-vi-sao-bo-ordered-local-latent-reconstruction">7.4 Vì sao bỏ ordered-local latent reconstruction?</a></li>
+<li><a href="#75-cai-gi-khong-con-la-losscontribution-active">7.5 Cái gì không còn là loss/contribution active?</a></li>
+</ul>
+</li>
+<li><a href="#8-cac-cai-tien-ho-tro-can-bao-cao-nhung-khong-nen-thoi-thanh-contribution-chinh">8. Các cải tiến hỗ trợ: cần báo cáo nhưng không nên thổi thành contribution chính</a><ul>
+<li><a href="#81-frozen-teachers-va-gradient-i-qua-anh">8.1 Frozen teachers và gradient đi qua ảnh</a></li>
+<li><a href="#811-w-thay-mean-pooling-bang-attentive-statistics-pooling">8.1.1 W thay mean pooling bằng attentive statistics pooling</a></li>
+<li><a href="#812-r-va-pretraining-contract">8.1.2 R và pretraining contract</a></li>
+<li><a href="#82-rare-characters-ma-khong-hardcode-tung-case">8.2 Rare characters mà không hardcode từng case</a></li>
+<li><a href="#83-padding-correctness-khac-voi-foreground-masking">8.3 Padding correctness khác với foreground masking</a></li>
+<li><a href="#84-efficiency-va-reproducibility">8.4 Efficiency và reproducibility</a></li>
+</ul>
+</li>
+<li><a href="#9-ket-qua-thuc-nghiem-a-luu-ieu-gi-thuc-su-uoc-xac-nhan">9. Kết quả thực nghiệm đã lưu: điều gì thực sự được xác nhận?</a><ul>
+<li><a href="#91-nguon-bang-chung">9.1 Nguồn bằng chứng</a></li>
+<li><a href="#92-co-the-so-voi-higan-hoac-spis-gan-khong">9.2 Có thể so với HiGAN+ hoặc SpiS-GAN không?</a></li>
+<li><a href="#93-iem-thap-nhung-local-branch-co-that-su-hoat-ong-khong">9.3 Điểm thấp nhưng local branch có thật sự hoạt động không?</a></li>
+</ul>
+</li>
+<li><a href="#10-co-so-nghien-cuu-bay-bai-bao-va-vai-tro-thuc-su">10. Cơ sở nghiên cứu: bảy bài báo và vai trò thực sự</a></li>
+<li><a href="#11-contribution-statements-co-the-dung-khi-bao-cao">11. Contribution statements có thể dùng khi báo cáo</a><ul>
+<li><a href="#111-neu-thay-hoi-tai-sao-khong-chi-dung-transformer-fusion-khac">11.1 Nếu thầy hỏi “tại sao không chỉ dùng Transformer fusion khác?”</a></li>
+<li><a href="#112-tai-sao-local-tokens-ma-khong-giu-toan-bo-feature-map">11.2 “Tại sao local tokens mà không giữ toàn bộ feature map?”</a></li>
+<li><a href="#113-tai-sao-can-p-neu-a-co-d-va-ocr">11.3 “Tại sao cần P nếu đã có D và OCR?”</a></li>
+</ul>
+</li>
+<li><a href="#12-ablation-can-co-e-bien-design-contribution-thanh-bang-chung">12. Ablation cần có để biến design contribution thành bằng chứng</a></li>
+<li><a href="#13-gioi-han-va-nhung-ieu-khong-nen-claim">13. Giới hạn và những điều không nên claim</a></li>
+<li><a href="#14-ket-luan">14. Kết luận</a></li>
+<li><a href="#phu-luc-a-hyperparameters-va-parameter-counts">Phụ lục A. Hyperparameters và parameter counts</a></li>
+<li><a href="#phu-luc-b-evidence-va-source-map">Phụ lục B. Evidence và source map</a></li>
+<li><a href="#tai-lieu-tham-khao">Tài liệu tham khảo</a></li>
+</ul>
+</li>
+</ul>
+</div>
+</details><h1 id="alpha-so-voi-higan-thiet-ke-contribution-va-bang-chung">ALPHA so với HiGAN+: thiết kế, contribution và bằng chứng</h1>
+<p><strong>Báo cáo kỹ thuật — 15/10/2026</strong><br />
+Đối tượng: nhánh <code>alpha</code> trong HGGAN_test. Ngôn ngữ: tiếng Việt; giữ thuật ngữ tiếng Anh khi giúp đọc chính xác hơn.</p>
+<h2 id="tom-tat">Tóm tắt</h2>
+<p>ALPHA phát triển từ HiGAN+ theo hướng <strong>tách ba trách nhiệm: biểu diễn style, dựng nội dung và giám sát nét chữ</strong>. Thay vì nén toàn bộ reference vào một vector rồi lặp lại cho mọi ký tự, phiên bản hiện tại giữ một global code và bổ sung bảy local evidence tokens. Generator dựng nền cấu trúc từ target text trước; global style điều kiện hóa các residual blocks, còn local evidence được truy xuất tại các vị trí trên feature map. Một StrokePatchD mới đánh giá nét và liên kết cục bộ bằng các crop có kích thước suy ra từ chiều cao ảnh, song song với global discriminator nhìn toàn từ.</p>
+<p>Ba thay đổi tạo thành một thiết kế thống nhất: <strong>E giữ thông tin nào, G sử dụng thông tin đó ở đâu, và D/P kiểm tra sản phẩm ở cấp độ nào</strong>. Đây là contribution ở cấp hệ thống và cách tổ chức representation; không nên tuyên bố attention, depthwise convolution, conditional normalization hay patch discrimination là phát minh mới.</p>
+<p>Checkpoint ALPHA ngày 14/10 đạt FID <strong>2.446330</strong>, KID <strong>0.063558</strong> và HWD <strong>0.093104</strong> tại epoch 74, trên run native 32px. Tuy nhiên, checkpoint này có encoder cũ, trước đợt đơn giản hóa ngày 14/10. Báo cáo vì vậy phân biệt rõ <strong>kết quả lịch sử đã đo</strong> với <strong>kiến trúc hiện tại chưa có kết quả retrain hoàn chỉnh</strong>. Các số liệu cũ không chứng minh riêng tác động của từng module mới.</p>
+<h2 id="1-pham-vi-phien-ban-va-cach-oc">1. Phạm vi, phiên bản và cách đọc</h2>
+<p>Bản code được đối chiếu trực tiếp:</p>
+<table>
+<thead>
+<tr>
+<th>Đối tượng</th>
+<th>Nguồn và phiên bản</th>
+<th>Vai trò trong báo cáo</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>ALPHA hiện tại</td>
+<td><code>alpha</code>, commit <code>7eed74c6b2d5286dc7b3e446ec1db3b165322c39</code></td>
+<td>Nguồn chính để mô tả architecture và loss</td>
+</tr>
+<tr>
+<td>HiGAN+ gốc</td>
+<td>Checkout <code>HiGANplus</code>, commit <code>5d37de733f79e2a72a79c0f66e1865329ff56b4e</code></td>
+<td>Đối chứng kiến trúc; không dùng classic_optimized thay cho bản gốc</td>
+</tr>
+<tr>
+<td>Checkpoint 14/10</td>
+<td><code>chkpoints/14_10_2026/*.pth</code> và lịch sử eval nhúng</td>
+<td>Kết quả của phiên bản trước thay đổi E mới nhất</td>
+</tr>
+<tr>
+<td>Checkpoint 07/10</td>
+<td><code>chkpoints/7_10_2026/*.pth</code></td>
+<td>Bối cảnh thí nghiệm; không nối thành cùng một trajectory</td>
+</tr>
+</tbody>
+</table>
+<p>Các tensor được ký hiệu: <code>x_ref</code> là reference giữ hình học gốc; <code>x</code> là ảnh thật đã được chuẩn hóa cho đường training; <code>y</code> là transcript của ảnh thật; <code>y′</code> là text khác được lấy từ corpus; <code>w</code> là writer identity; <code>g</code> là global style; <code>L</code> là tập local tokens. <code>B</code> là backbone, <code>E</code> là style encoder học trong GAN, <code>G</code> là generator, <code>D</code> là global discriminator, <code>P</code> là StrokePatchD, <code>R</code> là OCR, <code>W</code> là writer head.</p>
+<p><strong>Ba mức khẳng định được dùng xuyên suốt:</strong></p>
+<ul>
+<li><strong>Xác nhận từ code:</strong> module, tensor, công thức hoặc đường gradient hiện hữu trong source.</li>
+<li><strong>Động cơ thiết kế:</strong> lý do hợp lý cho một thay đổi; chưa tự động đồng nghĩa có cải thiện metric.</li>
+<li><strong>Bằng chứng thực nghiệm:</strong> số đo từ checkpoint/log có nguồn; chỉ suy luận trong giới hạn protocol và phiên bản tương ứng.</li>
+</ul>
+<p>Toàn bộ công việc ở đây là đọc và viết báo cáo. Không train lại, không chạy lại full metrics, không sửa model/config/dataset, và không thay đổi Git branch.</p>
+<h2 id="2-higan-a-lam-uoc-gi-truoc-khi-co-cac-thay-oi">2. HiGAN+ đã làm được gì trước khi có các thay đổi?</h2>
+<p>HiGAN+ đã hỗ trợ generation theo text với style ngẫu nhiên hoặc style lấy từ một reference. Trong code gốc, backbone B tạo feature sequence; E dùng valid-width mean pooling, MLP và hai đầu <code>mu/logvar</code> để tạo một vector style 32 chiều. G ghép vector này với embedding của từng ký tự để dựng seed, rồi render ảnh qua bốn GBlocks với conditional batch normalization. Một phép chiếu style tạo conditioning riêng cho các blocks. [P1]</p>
+<p>HiGAN+ <strong>đã có cả D nhìn toàn ảnh và P nhìn patch</strong>. Nó cũng đã dùng OCR/CTC, writer classification, latent reconstruction, pixel reconstruction, contextual matching và KL tùy chế độ. Vì vậy, những câu như “đề xuất dual discriminator”, “lần đầu dùng writer loss” hoặc “thêm contextual loss để so sánh style khác text” sẽ không phản ánh đúng contribution của dự án.</p>
+<p>Điểm có thể cải tiến nằm ở các lựa chọn cụ thể của baseline: một vector style phải giữ nhiều loại thông tin; seed trộn content/style từ rất sớm; G chỉ có cơ chế local mixing dựa trên convolution; patch critic và readout chưa được thiết kế chung cho native 32px/64px. Đây là các giới hạn về representation và inductive bias, không phải khẳng định baseline không học được global/local structure.</p>
+<p>Nguồn code gốc: <a href="https://github.com/ganji15/HiGANplus/blob/5d37de733f79e2a72a79c0f66e1865329ff56b4e/HiGAN%2B/networks/module.py#L65">StyleEncoder</a>, <a href="https://github.com/ganji15/HiGANplus/blob/5d37de733f79e2a72a79c0f66e1865329ff56b4e/HiGAN%2B/networks/BigGAN_networks.py#L113">Generator</a>, <a href="https://github.com/ganji15/HiGANplus/blob/5d37de733f79e2a72a79c0f66e1865329ff56b4e/HiGAN%2B/networks/utils.py#L308">patch extraction</a>.</p>
+<h3 id="21-ban-o-khac-biet">2.1 Bản đồ khác biệt</h3>
+<table>
+<thead>
+<tr>
+<th>Thành phần</th>
+<th>HiGAN+ gốc</th>
+<th>ALPHA hiện tại</th>
+<th>Cách trình bày contribution</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>B</td>
+<td>Residual CNN; stride đầu cố định; có các intermediate maps</td>
+<td>Giữ họ CNN đó; stride/length theo geometry, valid-padding propagation</td>
+<td>Nền tảng kế thừa + cải thiện tính đúng đắn/multi-resolution</td>
+</tr>
+<tr>
+<td>E global</td>
+<td>Pooled sequence → MLP → 32-D style</td>
+<td>Gated width context → valid mean → normalized MLP → global posterior</td>
+<td>Global representation có ngữ cảnh</td>
+</tr>
+<tr>
+<td>E local</td>
+<td>Không có bộ local latent slots độc lập</td>
+<td>7 query slots truy xuất 3 mức feature; 32-D/slot</td>
+<td>Contribution 1</td>
+</tr>
+<tr>
+<td>Content trước seed</td>
+<td>Character embedding ghép style lặp lại</td>
+<td>Self-attention + local gated depthwise FFN, rồi content-only seed</td>
+<td>Contribution 2</td>
+</tr>
+<tr>
+<td>Global style trong G</td>
+<td>Một projection rồi chia conditioning theo block</td>
+<td>Bốn projection MLP riêng; CBN trong cả bốn blocks</td>
+<td>Nâng cấp cơ chế đã có</td>
+</tr>
+<tr>
+<td>Local style trong G</td>
+<td>Không có đường spatial retrieval tương ứng</td>
+<td>Feature pixels query 7 local tokens sau GBlock 1</td>
+<td>Contribution 2</td>
+</tr>
+<tr>
+<td>Global D</td>
+<td>Residual D; readout sum/label-length</td>
+<td>Valid-area mean × shared gain; optional width mixer không bật mặc định</td>
+<td>Chuẩn hóa thang evidence giữa resolutions</td>
+</tr>
+<tr>
+<td>Patch D</td>
+<td>Residual discriminator trên patch 32×32</td>
+<td>Directional depthwise residual P; spatial logits; crop s=H/2</td>
+<td>Contribution 3</td>
+</tr>
+<tr>
+<td>Objective</td>
+<td>Bộ loss đa mục tiêu có sẵn</td>
+<td>Giữ nhiều mục tiêu; sửa phạm vi global/local, thêm cycle/GRL, scheduled weights</td>
+<td>Training design, không nhận toàn bộ loss là mới</td>
+</tr>
+<tr>
+<td>Native resolution</td>
+<td>G gốc định nghĩa 64px</td>
+<td>Cùng bốn stages cho 32px/64px</td>
+<td>Hỗ trợ hình học thống nhất</td>
+</tr>
+</tbody>
+</table>
+<h2 id="3-tong-quan-mo-hinh-hien-tai">3. Tổng quan mô hình hiện tại</h2>
+<figure id="01_overview"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1340 570" role="img">
+<rect width="100%" height="100%" fill="white"/>
+<rect x="25" y="45" width="140" height="65" rx="5" fill="#f1f3f5" stroke="#263746" stroke-width="1.4"/>
+<text x="95.0" y="67.6" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">Reference x</text>
+<text x="95.0" y="87.4" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">valid width</text>
+<rect x="210" y="45" width="140" height="65" rx="5" fill="#e8f0f8" stroke="#263746" stroke-width="1.4"/>
+<text x="280.0" y="69.38095238095238" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="12.301587301587299" fill="#263746">Backbone B</text>
+<text x="280.0" y="85.61904761904762" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="12.301587301587299" fill="#263746">pretrained, frozen</text>
+<rect x="395" y="45" width="140" height="65" rx="5" fill="#e8f0f8" stroke="#263746" stroke-width="1.4"/>
+<text x="465.0" y="67.75714285714285" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="14.761904761904761" fill="#263746">Style encoder E</text>
+<text x="465.0" y="87.24285714285715" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="14.761904761904761" fill="#263746">learned in GAN</text>
+<rect x="585" y="40" width="150" height="65" rx="5" fill="#e6f3ee" stroke="#263746" stroke-width="1.4"/>
+<text x="660.0" y="62.6" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">Global code g</text>
+<text x="660.0" y="82.4" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">32-D</text>
+<rect x="585" y="150" width="150" height="65" rx="5" fill="#e6f3ee" stroke="#263746" stroke-width="1.4"/>
+<text x="660.0" y="172.6" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">7 local codes L</text>
+<text x="660.0" y="192.4" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">7 × 32-D</text>
+<rect x="805" y="40" width="180" height="65" rx="5" fill="#e6f3ee" stroke="#263746" stroke-width="1.4"/>
+<text x="895.0" y="62.6" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">Block-specific</text>
+<text x="895.0" y="82.4" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">style projections</text>
+<polyline points="165,77 210,77" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="210,77 202.0,73.0 202.0,81.0" fill="#263746"/>
+<polyline points="350,77 395,77" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="395,77 387.0,73.0 387.0,81.0" fill="#263746"/>
+<polyline points="535,77 585,77" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="585,77 577.0,73.0 577.0,81.0" fill="#263746"/>
+<polyline points="465,110 465,182 585,182" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="585,182 577.0,178.0 577.0,186.0" fill="#263746"/>
+<polyline points="735,72 805,72" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="805,72 797.0,68.0 797.0,76.0" fill="#263746"/>
+<rect x="25" y="300" width="140" height="65" rx="5" fill="#f1f3f5" stroke="#263746" stroke-width="1.4"/>
+<text x="95.0" y="322.6" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">Target text y</text>
+<text x="95.0" y="342.4" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">character IDs</text>
+<rect x="210" y="300" width="140" height="65" rx="5" fill="#e8f0f8" stroke="#263746" stroke-width="1.4"/>
+<text x="280.0" y="322.6" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">Embedding +</text>
+<text x="280.0" y="342.4" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">ContentContext</text>
+<rect x="395" y="300" width="140" height="65" rx="5" fill="#e8f0f8" stroke="#263746" stroke-width="1.4"/>
+<text x="465.0" y="322.6" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">Content-only</text>
+<text x="465.0" y="342.4" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">spatial seed</text>
+<rect x="585" y="300" width="140" height="65" rx="5" fill="#e8f0f8" stroke="#263746" stroke-width="1.4"/>
+<text x="655.0" y="322.6" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">GBlock 1</text>
+<text x="655.0" y="342.4" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">CBN(global)</text>
+<rect x="790" y="300" width="170" height="65" rx="5" fill="#e6f3ee" stroke="#263746" stroke-width="1.4"/>
+<text x="875.0" y="322.6" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">Spatial style</text>
+<text x="875.0" y="342.4" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">refinement</text>
+<rect x="1000" y="300" width="140" height="65" rx="5" fill="#e8f0f8" stroke="#263746" stroke-width="1.4"/>
+<text x="1070.0" y="322.6" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">GBlocks 2–4</text>
+<text x="1070.0" y="342.4" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">CBN(global)</text>
+<rect x="1180" y="300" width="140" height="65" rx="5" fill="#f1f3f5" stroke="#263746" stroke-width="1.4"/>
+<text x="1250.0" y="322.6" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">Image x̂</text>
+<text x="1250.0" y="342.4" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">H = 32 / 64</text>
+<polyline points="165,332 210,332" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="210,332 202.0,328.0 202.0,336.0" fill="#263746"/>
+<polyline points="350,332 395,332" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="395,332 387.0,328.0 387.0,336.0" fill="#263746"/>
+<polyline points="535,332 585,332" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="585,332 577.0,328.0 577.0,336.0" fill="#263746"/>
+<polyline points="725,332 790,332" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="790,332 782.0,328.0 782.0,336.0" fill="#263746"/>
+<polyline points="960,332 1000,332" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="1000,332 992.0,328.0 992.0,336.0" fill="#263746"/>
+<polyline points="1140,332 1180,332" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="1180,332 1172.0,328.0 1172.0,336.0" fill="#263746"/>
+<polyline points="855,105 855,250 655,250 655,300" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="655,300 659.0,292.0 651.0,292.0" fill="#263746"/>
+<polyline points="985,72 1070,72 1070,300" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="1070,300 1074.0,292.0 1066.0,292.0" fill="#263746"/>
+<polyline points="735,182 875,182 875,300" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="875,300 879.0,292.0 871.0,292.0" fill="#263746"/>
+<text x="805" y="174" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="13" fill="#263746">local K,V</text>
+<rect x="1180" y="445" width="140" height="70" rx="5" fill="#f9e9e5" stroke="#263746" stroke-width="1.4"/>
+<text x="1250.0" y="470.1" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">Global D</text>
+<text x="1250.0" y="489.9" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">StrokePatchD P</text>
+<rect x="790" y="445" width="350" height="70" rx="5" fill="#fff2d6" stroke="#263746" stroke-width="1.4"/>
+<text x="965.0" y="470.1" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">Frozen R, W+B; global re-encoder E</text>
+<text x="965.0" y="489.9" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">CTC / writer / context / latent losses</text>
+<polyline points="1250,365 1250,445" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="1250,445 1254.0,437.0 1246.0,437.0" fill="#263746"/>
+<polyline points="1180,345 1160,345 1160,480 1140,480" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="1140,480 1148.0,484.0 1148.0,476.0" fill="#263746"/>
+<text x="25" y="550" text-anchor="start" font-family="Arial,DejaVu Sans,sans-serif" font-size="14" fill="#263746">Solid arrows: forward tensors. Loss endpoints are expanded in Figures 5–7. CBN: conditional batch normalization.</text>
+</svg><figcaption>Hình 1. Kiến trúc ALPHA hiện tại. B cung cấp feature chung; E tạo một global code và bảy local tokens. Target text đi vào content-only seed. Global conditioning và local spatial retrieval có hai đường riêng. D/P cùng các teachers cung cấp supervision khi train; inference chỉ cần B/E/G cho reference-guided generation hoặc G và prior cho random generation.</figcaption></figure>
+
+<p>Luồng inference chính có thể viết ngắn gọn:</p>
+<pre><code class="language-text">S = E(B(x_ref)) = [g, L1, ..., L7]
+C = ContentContext(Embedding(y′))
+F0 = Reshape(Linear(C))
+F1 = GBlock1(F0; BSSP1(g))
+F1′ = SpatialStyleRefinement(F1, L)
+x̂ = GBlocks2–4(F1′; BSSP2–4(g))
+</code></pre>
+<p>Các GBlocks vẫn là residual convolutional blocks theo nền HiGAN+/BigGAN; không có StarConv, SpiralFC hay texture refinement head trong cấu hình active hiện tại. Attention trong content path và cross-attention trong spatial path không thay thế toàn bộ CNN decoder.</p>
+<h2 id="4-contribution-1-globallocal-style-representation-lay-evidence-tu-reference">4. Contribution 1 — Global–local style representation lấy evidence từ reference</h2>
+<h3 id="41-motivation-tai-sao-mot-global-vector-chua-u">4.1 Motivation: tại sao một global vector chưa đủ?</h3>
+<p>Một reference chứa đồng thời nhiều tín hiệu: độ nghiêng chung, tương phản mực, tỷ lệ nét, độ cong, kiểu nối, cách mở/đóng vòng và bố cục theo chiều cao. Mean pooling có ích để gom đặc điểm chung, nhưng không giữ được toàn bộ tính đa dạng giữa những vùng khác nhau. Khi mọi vị trí trong G chỉ nhận cùng một vector, G phải tự giải mã cả phong cách chung và các biến thể nét từ cùng một bottleneck.</p>
+<p>Điều cần bổ sung không phải “mỗi chữ một token được gán nhãn”, mà là <strong>một bộ evidence nhỏ có thể được truy xuất theo nhu cầu</strong>. Một token có thể giữ dấu hiệu về nét vòng hoặc nét kéo dài mà không cần code quyết định đó là chữ <code>a</code>, <code>g</code>, <code>/</code> hay một allograph cụ thể. Các vai trò như vậy là khả năng learned, không phải semantic labels đã được chứng minh.</p>
+<p>HWT cho thấy một hướng liên quan: giữ style dưới dạng feature sequence và để query content chọn thông tin style bằng attention. ALPHA không sao chép nguyên HWT; nó giữ global writer code, nén local evidence thành số slots cố định và dùng spatial queries trong CNN G. Đây là quan hệ về nguyên lý, không phải tuyên bố lịch sử rằng mọi thay đổi được lấy trực tiếp từ HWT. [P2]</p>
+<h3 id="42-backbone-b-va-encoder-e-phai-uoc-phan-biet">4.2 Backbone B và encoder E phải được phân biệt</h3>
+<p>B vẫn thuộc họ residual CNN của HiGAN+, với ba feature maps có 64, 128 và 256 channels. B được học cùng W ở pretraining và được giữ frozen trong GAN. <strong>Không nên gọi toàn bộ backbone này là một CNN hoàn toàn mới.</strong> Phần context, query attention và global/local projection mới nằm trong E, được học cùng G.</p>
+<p>Đối với native 32px/64px, stride đầu của B được suy ra từ chiều cao: <code>max(1,H//32)</code>. Cùng topology và channels nhưng mức giảm kích thước phù hợp hơn: tổng width reduction tương ứng khoảng 8 hoặc 16. Việc truyền chiều dài hợp lệ qua CNN tránh cho batch padding bị tính thành stroke evidence. Đây là xử lý geometry/validity, không phải mask xóa nền bên trong chữ.</p>
+<p>Nguồn: <a href="https://github.com/rquq/HGGAN_test/blob/7eed74c6b2d5286dc7b3e446ec1db3b165322c39/networks/module.py#L11">StyleBackbone và length propagation</a>, <a href="https://github.com/rquq/HGGAN_test/blob/7eed74c6b2d5286dc7b3e446ec1db3b165322c39/networks/module.py#L301">StyleEncoder</a>.</p>
+<h3 id="43-global-branch-gom-phong-cach-sau-khi-a-nhin-ngu-canh">4.3 Global branch: gom phong cách sau khi đã nhìn ngữ cảnh</h3>
+<p>Feature sequence cuối của B có 256 channels. Hai context blocks tuần tự dùng depthwise convolution kernel 7 với dilation 1 rồi 2, tương ứng receptive field 19 feature positions. Mỗi block có channel normalization, gated expansion và projection, cộng residual với scale học được. Nó không phải full self-attention dài trên toàn ảnh; ưu tiên width context với chi phí vừa phải.</p>
+<p>Sau đó E lấy trung bình chỉ trên chiều dài hợp lệ, chuẩn hóa theo channels, chạy MLP và dự đoán <code>mu_g</code>, <code>logvar_g</code>. Khi VAE bật, chỉ global code được sample:</p>
+<pre><code class="language-text">g = μg + exp(0.5 logvar_g) · ε,      ε ~ N(0,I)
+</code></pre>
+<p>Motivation là tránh gom quá sớm các nét chưa có ngữ cảnh, đồng thời không làm global vector phụ thuộc số cột padding. Normalization giúp scale đầu vào MLP ổn định hơn, nhưng không thể tự khôi phục nét mà reference không có.</p>
+<h3 id="44-local-branch-chon-evidence-khac-voi-tao-appearance">4.4 Local branch: chọn evidence khác với tạo appearance</h3>
+<figure id="02_style_encoder"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1250 650" role="img">
+<rect width="100%" height="100%" fill="white"/>
+<rect x="25" y="270" width="140" height="75" rx="5" fill="#f1f3f5" stroke="#263746" stroke-width="1.4"/>
+<text x="95.0" y="297.75714285714287" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="14.761904761904761" fill="#263746">Reference image</text>
+<text x="95.0" y="317.24285714285713" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="14.761904761904761" fill="#263746">x, valid width</text>
+<rect x="205" y="270" width="170" height="75" rx="5" fill="#e8f0f8" stroke="#263746" stroke-width="1.4"/>
+<text x="290.0" y="297.6" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">Shared frozen B</text>
+<text x="290.0" y="317.4" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">F2 / F3 / F4</text>
+<polyline points="165,307 205,307" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="205,307 197.0,303.0 197.0,311.0" fill="#263746"/>
+<rect x="420" y="45" width="180" height="70" rx="5" fill="#e8f0f8" stroke="#263746" stroke-width="1.4"/>
+<text x="510.0" y="70.1" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">256-D sequence</text>
+<text x="510.0" y="89.9" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">from deepest B map</text>
+<rect x="645" y="45" width="180" height="70" rx="5" fill="#e8f0f8" stroke="#263746" stroke-width="1.4"/>
+<text x="735.0" y="70.1" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">GatedStyleContext</text>
+<text x="735.0" y="89.9" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">DW k7, dilation 1→2</text>
+<rect x="875" y="45" width="160" height="70" rx="5" fill="#e8f0f8" stroke="#263746" stroke-width="1.4"/>
+<text x="955.0" y="70.1" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">Valid mean</text>
+<text x="955.0" y="89.9" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">LayerNorm + MLP</text>
+<rect x="1080" y="45" width="145" height="70" rx="5" fill="#e6f3ee" stroke="#263746" stroke-width="1.4"/>
+<text x="1152.5" y="70.1" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">μg, log σ²g</text>
+<text x="1152.5" y="89.9" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">g = μg + σg ε</text>
+<polyline points="290,270 290,80 420,80" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="420,80 412.0,76.0 412.0,84.0" fill="#263746"/>
+<polyline points="600,80 645,80" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="645,80 637.0,76.0 637.0,84.0" fill="#263746"/>
+<polyline points="825,80 875,80" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="875,80 867.0,76.0 867.0,84.0" fill="#263746"/>
+<polyline points="1035,80 1080,80" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="1080,80 1072.0,76.0 1072.0,84.0" fill="#263746"/>
+<rect x="420" y="270" width="180" height="75" rx="5" fill="#e8f0f8" stroke="#263746" stroke-width="1.4"/>
+<text x="510.0" y="289.09183673469386" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="13.945578231292515" fill="#263746">Pool to 4 height rows</text>
+<text x="510.0" y="307.5" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="13.945578231292515" fill="#263746">1×1 conv → 256</text>
+<text x="510.0" y="325.90816326530614" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="13.945578231292515" fill="#263746">per scale</text>
+<rect x="645" y="245" width="180" height="75" rx="5" fill="#e6f3ee" stroke="#263746" stroke-width="1.4"/>
+<text x="735.0" y="262.7" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">Normalized visual U</text>
+<text x="735.0" y="282.5" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">K = U + 2-D PE</text>
+<text x="735.0" y="302.3" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">V = U − valid mean</text>
+<rect x="645" y="395" width="180" height="70" rx="5" fill="#fff2d6" stroke="#263746" stroke-width="1.4"/>
+<text x="735.0" y="420.1" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">7 learned queries</text>
+<text x="735.0" y="439.9" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">orthogonal init</text>
+<rect x="875" y="270" width="160" height="75" rx="5" fill="#e8f0f8" stroke="#263746" stroke-width="1.4"/>
+<text x="955.0" y="297.6" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">4-head</text>
+<text x="955.0" y="317.4" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">cross-attention</text>
+<rect x="1080" y="270" width="145" height="75" rx="5" fill="#e8f0f8" stroke="#263746" stroke-width="1.4"/>
+<text x="1152.5" y="298.5567226890756" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="13.550420168067225" fill="#263746">Bias-free</text>
+<text x="1152.5" y="316.4432773109244" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="13.550420168067225" fill="#263746">256→32 projection</text>
+<polyline points="375,307 420,307" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="420,307 412.0,303.0 412.0,311.0" fill="#263746"/>
+<polyline points="600,307 625,307 625,282 645,282" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="645,282 637.0,278.0 637.0,286.0" fill="#263746"/>
+<polyline points="825,282 850,282 850,307 875,307" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="875,307 867.0,303.0 867.0,311.0" fill="#263746"/>
+<polyline points="825,430 955,430 955,345" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="955,345 951.0,353.0 959.0,353.0" fill="#263746"/>
+<polyline points="1035,307 1080,307" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="1080,307 1072.0,303.0 1072.0,311.0" fill="#263746"/>
+<rect x="1080" y="430" width="145" height="75" rx="5" fill="#e6f3ee" stroke="#263746" stroke-width="1.4"/>
+<text x="1152.5" y="449.61344537815125" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="13.550420168067225" fill="#263746">Center over slots</text>
+<text x="1152.5" y="467.5" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="13.550420168067225" fill="#263746">Lj ← Lj − mean(L)</text>
+<text x="1152.5" y="485.38655462184875" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="13.550420168067225" fill="#263746">7 local tokens</text>
+<polyline points="1152,345 1152,430" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="1152,430 1156.0,422.0 1148.0,422.0" fill="#263746"/>
+<rect x="420" y="540" width="600" height="65" rx="5" fill="#f1f3f5" stroke="#263746" stroke-width="1.4"/>
+<text x="720.0" y="563.3228571428572" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="13.904761904761902" fill="#263746">Output S = [g, L1, …, L7] ∈ R^(B×8×32)</text>
+<text x="720.0" y="581.6771428571428" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="13.904761904761902" fill="#263746">Only global is stochastic / KL-regularized; local evidence is deterministic</text>
+<polyline points="1225,80 1238,80 1238,625 720,625 720,605" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="720,605 716.0,613.0 724.0,613.0" fill="#263746"/>
+<polyline points="1080,467 1055,467 1055,572 1020,572" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="1020,572 1028.0,576.0 1028.0,568.0" fill="#263746"/>
+<text x="25" y="635" text-anchor="start" font-family="Arial,DejaVu Sans,sans-serif" font-size="14" fill="#263746">Position selects evidence through K; positional vectors and learned queries are not added into appearance V.</text>
+</svg><figcaption>Hình 2. StyleEncoder global–local. Ba feature maps được chiếu về 256 chiều và giữ bốn height rows trước khi tạo local evidence sequence. Position chỉ tham gia keys. Values là visual deviations đã trừ valid-spatial mean riêng từng map. Bảy learned queries truy xuất evidence; đầu projection bias-free tạo 32-D local codes và center chúng theo slots. Global posterior có đường riêng.</figcaption></figure>
+
+<p>Với mỗi map k, E pool chiều cao về 4 rows rồi chiếu pointwise về 256 channels. Average pooling và pointwise projection có thể đổi thứ tự mà giữ kết quả toán học; source hiện tại pool trước để giảm lượng phép chiếu. Sequence được chuẩn hóa một lần theo channel:</p>
+<pre><code class="language-text">Uk = LayerNorm(Flatten(Projection(PoolHeight4(Fk))))
+Kk = Uk + Position2D(k)
+Vk = Uk − Mean_valid_positions(Uk)
+</code></pre>
+<p>Các K/V từ ba scales được nối lại. Learned queries Q có shape <code>[1,7,256]</code>, được khởi tạo orthogonal với scale tương đương Gaussian cũ. Query chỉ chọn evidence qua 4-head attention; nó không được cộng trực tiếp vào code appearance:</p>
+<pre><code class="language-text">A = MultiHeadAttention(Q, concat(Kk), concat(Vk))
+Lj = Wlocal Aj                           # 256 → 32, no bias
+Lj ← Lj − Mean_slots(L)
+</code></pre>
+<p>Tách K và V giải quyết một vấn đề cụ thể: vị trí và learned query có ích để quyết định “nhìn đâu”, nhưng không nên tự trở thành “nét gì”. Nếu cả PE lẫn query prior chảy trực tiếp vào local output, model có thể tạo representation khá ổn định dù evidence giữa references khác nhau. Thiết kế mới bỏ đường appearance trực tiếp từ query, bỏ reliability gate và dùng projection riêng cho locals.</p>
+<p>Valid masks chỉ loại padding ra khỏi attention/mean. <strong>Không có threshold mực, character-ID rule hay special-case cho single digit.</strong> Với reference nghèo thông tin như dấu chấm, model vẫn phải suy luận từ evidence ít ỏi; không có khả năng bảo đảm đoán đúng toàn bộ phong cách writer.</p>
+<h3 id="45-tai-sao-center-locals-va-gioi-han-cua-lua-chon-nay">4.5 Tại sao center locals? Và giới hạn của lựa chọn này</h3>
+<p>Centering khuyến khích locals biểu diễn những khác biệt nội bộ thay vì tất cả lặp lại cùng một offset. Cùng contract được áp dụng cho local random prior; global prior không bị đổi. Tuy nhiên, local centering <strong>không chứng minh độc lập thống kê với global</strong>, không bảo đảm các slots có ý nghĩa semantic khác nhau và không ngăn collapse tuyệt đối.</p>
+<p>Nó cũng tạo ràng buộc quan trọng: với đúng một local token, <code>L−mean(L)=0</code>. Vì vậy, kiến trúc này không có một local branch hữu ích nếu chỉ cấu hình 1 global + 1 local. Với 7 locals, tổng của chúng bằng zero nên còn 6 vector bậc tự do theo trục slots. Đây là trade-off thực sự, cần ghi rõ khi chọn số tokens.</p>
+<h3 id="46-contribution-uoc-nhan-en-au">4.6 Contribution được nhận đến đâu?</h3>
+<p>Cách phát biểu hợp lý: <strong>mở rộng style bottleneck của HiGAN+ thành global writer summary và một tập local visual-evidence tokens đa tỉ lệ, đồng thời tách tín hiệu định vị khỏi appearance values</strong>. Không nên nói đã “giải quyết hoàn toàn allographs”, “mỗi slot học một loại chữ” hoặc “orthogonal initialization bảo đảm không collapse”. Những điều đó cần probe/ablation tương ứng.</p>
+<h2 id="5-contribution-2-content-first-generation-va-spatial-style-retrieval">5. Contribution 2 — Content-first generation và spatial style retrieval</h2>
+<h3 id="51-motivation-tron-style-som-co-van-e-gi">5.1 Motivation: trộn style sớm có vấn đề gì?</h3>
+<p>Trong G gốc, style vector được lặp theo text length rồi ghép với từng character embedding trước seed projection. Cách này đơn giản và hiệu quả, nhưng cùng một bước tuyến tính phải vừa dựng content geometry vừa hấp thụ reference style. Khi reference rất ngắn hoặc feature style có scale bất thường, việc can thiệp sớm có thể làm nội dung khó ổn định hơn.</p>
+<p>Thay đổi hiện tại phân công rõ hơn: target text tạo structural scaffold; global style điều chỉnh cách render qua các stages; local style bổ sung evidence sau khi feature map đã có vị trí. Đây là một inductive bias, không phải tách rời tuyệt đối content và style: CBN của GBlock 1 vẫn làm spatial query có thông tin global writer.</p>
+<h3 id="52-contentcontext-self-attention-va-local-mixing-co-hai-vai-tro">5.2 ContentContext: self-attention và local mixing có hai vai trò</h3>
+<figure id="03_fusion_generator"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1260 590" role="img">
+<rect width="100%" height="100%" fill="white"/>
+<rect x="25" y="45" width="160" height="65" rx="5" fill="#f1f3f5" stroke="#263746" stroke-width="1.4"/>
+<text x="105.0" y="67.6" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">Text embeddings</text>
+<text x="105.0" y="87.4" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">B × T × 120</text>
+<rect x="230" y="45" width="210" height="65" rx="5" fill="#e8f0f8" stroke="#263746" stroke-width="1.4"/>
+<text x="335.0" y="67.6" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">Relative-position</text>
+<text x="335.0" y="87.4" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">self-attention: 4 heads</text>
+<rect x="485" y="45" width="220" height="65" rx="5" fill="#e8f0f8" stroke="#263746" stroke-width="1.4"/>
+<text x="595.0" y="67.6" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">Gated local FFN</text>
+<text x="595.0" y="87.4" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">DWConv1D k5; hidden 360</text>
+<rect x="750" y="45" width="190" height="65" rx="5" fill="#e8f0f8" stroke="#263746" stroke-width="1.4"/>
+<text x="845.0" y="67.6" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">Linear → reshape</text>
+<text x="845.0" y="87.4" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">spatial seed</text>
+<polyline points="185,77 230,77" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="230,77 222.0,73.0 222.0,81.0" fill="#263746"/>
+<polyline points="440,77 485,77" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="485,77 477.0,73.0 477.0,81.0" fill="#263746"/>
+<polyline points="705,77 750,77" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="750,77 742.0,73.0 742.0,81.0" fill="#263746"/>
+<text x="445" y="145" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="14" fill="#263746">Two learned residual handoffs; initial scale 0.25, no sigmoid ceiling</text>
+<rect x="750" y="210" width="190" height="65" rx="5" fill="#e8f0f8" stroke="#263746" stroke-width="1.4"/>
+<text x="845.0" y="232.6" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">GBlock 1 feature F</text>
+<text x="845.0" y="252.4" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">B × 256 × 8 × 4T</text>
+<polyline points="845,110 845,210" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="845,210 849.0,202.0 841.0,202.0" fill="#263746"/>
+<rect x="25" y="245" width="160" height="65" rx="5" fill="#e6f3ee" stroke="#263746" stroke-width="1.4"/>
+<text x="105.0" y="267.6" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">Local codes L</text>
+<text x="105.0" y="287.4" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">B × 7 × 32</text>
+<rect x="230" y="210" width="210" height="65" rx="5" fill="#e6f3ee" stroke="#263746" stroke-width="1.4"/>
+<text x="335.0" y="232.6" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">K = Wk LN(L)</text>
+<text x="335.0" y="252.4" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">V = Wv L</text>
+<rect x="485" y="210" width="220" height="65" rx="5" fill="#e8f0f8" stroke="#263746" stroke-width="1.4"/>
+<text x="595.0" y="232.6" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">Spatial queries</text>
+<text x="595.0" y="252.4" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">Q = Wq LN(flatten F)</text>
+<polyline points="185,277 205,277 205,242 230,242" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="230,242 222.0,238.0 222.0,246.0" fill="#263746"/>
+<polyline points="750,242 705,242" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="705,242 713.0,246.0 713.0,238.0" fill="#263746"/>
+<rect x="485" y="365" width="220" height="75" rx="5" fill="#e6f3ee" stroke="#263746" stroke-width="1.4"/>
+<text x="595.0" y="382.7" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">Attention(Q,K,V)</text>
+<text x="595.0" y="402.5" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">→ output projection</text>
+<text x="595.0" y="422.3" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">→ residual into F</text>
+<polyline points="335,275 335,403 485,403" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="485,403 477.0,399.0 477.0,407.0" fill="#263746"/>
+<polyline points="595,275 595,365" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="595,365 599.0,357.0 591.0,357.0" fill="#263746"/>
+<rect x="750" y="370" width="190" height="65" rx="5" fill="#e8f0f8" stroke="#263746" stroke-width="1.4"/>
+<text x="845.0" y="392.6" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">GBlocks 2–4</text>
+<text x="845.0" y="412.4" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">image refinement</text>
+<polyline points="705,403 750,403" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="750,403 742.0,399.0 742.0,407.0" fill="#263746"/>
+<rect x="1000" y="370" width="230" height="65" rx="5" fill="#f1f3f5" stroke="#263746" stroke-width="1.4"/>
+<text x="1115.0" y="382.7" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">Output</text>
+<text x="1115.0" y="402.5" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">32px: 32 × 16T</text>
+<text x="1115.0" y="422.3" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">64px: 64 × 32T</text>
+<polyline points="940,403 1000,403" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="1000,403 992.0,399.0 992.0,407.0" fill="#263746"/>
+<rect x="1000" y="210" width="230" height="65" rx="5" fill="#fff2d6" stroke="#263746" stroke-width="1.4"/>
+<text x="1115.0" y="232.6" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">Global g → BSSP</text>
+<text x="1115.0" y="252.4" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">CBN in all four blocks</text>
+<polyline points="1000,242 940,242" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="940,242 948.0,246.0 948.0,238.0" fill="#263746"/>
+<polyline points="1115,275 1115,320 845,320 845,370" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="845,370 849.0,362.0 841.0,362.0" fill="#263746"/>
+<text x="25" y="520" text-anchor="start" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">Content self-attention: relationships among target characters.</text>
+<text x="25" y="550" text-anchor="start" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">Spatial cross-attention: image locations select reference-style evidence. They are different operations, not two copies.</text>
+</svg><figcaption>Hình 3. ContentContext và hai đường style trong G. Self-attention trộn các target positions; depthwise gated FFN mô hình hóa lân cận theo chiều từ. Global code tạo CBN conditions cho mọi GBlock. Sau GBlock 1, spatial positions query local reference tokens. Hai attention không có cùng input hay cùng nhiệm vụ.</figcaption></figure>
+
+<p>Character embedding 120-D đi qua hai residual sublayers:</p>
+<pre><code class="language-text">C1 = C + αcontent · SelfAttention(LN(C), relative_position_bias)
+C2 = C1 + αlocal · GatedDepthwiseFFN(LN(C1))
+</code></pre>
+<p>Self-attention có 4 heads, tổng attention dimension 128; nó cho phép một ký tự thấy ngữ cảnh xa hơn vài convolution neighbors. Local FFN có hidden width 360, depthwise convolution kernel 5 trên nhánh value, nhân với SiLU gate rồi chiếu về 120 chiều. Nhánh này ưu tiên transitions giữa các vị trí lân cận. Không có lookup quy tắc “chữ nào phải nối với chữ nào”.</p>
+<p>Hai scale residual khởi tạo 0.25 nhưng là parameters trực tiếp, không sigmoid ceiling. Con số 0.25 là initialization, <strong>không phải giới hạn maximum strength</strong>. Sau đó content-only linear projection và reshape tạo spatial seed. Việc giữ residual path cho phép model chỉnh mức contextualization thay vì phải thay toàn bộ character embedding ngay từ đầu.</p>
+<h3 id="53-global-path-block-specific-khong-co-nghia-moi-block-nhan-style-khac-writer">5.3 Global path: block-specific không có nghĩa mỗi block nhận style khác writer</h3>
+<p>Global code g 32-D được đưa qua bốn MLP riêng. Mỗi MLP gồm hai projections với SiLU ở giữa, tạo một conditioning code 32-D cho một GBlock. Writer identity chung vẫn là g; các stages học cách diễn giải nó khác nhau khi dựng hình học, nét và output detail.</p>
+<p>HiGAN+ đã có per-block style conditioning. Khác biệt ở đây là <strong>bốn nonlinear projections riêng thay cho một projection rồi split</strong>, và global token được tách khỏi local tokens ở interface. Không nên trình bày BSSP như lần đầu đưa style vào từng block. Nguồn: <a href="https://github.com/rquq/HGGAN_test/blob/7eed74c6b2d5286dc7b3e446ec1db3b165322c39/networks/BigGAN_networks.py#L40">BSSP và G wiring</a>.</p>
+<h3 id="54-local-path-vi-sao-ua-style-vao-sau-gblock-1">5.4 Local path: vì sao đưa style vào sau GBlock 1?</h3>
+<p>Sau block đầu, feature có dạng <code>[B,256,8,4T]</code> với T là text canvas length. Mỗi spatial position đã chứa local image context, nên có thể đóng vai trò query. Keys đến từ normalized local codes; values giữ biên độ residual local thay vì normalize chúng rồi trừ global:</p>
+<pre><code class="language-text">Q = Wq LN(Flatten(F1))
+K = Wk LN(L)
+V = Wv L
+F1′ = F1 + αreference · Wo Attention(Q,K,V)
+</code></pre>
+<p>Motivation là để những vùng đang hình thành vòng chữ, nét lên hoặc nét xuống có thể chọn evidence khác nhau. Nếu style chỉ được trộn trước seed, query vẫn chỉ là text position; spatial retrieval được đặt sau block đầu để truy vấn trên representation gần với tác vụ render hơn. Đặt quá muộn lại có thể chỉ sửa texture sau khi geometry đã cứng. Lựa chọn block 1 là một trade-off cụ thể, <strong>chưa có ablation chứng minh nó tối ưu hơn mọi vị trí khác</strong>.</p>
+<p>Local token order không có slot-ID trong G, nên phép attention bất biến với việc hoán vị locals. Đây là tính chất có ích cho một evidence set, nhưng dẫn tới yêu cầu objective cũng phải tôn trọng tính đối xứng đó. Phần loss ở mục 7 giải thích vì sao không ép E khôi phục đúng thứ tự các random local slots.</p>
+<p>Nguồn: <a href="https://github.com/rquq/HGGAN_test/blob/7eed74c6b2d5286dc7b3e446ec1db3b165322c39/networks/fusion.py#L132">ContentContext</a>, <a href="https://github.com/rquq/HGGAN_test/blob/7eed74c6b2d5286dc7b3e446ec1db3b165322c39/networks/fusion.py#L62">spatial refinement</a>, <a href="https://github.com/rquq/HGGAN_test/blob/7eed74c6b2d5286dc7b3e446ec1db3b165322c39/networks/BigGAN_networks.py#L207">G forward</a>.</p>
+<h3 id="55-allograph-learning-dien-giai-ung-muc-tieu">5.5 Allograph learning: diễn giải đúng mục tiêu</h3>
+<p>Allograph là các cách thể hiện khác nhau của cùng ký tự. Cơ chế hiện tại rộng hơn một “allograph module”: nó truy xuất visual evidence tại spatial features, có thể phục vụ độ cong, nối nét, tương phản hoặc texture. Không có token được gán sẵn cho <code>a</code>, <code>r</code>, <code>g</code>; không có kiểm tra transcript reference để đổi strength.</p>
+<p>Model có thể học allographs nếu dữ liệu và image-level losses cung cấp đủ tín hiệu, nhưng không có supervision trực tiếp phân loại allograph. Nếu cần chứng minh contribution đó, nên đo độ nhất quán nét theo writer hoặc làm human study với cùng target/reference, thay vì chỉ dựa vào FID thấp.</p>
+<h3 id="56-multi-resolution-khong-tao-hai-mo-hinh-rieng">5.6 Multi-resolution không tạo hai mô hình riêng</h3>
+<p>G giữ bốn stages và cùng channel schedule <code>512→256→128→64→64</code>. Với 64px, stage cuối upsample; với 32px, stage cuối giữ resolution để refine. Output width là <code>32T</code> hoặc <code>16T</code>. Model không bỏ mất một conditioned stage khi chiều cao nhỏ hơn, và không chọn capacity dựa trên tên dataset hay metric.</p>
+<p>Khác biệt nhỏ về parameter count giữa hai heights đến từ shortcut projection ở block có upsampling, không phải một G32 đã bị giảm đi một nửa channels. Đây là hỗ trợ multi-resolution trong cùng họ architecture, không phải scale invariance toán học tuyệt đối. Nguồn: <a href="https://github.com/rquq/HGGAN_test/blob/7eed74c6b2d5286dc7b3e446ec1db3b165322c39/networks/BigGAN_networks.py#L16">G_arch</a>.</p>
+<h2 id="6-contribution-3-giam-sat-net-bang-strokepatchd-phu-hop-hinh-hoc">6. Contribution 3 — Giám sát nét bằng StrokePatchD phù hợp hình học</h2>
+<h3 id="61-motivation-anh-toan-tu-ung-chua-co-nghia-tung-net-ung">6.1 Motivation: ảnh toàn từ đúng chưa có nghĩa từng nét đúng</h3>
+<p>Một ảnh có bố cục tổng thể plausible vẫn có thể chứa nét răng cưa, vòng chưa khép, vùng mực mờ hoặc nối nét bị đứt. Global D phải tổng hợp một ảnh variable-width; sau downsampling, những lỗi nhỏ có thể không còn đóng góp đủ mạnh. Ngược lại, chỉ nhìn patch thì không biết từ có hình học toàn cục hợp lý hay không. Vì vậy D và P cần phân công chứ không thay thế nhau.</p>
+<p>Ý tưởng kiểm tra cấu trúc cục bộ đã có trong PatchGAN và HiGAN+. Contribution tại đây là <strong>policy lấy crop, directional critic và cách gộp evidence</strong>, không phải ý tưởng local adversarial loss tự thân. [P1, P3]</p>
+<h3 id="62-crop-policy-hien-tai-khong-con-co-inh-3232-o-moi-resolution">6.2 Crop policy hiện tại — không còn cố định 32×32 ở mọi resolution</h3>
+<figure id="04_strokepatchd"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1220 570" role="img">
+<rect width="100%" height="100%" fill="white"/>
+<rect x="25" y="45" width="190" height="75" rx="5" fill="#f1f3f5" stroke="#263746" stroke-width="1.4"/>
+<text x="120.0" y="72.6" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">Valid word image</text>
+<text x="120.0" y="92.4" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">H × W; square s=H/2</text>
+<rect x="265" y="45" width="240" height="75" rx="5" fill="#e8f0f8" stroke="#263746" stroke-width="1.4"/>
+<text x="385.0" y="65.46774193548387" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="12.90322580645161" fill="#263746">Geometry-only sampling</text>
+<text x="385.0" y="82.5" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="12.90322580645161" fill="#263746">K = clamp(ceil(W/s),4,8)</text>
+<text x="385.0" y="99.53225806451613" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="12.90322580645161" fill="#263746">horizontal strata + two y bands</text>
+<rect x="555" y="45" width="180" height="75" rx="5" fill="#e6f3ee" stroke="#263746" stroke-width="1.4"/>
+<text x="645.0" y="62.7" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">K crops per word</text>
+<text x="645.0" y="82.5" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">32px → 16×16</text>
+<text x="645.0" y="102.3" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">64px → 32×32</text>
+<rect x="785" y="45" width="180" height="75" rx="5" fill="#e8f0f8" stroke="#263746" stroke-width="1.4"/>
+<text x="875.0" y="72.6" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">3×3 stem</text>
+<text x="875.0" y="92.4" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">1→64 channels</text>
+<polyline points="215,82 265,82" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="265,82 257.0,78.0 257.0,86.0" fill="#263746"/>
+<polyline points="505,82 555,82" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="555,82 547.0,78.0 547.0,86.0" fill="#263746"/>
+<polyline points="735,82 785,82" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="785,82 777.0,78.0 777.0,86.0" fill="#263746"/>
+<rect x="265" y="235" width="250" height="90" rx="5" fill="#e6f3ee" stroke="#263746" stroke-width="1.4"/>
+<text x="390.0" y="262.2073732718894" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="13.479262672811057" fill="#263746">StrokePatchBlock ×3</text>
+<text x="390.0" y="280.0" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="13.479262672811057" fill="#263746">channels 128 → 192 → 192</text>
+<text x="390.0" y="297.7926267281106" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="13.479262672811057" fill="#263746">shared minimum spatial grid 4×4</text>
+<polyline points="875,120 875,185 390,185 390,235" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="390,235 394.0,227.0 386.0,227.0" fill="#263746"/>
+<rect x="565" y="235" width="220" height="90" rx="5" fill="#f1f3f5" stroke="#263746" stroke-width="1.4"/>
+<text x="675.0" y="262.8265306122449" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="13.010204081632653" fill="#263746">Block anatomy (inset)</text>
+<text x="675.0" y="280.0" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="13.010204081632653" fill="#263746">3×3 conv + (DW 1×5 + DW 5×1)</text>
+<text x="675.0" y="297.1734693877551" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="13.010204081632653" fill="#263746">1×1 fuse + shortcut</text>
+<polyline points="515,305 565,305" fill="none" stroke="#263746" stroke-width="1.6" stroke-dasharray="6 4"/>
+<polygon points="565,305 557.0,301.0 557.0,309.0" fill="#263746"/>
+<rect x="835" y="235" width="220" height="90" rx="5" fill="#f9e9e5" stroke="#263746" stroke-width="1.4"/>
+<text x="945.0" y="270.3828571428571" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="14.57142857142857" fill="#263746">1×1 spatial logit head</text>
+<text x="945.0" y="289.6171428571429" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="14.57142857142857" fill="#263746">no early global averaging</text>
+<polyline points="515,255 535,255 535,210 945,210 945,235" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="945,235 949.0,227.0 941.0,227.0" fill="#263746"/>
+<rect x="565" y="410" width="490" height="80" rx="5" fill="#fff2d6" stroke="#263746" stroke-width="1.4"/>
+<text x="810.0" y="432.5424107142857" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="13.225446428571427" fill="#263746">D phase: hinge per spatial decision → mean map → mean crops/word</text>
+<text x="810.0" y="450.0" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="13.225446428571427" fill="#263746">G phase: negative score → same per-word aggregation</text>
+<text x="810.0" y="467.4575892857143" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="13.225446428571427" fill="#263746">Then average branches equally, not by crop count</text>
+<polyline points="945,325 945,410" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="945,410 949.0,402.0 941.0,402.0" fill="#263746"/>
+<text x="25" y="535" text-anchor="start" font-family="Arial,DejaVu Sans,sans-serif" font-size="14" fill="#263746">Real, random fake, transferred fake and reconstruction use the same sampling policy; coordinates are sampled independently.</text>
+</svg><figcaption>Hình 4. StrokePatchD. Crop size s=H/2 nên native 32px dùng 16×16, native 64px dùng 32×32. Số crop là clamp(ceil(valid_width/s),4,8). Các start positions được stratify theo trục ngang và luân phiên hai dải dọc. P giữ spatial logits và gộp theo từng từ để từ dài không tự có trọng số lớn hơn chỉ vì có nhiều crops.</figcaption></figure>
+
+<p>Trong code HiGAN+ gốc, P kế thừa residual <code>Discriminator</code>; <code>extract_all_patches</code> lấy overlapping 32×32 windows với stride 8. Do đó baseline đã có local refinement thực sự, không phải một head đơn giản trên global feature. Policy mới chuyển từ sliding-window coverage dày sang số crop ngẫu nhiên có giới hạn, giữ kích thước crop tương đối với height. Đây là thay đổi trade-off coverage/compute và cách weighting, không mặc nhiên là “nhiều supervision hơn”.</p>
+<p>Với chiều cao H và valid width W:</p>
+<pre><code class="language-text">s = max(1, floor(H/2))
+K = clamp(ceil(W/s), min_crops=4, max_crops=8)
+</code></pre>
+<p>Khoảng start positions hợp lệ được chia thành K strata. Mỗi crop có một horizontal start ngẫu nhiên trong stratum của nó; vertical start luân phiên lấy từ dải trên và dưới. Điều này tăng coverage, nhưng <strong>không bảo đảm crops không chồng lấp</strong>: strata phân chia start positions, không phân chia toàn bộ vùng pixel.</p>
+<p>Ảnh real, random fake, style-transfer fake và reconstruction fake đều đi qua cùng policy. “Matched” ở đây là <strong>cùng distribution/policy</strong>, không phải cùng tọa độ pixel hoặc patch được ghép nhãn với nhau. Tọa độ được sample độc lập. Từ ngắn hơn crop được điền canonical padding ngoài valid width; không lấy các cột canvas dư làm evidence.</p>
+<p>Policy không cần character boxes, ink segmentation hoặc danh sách special characters. Số crop và crop size dựa trên geometry, dùng cùng công thức ở 32px/64px. Đây là một lựa chọn kiến trúc có hyperparameters 4–8, không phải quy tắc ưu ái một tập ký tự benchmark.</p>
+<h3 id="63-p-nhin-gi-trong-moi-crop">6.3 P nhìn gì trong mỗi crop?</h3>
+<p>P có stem 3×3 với 64 channels và ba residual blocks có output channels <code>128,192,192</code>. Trong mỗi block, một đường convolution 3×3 học local features; hai depthwise paths <code>1×5</code> và <code>5×1</code> học thay đổi theo ngang/dọc, sau đó fuse 1×1 và cộng shortcut. Channels có thể trộn trước/sau directional filters, nên module không chỉ nhìn các nét thẳng theo hai hướng.</p>
+<p>Downsampling dừng khi một chiều sẽ nhỏ hơn 4 cells. Đầu 1×1 tạo spatial logits, không gom toàn crop thành một vector trước khi đưa ra quyết định. Với crop 16px hay 32px ở cấu hình ba blocks, model giữ được grid 4×4 tại output. Đây là geometry-aware floor, không phải branch riêng cho IAM32.</p>
+<p>Nguồn: <a href="https://github.com/rquq/HGGAN_test/blob/7eed74c6b2d5286dc7b3e446ec1db3b165322c39/networks/BigGAN_networks.py#L508">StrokePatchBlock/P</a>, <a href="https://github.com/rquq/HGGAN_test/blob/7eed74c6b2d5286dc7b3e446ec1db3b165322c39/networks/utils.py#L445">sampler và aggregation</a>.</p>
+<h3 id="64-vi-sao-thu-tu-tinh-hinge-va-averaging-quan-trong">6.4 Vì sao thứ tự tính hinge và averaging quan trọng?</h3>
+<p>Trong D phase, hinge phải được tính <strong>trên từng spatial decision trước khi average</strong>. Nếu average logits trước, một vùng quá dễ có thể bù cho một vùng lỗi mà không bị hinge phạt đúng mức. Sau hinge: mean spatial map → mean các crop trong cùng từ → mean các từ; ba fake branches được average bằng nhau.</p>
+<p>Vì mỗi từ có 4–8 crops, việc average per-word ngăn từ dài tự động nhận gradient gấp đôi từ ngắn. Weight <code>lambda_patch_adv=0.45</code> chỉ điều chỉnh patch adversarial term trong G objective; D/P objective không đơn giản nhân toàn bộ patch hinge với 0.45.</p>
+<h3 id="65-global-d-uoc-giu-e-nhin-toan-tu">6.5 Global D được giữ để nhìn toàn từ</h3>
+<p>Global D vẫn thuộc họ residual discriminator. Readout hiện lấy trung bình theo height và valid width, nhân gain chung 32 rồi chạy scalar head. Cách này tránh số feature cells tăng theo height/word length làm đổi thang score. Gain 32 dùng chung cho cả heights, không phải “nếu ảnh 32px thì đổi luật”. Optional WidthContextMixer <strong>không bật trong <code>gan_iam_32.yml</code>/<code>gan_iam_64.yml</code>, nhưng bật với 4 heads trong <code>gan_iam_local.yml</code></strong>. Vì vậy local profile không chỉ khác batch size; không dùng tốc độ/parameter count của nó thay trực tiếp cho normal profile.</p>
+<p>Global D nhận whole-word inputs với augmentation geometry nhẹ trên cả real/fake. Stroke crops chỉ vào P, không bị giả làm “từ hoàn chỉnh” để huấn luyện global D. Đây là bảo toàn semantics của hai critics.</p>
+<h3 id="66-lien-he-voi-spis-gan-khac-huong-giai-quyet">6.6 Liên hệ với SpiS-GAN — khác hướng giải quyết</h3>
+<p>SpiS-GAN đưa Star–Spiral blocks, spiral-modulated discriminator và edge reconstruction vào thiết kế của họ. ALPHA hiện tại không chứa các operators đó. Điểm chung là cùng quan tâm lỗi nét nhỏ sau downsampling; hướng ở đây là style evidence retrieval và một P riêng trên crop, không phải sao chép đường spiral hay Sobel loss. Không có cơ sở nói directional P chắc chắn tốt hơn spiral critic khi chưa ablation. [P4]</p>
+<h2 id="7-toan-bo-training-objective-loss-nao-so-voi-cai-gi">7. Toàn bộ training objective: loss nào so với cái gì?</h2>
+<h3 id="71-ba-anh-gia-khong-phai-ba-generator-oc-lap">7.1 Ba ảnh giả, không phải ba generator độc lập</h3>
+<p>Mỗi G update tạo ba nhóm bằng <strong>cùng một G</strong>:</p>
+<pre><code class="language-text">x̂rand  = G(y′, z)                  # random style, sampled text
+x̂style = G(y′, E(B(x_ref)))        # reference style, new text
+x̂rec   = G(y,  E(B(x_ref)))        # same reference, original text
+</code></pre>
+<p>Reference encoder nhận <code>org_imgs</code>; reconstruction target là <code>style_imgs</code>, bản đã chuẩn hóa cho training width. Chúng giữ cùng nội dung/writer nhưng không nên mô tả pixel target là raw reference width bất kỳ. CXLoss dùng features nên không yêu cầu output style-transfer có cùng text hay cùng pixel alignment với reference.</p>
+<figure id="05_random_flow"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1260 470" role="img">
+<rect width="100%" height="100%" fill="white"/>
+<rect x="25" y="65" width="230" height="80" rx="5" fill="#f1f3f5" stroke="#263746" stroke-width="1.4"/>
+<text x="140.0" y="95.1" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">Random prior [zg,Lz]</text>
+<text x="140.0" y="114.9" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">Target text y′</text>
+<rect x="310" y="65" width="180" height="80" rx="5" fill="#e8f0f8" stroke="#263746" stroke-width="1.4"/>
+<text x="400.0" y="96.59627329192547" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="12.732919254658384" fill="#263746">Shared generator G</text>
+<text x="400.0" y="113.40372670807453" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="12.732919254658384" fill="#263746">(global + local routes)</text>
+<rect x="545" y="65" width="160" height="80" rx="5" fill="#e6f3ee" stroke="#263746" stroke-width="1.4"/>
+<text x="625.0" y="95.1" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">Generated image</text>
+<text x="625.0" y="114.9" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">x̂rand</text>
+<rect x="760" y="65" width="215" height="80" rx="5" fill="#f9e9e5" stroke="#263746" stroke-width="1.4"/>
+<text x="867.5" y="95.9793956043956" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="13.667582417582416" fill="#263746">Global D: whole word</text>
+<text x="867.5" y="114.0206043956044" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="13.667582417582416" fill="#263746">P: stratified stroke crops</text>
+<rect x="1020" y="65" width="215" height="80" rx="5" fill="#f1f3f5" stroke="#263746" stroke-width="1.4"/>
+<text x="1127.5" y="95.1" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">Real image x</text>
+<text x="1127.5" y="114.9" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">Real/fake hinge targets</text>
+<polyline points="255,105 310,105" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="310,105 302.0,101.0 302.0,109.0" fill="#263746"/>
+<polyline points="490,105 545,105" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="545,105 537.0,101.0 537.0,109.0" fill="#263746"/>
+<polyline points="705,105 760,105" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="760,105 752.0,101.0 752.0,109.0" fill="#263746"/>
+<polyline points="1020,105 975,105" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="975,105 983.0,109.0 983.0,101.0" fill="#263746"/>
+<rect x="330" y="245" width="300" height="75" rx="5" fill="#fff2d6" stroke="#263746" stroke-width="1.4"/>
+<text x="480.0" y="272.6" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">Frozen R</text>
+<text x="480.0" y="292.4" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">CTC against y′</text>
+<rect x="690" y="245" width="370" height="75" rx="5" fill="#fff2d6" stroke="#263746" stroke-width="1.4"/>
+<text x="875.0" y="272.6" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">Frozen B → E(global)</text>
+<text x="875.0" y="292.4" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">Info L1 against stopgrad(zg) / 8</text>
+<polyline points="595,145 595,205 480,205 480,245" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="480,245 484.0,237.0 476.0,237.0" fill="#263746"/>
+<polyline points="655,145 655,205 875,205 875,245" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="875,245 879.0,237.0 871.0,237.0" fill="#263746"/>
+<rect x="330" y="365" width="730" height="65" rx="5" fill="#fff2d6" stroke="#263746" stroke-width="1.4"/>
+<text x="695.0" y="387.6" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">Global + patch adversarial</text>
+<text x="695.0" y="407.4" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">+ random CTC + Info</text>
+<polyline points="480,320 480,365" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="480,365 484.0,357.0 476.0,357.0" fill="#263746"/>
+<polyline points="875,320 875,365" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="875,365 879.0,357.0 871.0,357.0" fill="#263746"/>
+<polyline points="867,145 867,175 1120,175 1120,397 1060,397" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="1060,397 1068.0,401.0 1068.0,393.0" fill="#263746"/>
+<text x="25" y="455" text-anchor="start" font-family="Arial,DejaVu Sans,sans-serif" font-size="14" fill="#263746">Same G/E/D/P weights across branches. D/P update: fake detached. G/E update: critics/teachers frozen, image gradients retained.</text>
+</svg><figcaption>Hình 5. Random-generation flow. Random global/local prior và sampled text đi qua G. D/P kiểm tra realism; OCR so với sampled transcript; global re-encoder so với global prior đã stop-gradient. Không có ordered-local reconstruction target trong phiên bản hiện tại.</figcaption></figure>
+
+<figure id="06_transfer_flow"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1260 470" role="img">
+<rect width="100%" height="100%" fill="white"/>
+<rect x="25" y="65" width="230" height="80" rx="5" fill="#f1f3f5" stroke="#263746" stroke-width="1.4"/>
+<text x="140.0" y="95.1" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">Reference x → B → E</text>
+<text x="140.0" y="114.9" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">Target text y′</text>
+<rect x="310" y="65" width="180" height="80" rx="5" fill="#e8f0f8" stroke="#263746" stroke-width="1.4"/>
+<text x="400.0" y="96.59627329192547" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="12.732919254658384" fill="#263746">Shared generator G</text>
+<text x="400.0" y="113.40372670807453" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="12.732919254658384" fill="#263746">(global + local routes)</text>
+<rect x="545" y="65" width="160" height="80" rx="5" fill="#e6f3ee" stroke="#263746" stroke-width="1.4"/>
+<text x="625.0" y="95.1" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">Generated image</text>
+<text x="625.0" y="114.9" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">x̂style</text>
+<rect x="760" y="65" width="215" height="80" rx="5" fill="#f9e9e5" stroke="#263746" stroke-width="1.4"/>
+<text x="867.5" y="95.9793956043956" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="13.667582417582416" fill="#263746">Global D: whole word</text>
+<text x="867.5" y="114.0206043956044" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="13.667582417582416" fill="#263746">P: stratified stroke crops</text>
+<rect x="1020" y="65" width="215" height="80" rx="5" fill="#f1f3f5" stroke="#263746" stroke-width="1.4"/>
+<text x="1127.5" y="95.1" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">Real image x</text>
+<text x="1127.5" y="114.9" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">Real/fake hinge targets</text>
+<polyline points="255,105 310,105" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="310,105 302.0,101.0 302.0,109.0" fill="#263746"/>
+<polyline points="490,105 545,105" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="545,105 537.0,101.0 537.0,109.0" fill="#263746"/>
+<polyline points="705,105 760,105" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="760,105 752.0,101.0 752.0,109.0" fill="#263746"/>
+<polyline points="1020,105 975,105" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="975,105 983.0,109.0 983.0,101.0" fill="#263746"/>
+<rect x="330" y="245" width="300" height="75" rx="5" fill="#fff2d6" stroke="#263746" stroke-width="1.4"/>
+<text x="480.0" y="272.6" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">Frozen R and W+B</text>
+<text x="480.0" y="292.4" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">CTC(y′) + writer CE(w)</text>
+<rect x="690" y="245" width="370" height="75" rx="5" fill="#fff2d6" stroke="#263746" stroke-width="1.4"/>
+<text x="875.0" y="273.22857142857146" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="14.047619047619046" fill="#263746">Frozen B features + E(global)</text>
+<text x="875.0" y="291.77142857142854" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="14.047619047619046" fill="#263746">Context against x; cycle against stopgrad(gx)</text>
+<polyline points="595,145 595,205 480,205 480,245" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="480,245 484.0,237.0 476.0,237.0" fill="#263746"/>
+<polyline points="655,145 655,205 875,205 875,245" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="875,245 879.0,237.0 871.0,237.0" fill="#263746"/>
+<rect x="330" y="365" width="730" height="65" rx="5" fill="#fff2d6" stroke="#263746" stroke-width="1.4"/>
+<text x="695.0" y="387.6" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">Global + patch adversarial</text>
+<text x="695.0" y="407.4" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">+ style CTC + writer + context + cycle</text>
+<polyline points="480,320 480,365" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="480,365 484.0,357.0 476.0,357.0" fill="#263746"/>
+<polyline points="875,320 875,365" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="875,365 879.0,357.0 871.0,357.0" fill="#263746"/>
+<polyline points="867,145 867,175 1120,175 1120,397 1060,397" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="1060,397 1068.0,401.0 1068.0,393.0" fill="#263746"/>
+<text x="25" y="455" text-anchor="start" font-family="Arial,DejaVu Sans,sans-serif" font-size="14" fill="#263746">Same G/E/D/P weights across branches. D/P update: fake detached. G/E update: critics/teachers frozen, image gradients retained.</text>
+</svg><figcaption>Hình 6. Style-transfer flow. Reference cung cấp style; target text khác cung cấp nội dung. D/P kiểm tra realism, R kiểm tra target transcript, W kiểm tra writer identity của reference. Contextual loss so feature reference/transfer không cần pixel alignment; global cycle so code re-encoded với reference global code đã detach.</figcaption></figure>
+
+<figure id="07_reconstruction_flow"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1260 470" role="img">
+<rect width="100%" height="100%" fill="white"/>
+<rect x="25" y="65" width="230" height="80" rx="5" fill="#f1f3f5" stroke="#263746" stroke-width="1.4"/>
+<text x="140.0" y="95.1" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">Reference x → B → E</text>
+<text x="140.0" y="114.9" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">Original transcript y</text>
+<rect x="310" y="65" width="180" height="80" rx="5" fill="#e8f0f8" stroke="#263746" stroke-width="1.4"/>
+<text x="400.0" y="96.59627329192547" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="12.732919254658384" fill="#263746">Shared generator G</text>
+<text x="400.0" y="113.40372670807453" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="12.732919254658384" fill="#263746">(global + local routes)</text>
+<rect x="545" y="65" width="160" height="80" rx="5" fill="#e6f3ee" stroke="#263746" stroke-width="1.4"/>
+<text x="625.0" y="95.1" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">Generated image</text>
+<text x="625.0" y="114.9" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">x̂rec</text>
+<rect x="760" y="65" width="215" height="80" rx="5" fill="#f9e9e5" stroke="#263746" stroke-width="1.4"/>
+<text x="867.5" y="95.9793956043956" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="13.667582417582416" fill="#263746">Global D: whole word</text>
+<text x="867.5" y="114.0206043956044" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="13.667582417582416" fill="#263746">P: stratified stroke crops</text>
+<rect x="1020" y="65" width="215" height="80" rx="5" fill="#f1f3f5" stroke="#263746" stroke-width="1.4"/>
+<text x="1127.5" y="95.1" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">Real image x</text>
+<text x="1127.5" y="114.9" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">Real/fake hinge targets</text>
+<polyline points="255,105 310,105" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="310,105 302.0,101.0 302.0,109.0" fill="#263746"/>
+<polyline points="490,105 545,105" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="545,105 537.0,101.0 537.0,109.0" fill="#263746"/>
+<polyline points="705,105 760,105" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="760,105 752.0,101.0 752.0,109.0" fill="#263746"/>
+<polyline points="1020,105 975,105" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="975,105 983.0,109.0 983.0,101.0" fill="#263746"/>
+<rect x="330" y="245" width="300" height="75" rx="5" fill="#fff2d6" stroke="#263746" stroke-width="1.4"/>
+<text x="480.0" y="272.6" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">Reference posterior μg,log σ²g</text>
+<text x="480.0" y="292.4" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">Global KL against N(0,I) / 8</text>
+<rect x="690" y="245" width="370" height="75" rx="5" fill="#fff2d6" stroke="#263746" stroke-width="1.4"/>
+<text x="875.0" y="272.6" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">Masked pixel L1</text>
+<text x="875.0" y="292.4" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">compare generated x̂rec with real x</text>
+<polyline points="140,145 140,282 330,282" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="330,282 322.0,278.0 322.0,286.0" fill="#263746"/>
+<polyline points="655,145 655,205 875,205 875,245" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="875,245 879.0,237.0 871.0,237.0" fill="#263746"/>
+<rect x="330" y="365" width="730" height="65" rx="5" fill="#fff2d6" stroke="#263746" stroke-width="1.4"/>
+<text x="695.0" y="387.6" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">Global + patch adversarial</text>
+<text x="695.0" y="407.4" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">+ pixel reconstruction; KL on E</text>
+<polyline points="480,320 480,365" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="480,365 484.0,357.0 476.0,357.0" fill="#263746"/>
+<polyline points="875,320 875,365" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="875,365 879.0,357.0 871.0,357.0" fill="#263746"/>
+<polyline points="867,145 867,175 1120,175 1120,397 1060,397" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="1060,397 1068.0,401.0 1068.0,393.0" fill="#263746"/>
+<text x="25" y="455" text-anchor="start" font-family="Arial,DejaVu Sans,sans-serif" font-size="14" fill="#263746">Same G/E/D/P weights across branches. D/P update: fake detached. G/E update: critics/teachers frozen, image gradients retained.</text>
+</svg><figcaption>Hình 7. Reconstruction flow. G nhận transcript gốc và reference style; output được so L1 với ảnh thật đã chuẩn hóa. Reconstruction cũng chịu D/P adversarial. KL đặt lên reference global posterior, không đặt lên pixels và không phải một KL riêng cho từng ảnh giả. CTC không chạy thêm trên reconstruction trong code hiện tại.</figcaption></figure>
+
+<h3 id="72-bang-losstargetgradient">7.2 Bảng loss/target/gradient</h3>
+<table>
+<thead>
+<tr>
+<th>Loss active</th>
+<th>Prediction / đối tượng được đánh giá</th>
+<th>Target hoặc đối tượng so sánh</th>
+<th>Parameters được update trong G phase</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Global adversarial</td>
+<td>D trên cả ba nhóm fake</td>
+<td>Điểm “real” qua <code>−mean(D(fake))</code></td>
+<td>G; E với reference branches</td>
+</tr>
+<tr>
+<td>Patch adversarial</td>
+<td>P trên crop của cả ba nhóm fake</td>
+<td>Điểm “real” qua local critic</td>
+<td>G; E với reference branches</td>
+</tr>
+<tr>
+<td>Random CTC</td>
+<td>R(x̂rand)</td>
+<td>Sampled transcript y′</td>
+<td>G</td>
+</tr>
+<tr>
+<td>Style CTC</td>
+<td>R(x̂style)</td>
+<td>Sampled transcript y′</td>
+<td>G và E</td>
+</tr>
+<tr>
+<td>Info / random style reconstruction</td>
+<td>E_global(B(x̂rand))</td>
+<td>stop-gradient(z_global)</td>
+<td>G và global path của E</td>
+</tr>
+<tr>
+<td>Style cycle</td>
+<td>E_global(B(x̂style))</td>
+<td>stop-gradient(g_reference)</td>
+<td>G và E</td>
+</tr>
+<tr>
+<td>Pixel reconstruction</td>
+<td>x̂rec trên valid pixels</td>
+<td>x đã chuẩn hóa width</td>
+<td>G và E</td>
+</tr>
+<tr>
+<td>Writer CE</td>
+<td>W(B(x̂style))</td>
+<td>Writer w của reference</td>
+<td>G và E; W/B frozen</td>
+</tr>
+<tr>
+<td>Contextual</td>
+<td>B features của x̂style</td>
+<td>B features reference đã detach</td>
+<td>G và E; B frozen</td>
+</tr>
+<tr>
+<td>Content-adversarial</td>
+<td>Probe(global reference code)</td>
+<td>Bag-of-characters của transcript reference</td>
+<td>Probe học phân loại; E nhận gradient đảo dấu qua GRL</td>
+</tr>
+<tr>
+<td>KL</td>
+<td>μg, logvar_g của reference</td>
+<td>Standard normal N(0,I)</td>
+<td>Global posterior của E</td>
+</tr>
+<tr>
+<td>Real/fake hinge, R1</td>
+<td>D/P real-vs-fake; R1 trên real input của D</td>
+<td>Real/fake sign, gradient penalty</td>
+<td>Chỉ D/P trong critic phase</td>
+</tr>
+</tbody>
+</table>
+<p>“E nhận gradient” không có nghĩa mọi parameter của E nhận gradient trực tiếp từ mọi loss. Ví dụ fake global-only re-encoding bỏ qua local retrieval; KL không tác động trực tiếp vào local posterior vì không có local Gaussian posterior. Local evidence được học qua các image-generation objectives của reference branches.</p>
+<h3 id="73-cong-thuc-tong-hop-va-cac-weights-ang-dung">7.3 Công thức tổng hợp và các weights đang dùng</h3>
+<p>Đặt <code>Aglobal = −(D(x̂rand)+D(x̂style)+D(x̂rec))/3</code>; <code>Apatch</code> có cấu trúc tương tự sau per-word aggregation. G objective là:</p>
+<pre><code class="language-text">LG = Aglobal + 0.45 Apatch
+   + λctc_rand(t) CTC(R(x̂rand), y′)
+   + λctc_style(t) CTC(R(x̂style), y′)
+   + 1.0 Linfo + 1.0 Lcycle + 0.02 Lcontent_adv
+   + 0.5 Lwriter + λrec(t) Lpixel + 0.1 Lcontext + 0.1 LKL
+</code></pre>
+<table>
+<thead>
+<tr>
+<th>Weight / schedule</th>
+<th>Giá trị config hiện tại</th>
+<th>Motivation; không phải kết luận metric</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Random CTC</td>
+<td>1.0 → 0.4, epochs 10–20</td>
+<td>Giữ readability; giảm áp lực canonicalization về sau</td>
+</tr>
+<tr>
+<td>Style CTC</td>
+<td>0.5 → 0.20, epochs 8–28</td>
+<td>Nhẹ hơn random path để không ép nét writer thành dạng OCR ưa thích</td>
+</tr>
+<tr>
+<td>Pixel reconstruction</td>
+<td>10.0 → 2.5, epochs 24–42</td>
+<td>Học alignment sớm, giảm ưu tiên pixel averaging về sau</td>
+</tr>
+<tr>
+<td>Info / style cycle</td>
+<td>1.0 / 1.0; global mean L1 chia 8</td>
+<td>Giữ global conditioning và transfer consistency</td>
+</tr>
+<tr>
+<td>Content adversarial</td>
+<td>0.02, BCE bag-of-characters qua GRL, chia 8</td>
+<td>Hạn chế global code mang transcript reference</td>
+</tr>
+<tr>
+<td>Global KL</td>
+<td>0.1 × mean KL / 8</td>
+<td>Khớp prior mà không ép local evidence thành Gaussian</td>
+</tr>
+<tr>
+<td>Writer / contextual</td>
+<td>0.5 / 0.1</td>
+<td>Giữ writer cues và non-aligned feature statistics</td>
+</tr>
+<tr>
+<td>Global-D R1</td>
+<td>λ=0.01, mỗi 32 critic iterations, lazy-scaled</td>
+<td>Smooth real-input critic gradients; không phải loss làm nét ảnh trực tiếp</td>
+</tr>
+</tbody>
+</table>
+<p>Đây là giá trị <strong>code/config hiện tại</strong>, không được giả định áp dụng từ epoch đầu đến cuối mọi checkpoint lịch sử đã resume.</p>
+<h3 id="74-vi-sao-bo-ordered-local-latent-reconstruction">7.4 Vì sao bỏ ordered-local latent reconstruction?</h3>
+<p>G xem locals như một set không thứ tự. Nếu hoán vị các local slots, attention và ảnh output gần như không đổi. Nhưng nếu Info loss bắt E khôi phục đúng ordered local vectors của random input, cùng một ảnh có thể bị yêu cầu trả về nhiều thứ tự target khác nhau. Đây là non-identifiability của objective, không phải chỉ thiếu capacity.</p>
+<p>Phiên bản hiện tại chỉ reconstruct global code. Các local tokens không bị ép phải có thứ tự semantic cố định mà G không sử dụng. Việc chia global loss cho 8 giữ contribution của global tương ứng với all-token mean cũ; nếu bỏ hệ số mà giữ lambda, global supervision sẽ tăng tám lần so với contribution global trước đó. MAIN 5-token là một experiment khác và không thuộc cấu hình ALPHA của báo cáo này.</p>
+<p>Đối với content-adversarial, dự án dùng gradient reversal theo nguyên lý adversarial representation learning; ở đây “nuisance” cần hạn chế là content của reference, không phải domain label như DANN. GRL là cơ chế kế thừa ý tưởng đã có, không phải layer mới do dự án phát minh. [P7]</p>
+<h3 id="75-cai-gi-khong-con-la-losscontribution-active">7.5 Cái gì không còn là loss/contribution active?</h3>
+<p>Không có frequency-distribution loss active, texture-refinement head active hay loss riêng gán cho <code>a</code>, <code>b</code>, <code>/</code> và single digits. Gram helper còn trong utility không có nghĩa Gram loss đang tham gia LG; cần nhìn call site và config. Contextual loss vẫn bật ở weight 0.1 và là thành phần kế thừa, không nên đổi tên nó thành contribution mới.</p>
+<p>HiGAN+ dùng contextual matching vì reference và output khác text không thể so L1 theo pixel. Hiện tại loss được triển khai valid-length-aware, trừ mean theo từng sample và giới hạn tối đa 256 feature positions trước matching để tránh chi phí quadratic quá lớn. Đây là một adaptation của contextual loss và một cải thiện implementation, không phải công thức loss hoàn toàn mới. [P6]</p>
+<p>Nguồn objective: <a href="https://github.com/rquq/HGGAN_test/blob/7eed74c6b2d5286dc7b3e446ec1db3b165322c39/networks/model.py#L2090">G/D training loop</a>, <a href="https://github.com/rquq/HGGAN_test/blob/7eed74c6b2d5286dc7b3e446ec1db3b165322c39/networks/model.py#L2350">global objectives</a>, <a href="https://github.com/rquq/HGGAN_test/blob/7eed74c6b2d5286dc7b3e446ec1db3b165322c39/networks/loss.py#L42">loss implementations</a>.</p>
+<h2 id="8-cac-cai-tien-ho-tro-can-bao-cao-nhung-khong-nen-thoi-thanh-contribution-chinh">8. Các cải tiến hỗ trợ: cần báo cáo nhưng không nên thổi thành contribution chính</h2>
+<h3 id="81-frozen-teachers-va-gradient-i-qua-anh">8.1 Frozen teachers và gradient đi qua ảnh</h3>
+<p>W/B được giữ ở eval mode trong GAN; parameters không được optimizer update. R cũng eval, riêng phần cuDNN RNN giữ training flag cần thiết cho backward qua input. “Frozen teacher” không có nghĩa dùng no-grad khi chấm ảnh fake: gradient vẫn phải đi qua R/W/B để tới generated pixels, G và E.</p>
+<p>Native W+B/R cho 32px và 64px được pretrained riêng theo resolution/data contract. Cùng tên loss nhưng teacher khác chất lượng có thể đổi training dynamics. Vì vậy đây cũng là một biến cần kiểm soát khi muốn chứng minh một module GAN hiệu quả.</p>
+<p>Nguồn: <a href="https://github.com/rquq/HGGAN_test/blob/7eed74c6b2d5286dc7b3e446ec1db3b165322c39/networks/model.py#L968">GAN set_mode override</a>.</p>
+<h3 id="811-w-thay-mean-pooling-bang-attentive-statistics-pooling">8.1.1 W thay mean pooling bằng attentive statistics pooling</h3>
+<p>Writer head trong current config dùng <code>attentive_stats</code>, khác với uniform mean pooling của W gốc. Một mạng nhỏ học trọng số theo width positions hợp lệ; W lấy cả weighted mean và weighted standard deviation của 256-D features, ghép thành 512-D rồi chiếu về 256-D trước classifier. Motivation là hai ảnh có cùng mean feature vẫn có thể khác mức biến thiên nét/spacing; std cung cấp thông tin mà mean không giữ. Attention có thể giảm ảnh hưởng vùng ít thông tin, nhưng không có bảo đảm tự tìm đúng mọi stroke.</p>
+<p>Đây là thay đổi của <strong>writer teacher/pooling</strong>, không phải local-token attention trong E. W không có bảy slots và không trực tiếp sinh ảnh. Khi chấm transfer image, gradient qua W/B hướng G/E giữ writer cues. Để so architecture GAN công bằng, cần giữ nguyên cùng bộ W+B teachers ở các ablations; teacher tốt hơn có thể là một phần nguyên nhân cải thiện toàn hệ thống nhưng không được gán nhầm cho fusion.</p>
+<h3 id="812-r-va-pretraining-contract">8.1.2 R và pretraining contract</h3>
+<p>R vẫn là residual CNN + BiLSTM/CTC theo họ HiGAN+, không bị đổi thành Transformer OCR. Thay đổi chính là stride/length support cho native 32/64, alphabet 81 classes, API log-probability rõ ràng và pipeline polarity nhất quán. Generated tensors được đưa trực tiếp vào R trong GAN, không invert lần nữa giữa G và teacher. Padding background theo convention nội bộ không đồng nghĩa màu hiển thị của PNG export.</p>
+<p>Current pretrain configs đặt 100 epochs, eval mỗi 10 epochs và EMA teacher có thể bật/tắt. Writer pretraining dùng mixture raw/style-normalized inputs, balancing theo writer và attentive pooling; OCR có augmentation label-preserving. Các lựa chọn này phục vụ robust teacher features, nhưng báo cáo không có ablation để nói riêng EMA hay augmentation đã giảm KID bao nhiêu. W validation trên <code>trnval</code> đo closed-set training-writer classification; không nên dùng WIER thấp ở đó làm bằng chứng nhận diện unseen test writers.</p>
+<h3 id="82-rare-characters-ma-khong-hardcode-tung-case">8.2 Rare characters mà không hardcode từng case</h3>
+<p>Sampler tăng xác suất của từ thật trong corpus có ký tự hiếm, dùng inverse-square-root character frequency. Nó không tạo chuỗi punctuation/digit ngẫu nhiên không xuất hiện trong training corpus, cũng không bật một module khác khi reference là dấu chấm. Alphabet hiện có 81 classes bao gồm blank và <code>*</code>; unknown symbols báo lỗi thay vì âm thầm map sang ký tự khác.</p>
+<p>VATr++ là đối chiếu phù hợp cho motivation: distribution của text và bias của auxiliary networks ảnh hưởng long-tail glyphs; chuẩn hóa evaluation cũng quan trọng. Dự án chọn oversample từ có thật, khác với augmentation thay ký tự của VATr++. Không nên viết rằng đã cài nguyên thuật toán VATr++ nếu chỉ cùng xử lý vấn đề imbalance. [P5]</p>
+<h3 id="83-padding-correctness-khac-voi-foreground-masking">8.3 Padding correctness khác với foreground masking</h3>
+<p>Các valid-length masks còn tồn tại ở CNN features, attention, reconstruction và output tail. Chúng loại phần batch canvas không thuộc ảnh; không cắt nền giấy trong valid region, không threshold texture và không ép foreground thành binary. Xóa những masks này có thể làm padding chi phối style/pooling/loss. Vì vậy câu “đã bỏ masking” chỉ nên dùng nếu nói đúng loại foreground/background masking đã tắt, không phải toàn bộ validity handling.</p>
+<h3 id="84-efficiency-va-reproducibility">8.4 Efficiency và reproducibility</h3>
+<p>Ba fake branches được batch chung khi forward G. Real B features được cache trong batch; fake global-only re-encodings không chạy local retrieval không dùng đến. Writer/context losses dùng lại feature pass của transfer. EMA giữ snapshot G/E và đồng bộ buffers. Checkpoint lưu optimizer, scheduler, RNG, progress và eval history; CSV ngoài run folder có thể được tái tạo từ checkpoint.</p>
+<p>Đây là các cải tiến engineering giúp training dễ kiểm tra và ít làm việc thừa hơn. Không có benchmark thời gian kiểm soát trong lần báo cáo này, nên không quy đổi chúng thành tuyên bố “nhanh hơn X%”. Toàn bộ profile đang mô tả là FP32.</p>
+<h2 id="9-ket-qua-thuc-nghiem-a-luu-ieu-gi-thuc-su-uoc-xac-nhan">9. Kết quả thực nghiệm đã lưu: điều gì thực sự được xác nhận?</h2>
+<h3 id="91-nguon-bang-chung">9.1 Nguồn bằng chứng</h3>
+<p>Đã đọc <code>.pth</code> trên CPU, kiểm tra các hàng CSV nhúng với CSV phân tích cũ; cả chín checkpoint được kiểm tra có lịch sử khớp chính xác. Không lấy tên file làm bằng chứng duy nhất, không ghép best FID của một epoch với best KID/HWD của epoch khác. Bảng dưới dùng <strong>ba metrics cùng một hàng epoch</strong>. KID trong evaluator này là polynomial MMD trung bình <strong>nhân 100</strong>.</p>
+<table>
+<thead>
+<tr>
+<th>Snapshot</th>
+<th>Checkpoint / epoch</th>
+<th style="text-align: right;">FID ↓</th>
+<th style="text-align: right;">KID ×100 ↓</th>
+<th style="text-align: right;">HWD ↓</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>ALPHA 07/10</td>
+<td>best / 46</td>
+<td style="text-align: right;">3.261411</td>
+<td style="text-align: right;">0.103138</td>
+<td style="text-align: right;">0.123412</td>
+</tr>
+<tr>
+<td>ALPHA 07/10</td>
+<td>last / 48</td>
+<td style="text-align: right;">3.318018</td>
+<td style="text-align: right;">0.114214</td>
+<td style="text-align: right;">0.126290</td>
+</tr>
+<tr>
+<td>ALPHA 14/10</td>
+<td>best FID / 74</td>
+<td style="text-align: right;"><strong>2.446330</strong></td>
+<td style="text-align: right;">0.063558</td>
+<td style="text-align: right;"><strong>0.093104</strong></td>
+</tr>
+<tr>
+<td>ALPHA 14/10</td>
+<td>alternate best / 61</td>
+<td style="text-align: right;">2.505184</td>
+<td style="text-align: right;"><strong>0.063397</strong></td>
+<td style="text-align: right;">0.113436</td>
+</tr>
+<tr>
+<td>ALPHA 14/10</td>
+<td>last / 98</td>
+<td style="text-align: right;">2.821970</td>
+<td style="text-align: right;">0.094728</td>
+<td style="text-align: right;">0.103072</td>
+</tr>
+<tr>
+<td>MAIN 14/10, đối chiếu lịch sử</td>
+<td>best / 87</td>
+<td style="text-align: right;">2.759759</td>
+<td style="text-align: right;">0.091686</td>
+<td style="text-align: right;">0.078269</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Tất cả các hàng trên là 32px.</strong> Không dùng chúng làm bằng chứng trực tiếp rằng 32px tốt hơn/kém hơn 64px. MAIN trong bảng là architecture và fine-tune config cũ, không phải MAIN đã đồng bộ code/token experiment ngày 14/10.</p>
+<p>Từ hai snapshot ALPHA best, FID thấp hơn khoảng 25.0%, KID thấp hơn khoảng 38.4% và HWD thấp hơn khoảng 24.6%. Đây chỉ là chênh lệch giữa <strong>hai kết quả lịch sử khác architecture và training budget</strong>, không phải ước lượng causal effect của spatial fusion hoặc encoder. Run 07/10 còn có StarConv/ReferenceStyleAttention; 14/10 có ContentContext/SpatialStyleRefinement và train lâu hơn.</p>
+<p>So last98 với best74 trong cùng lịch sử 14/10, FID tăng khoảng 15.36%, KID tăng 49.04%, HWD tăng 10.71%. Điều này cho thấy last không phải checkpoint tốt nhất và late training có regression; không có nghĩa model collapse toàn cục hay LR là nguyên nhân duy nhất. Chênh lệch KID giữa epoch61 và74 chỉ khoảng 0.000160, không có repeat/error bars để khẳng định epoch61 tốt hơn có ý nghĩa thống kê.</p>
+<h3 id="92-co-the-so-voi-higan-hoac-spis-gan-khong">9.2 Có thể so với HiGAN+ hoặc SpiS-GAN không?</h3>
+<table>
+<thead>
+<tr>
+<th>Nguồn</th>
+<th>Model / resolution</th>
+<th style="text-align: right;">FID</th>
+<th style="text-align: right;">KID</th>
+<th style="text-align: right;">HWD</th>
+<th>Giá trị sử dụng</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>SpiS-GAN paper, IAM table</td>
+<td>HiGAN+ / 64px</td>
+<td style="text-align: right;">10.17</td>
+<td style="text-align: right;">khoảng 0.44–0.45 tùy bảng</td>
+<td style="text-align: right;">0.33</td>
+<td>Mốc từ publication, không phải paired local benchmark</td>
+</tr>
+<tr>
+<td>SpiS-GAN paper, IAM table</td>
+<td>SpiS-GAN / 32px</td>
+<td style="text-align: right;">4.37</td>
+<td style="text-align: right;">0.06</td>
+<td style="text-align: right;">0.51</td>
+<td>Mốc từ publication; protocol cần đối chiếu</td>
+</tr>
+<tr>
+<td>Local native32 baseline benchmark</td>
+<td>SpiS-GAN / 32px</td>
+<td style="text-align: right;">4.581947</td>
+<td style="text-align: right;">0.086179</td>
+<td style="text-align: right;">0.171112</td>
+<td>Kết quả script benchmark cũ, không rerun lần này</td>
+</tr>
+<tr>
+<td>Local native32 baseline benchmark</td>
+<td>FW-GAN / 32px</td>
+<td style="text-align: right;">6.308192</td>
+<td style="text-align: right;">0.189474</td>
+<td style="text-align: right;">0.219752</td>
+<td>Cùng đợt external-model benchmark</td>
+</tr>
+<tr>
+<td>ALPHA embedded eval</td>
+<td>ALPHA / 32px, epoch74</td>
+<td style="text-align: right;">2.446330</td>
+<td style="text-align: right;">0.063558</td>
+<td style="text-align: right;">0.093104</td>
+<td>Kết quả in-training của checkpoint lịch sử</td>
+</tr>
+</tbody>
+</table>
+<p>Các con số có vẻ thuận lợi cho ALPHA, nhưng chưa đủ để viết “đã vượt SOTA trong cùng protocol”. Benchmark external-model cũ có 25,766 examples; protocol x64 cũ còn resize outputs từ native32 và có polarity bridge. Audit native32 cũng thấy polarity/generation path chưa khớp hoàn toàn: adapter giữ nguồn native không convert, còn local GAN có source-polarity normalization; external generator nối sampled noise vào style, local path dùng trực tiếp encoder code; HWD batch là 64 so với local 32. Local history dùng EMA G/E, trong khi external checkpoint không có EMA key riêng để xác nhận tương đương. Số mẫu/dataset identity của từng hàng lịch sử chưa được mã hóa đủ để chứng minh cùng row set. Vì vậy cùng một implementation FID/KID không tự động có nghĩa toàn bộ protocol giống nhau. Đặc biệt HWD paper 0.51 và local 0.171 không nên bị coi là cùng một phép đo chỉ vì cùng tên metric. [P4, P5]</p>
+<p>Không tìm được trong phạm vi bằng chứng này một paired HiGAN+ gốc/native32 run với cùng teachers, cùng evaluator và cùng generation list để tính phần trăm cải thiện đáng tin cậy. Baseline gốc vốn có G64; port native32 cũng cần được ghi rõ là port, không giả làm kết quả nguyên bản. Bảng publication chỉ là context.</p>
+<h3 id="93-iem-thap-nhung-local-branch-co-that-su-hoat-ong-khong">9.3 Điểm thấp nhưng local branch có thật sự hoạt động không?</h3>
+<p>Phân tích lưu ngày 14/10 trước lần sửa mới nhất đã probe checkpoint best74 trên 21 references. Mean cosine giữa normalized local slots khoảng 0.96846; normalized attention entropy khoảng 0.98846. Đổi locals sang writer khác trong khi giữ global chỉ đổi image L1 khoảng 0.000018, trong khi đổi global đổi L1 khoảng 0.34922.</p>
+<p>Đây là dấu hiệu local representation gần collapse trong diagnostic đó, dù aggregate FID/KID tốt. Spatial branch cũ còn dùng normalized-local trừ normalized-global, nên vẫn có thể hoạt động như một global correction thay vì local evidence retrieval. Bảy slots tồn tại trong tensor <strong>không chứng minh</strong> bảy loại handwriting evidence được dùng.</p>
+<p>Từ đây mới có motivation cho code hiện tại: bỏ ordered-local latent target, không cộng query prior vào local appearance, tách K/V, dùng projection local bias-free và bỏ nested reliability gates. Cơ chế mới giải quyết mismatch hợp lý về toán học và đường thông tin; <strong>chưa có FID/KID/HWD sau controlled retraining để xác nhận kết quả</strong>.</p>
+<h2 id="10-co-so-nghien-cuu-bay-bai-bao-va-vai-tro-thuc-su">10. Cơ sở nghiên cứu: bảy bài báo và vai trò thực sự</h2>
+<p>Bốn bài đầu/đối chiếu chính đã được đọc phần phương pháp từ PDF có sẵn: HiGAN+, HWT, SpiS-GAN, VATr++. Ngoài ra đã kiểm tra full-text/nguồn chính thức cho PatchGAN/pix2pix và nguồn gốc contextual/GRL. Các liên hệ dưới đây là <strong>cơ sở khoa học để giải thích design</strong>, không tự nhận đó là lịch sử quyết định thực tế của mọi commit.</p>
+<table>
+<thead>
+<tr>
+<th>Paper</th>
+<th>Điều dùng để lý giải</th>
+<th>Không được suy diễn</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>[P1] HiGAN+</td>
+<td>Baseline disentanglement, CBN, writer/OCR/context, patch refinement</td>
+<td>Không nhận những thành phần này là đóng góp mới</td>
+</tr>
+<tr>
+<td>[P2] HWT</td>
+<td>Style sequence và attention có thể giữ/retrieve global/local cues</td>
+<td>Không nói ALPHA là HWT hoặc đã chứng minh superiority</td>
+</tr>
+<tr>
+<td>[P3] pix2pix/PatchGAN</td>
+<td>Local adversarial constraints bổ sung pixel/global objectives</td>
+<td>Không nói patch loss lần đầu xuất hiện ở dự án</td>
+</tr>
+<tr>
+<td>[P4] SpiS-GAN</td>
+<td>Đối chiếu cách xử lý stroke geometry và mất chi tiết do downsampling</td>
+<td>Không gán Star/Spiral/Sobel cho code hiện tại</td>
+</tr>
+<tr>
+<td>[P5] VATr++</td>
+<td>Long-tail input distribution, auxiliary bias, evaluation protocol</td>
+<td>Không gọi corpus oversampling là nguyên thuật toán thay ký tự của paper</td>
+</tr>
+<tr>
+<td>[P6] Contextual Loss</td>
+<td>So features không cần spatial alignment</td>
+<td>Không gọi nó là KID loss hay một loss mới của dự án</td>
+</tr>
+<tr>
+<td>[P7] DANN</td>
+<td>Gradient reversal để làm representation bớt chứa nuisance information</td>
+<td>Không khẳng định domain invariance và content disentanglement là cùng bài toán</td>
+</tr>
+</tbody>
+</table>
+<h2 id="11-contribution-statements-co-the-dung-khi-bao-cao">11. Contribution statements có thể dùng khi báo cáo</h2>
+<p><strong>C1 — Representation.</strong> “Chúng tôi mở rộng latent style của HiGAN+ thành một global writer code và một tập local visual-evidence tokens đa tỉ lệ. Các local queries chọn evidence qua keys có vị trí, trong khi values chỉ mang visual deviations; nhờ đó giảm đường appearance không phụ thuộc reference.”</p>
+<p><strong>C2 — Generation.</strong> “Chúng tôi phân tách content construction và style rendering: target text được contextualize trước khi dựng seed, global code điều kiện hóa từng GBlock, còn local evidence được truy xuất bởi spatial features sau stage đầu. Thiết kế không cần character-specific allograph rules.”</p>
+<p><strong>C3 — Local supervision / geometry.</strong> “Chúng tôi thiết kế StrokePatchD với directional residual filters và spatial decisions trên các half-height crops được stratify theo valid word geometry. Per-word aggregation và shared multi-resolution topology giữ semantics giám sát nhất quán giữa native 32px/64px.”</p>
+<p>Nên đi kèm một câu giới hạn: “Đây là các cải tiến thiết kế so với HiGAN+; hiệu quả riêng của từng thành phần cần ablation với cùng initialization, teachers, training budget và evaluation protocol.” Không dùng các từ “first”, “novel attention” hoặc “guaranteed disentanglement” khi chưa có literature/experiment đủ mạnh.</p>
+<h3 id="111-neu-thay-hoi-tai-sao-khong-chi-dung-transformer-fusion-khac">11.1 Nếu thầy hỏi “tại sao không chỉ dùng Transformer fusion khác?”</h3>
+<p>Mục tiêu không phải chứng minh attention type này ưu việt tuyệt đối. Dự án giữ decoder CNN variable-width của HiGAN+ và đặt attention vào hai điểm có nhiệm vụ rõ: target sequence context và spatial evidence retrieval. Full Transformer decoder là một đối chứng hợp lệ, nhưng có capacity/compute khác và không tự giải quyết ordered-local target mismatch. Cần so dưới cùng budget trước khi kết luận.</p>
+<h3 id="112-tai-sao-local-tokens-ma-khong-giu-toan-bo-feature-map">11.2 “Tại sao local tokens mà không giữ toàn bộ feature map?”</h3>
+<p>Giữ toàn bộ map bảo toàn nhiều thông tin hơn nhưng tăng số keys/values theo reference width, chi phí spatial cross-attention và nguy cơ mang content reference vào G. Bộ slots cố định là bottleneck có chủ đích để nén evidence. Trade-off là có thể mất style hiếm hoặc collapse; lựa chọn bảy slots là hyperparameter, không phải con số có bảo đảm lý thuyết.</p>
+<h3 id="113-tai-sao-can-p-neu-a-co-d-va-ocr">11.3 “Tại sao cần P nếu đã có D và OCR?”</h3>
+<p>D nhìn realism toàn từ; OCR ưu tiên transcript và có thể chấp nhận ảnh đọc đúng nhưng nét không giống writer; P ưu tiên local plausibility của strokes. Chúng cung cấp tiêu chí khác nhau. Tuy nhiên, P quá mạnh cũng có thể làm background/texture lấn át content, nên cần per-word weighting và ablation weight/crop policy thay vì thêm critic không giới hạn.</p>
+<h2 id="12-ablation-can-co-e-bien-design-contribution-thanh-bang-chung">12. Ablation cần có để biến design contribution thành bằng chứng</h2>
+<table>
+<thead>
+<tr>
+<th>Câu hỏi</th>
+<th>So sánh công bằng</th>
+<th>Điều cần đo</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Local evidence có cần không?</td>
+<td>Global-only với đường local được bypass đúng, so 1+4, 1+7; giữ effective loss normalization</td>
+<td>FID/KID/HWD, reference swap sensitivity, diversity</td>
+</tr>
+<tr>
+<td>K/V separation có ích không?</td>
+<td>Cùng G, cùng slots; PE ở K-only so PE ở K/V; không đổi loss khác</td>
+<td>Giữa-writer local variation, attention entropy, image changes</td>
+</tr>
+<tr>
+<td>Spatial insertion hơn early fusion?</td>
+<td>Giữ E/B/teachers và capacity gần nhau, chỉ đổi vị trí/cách fusion</td>
+<td>Image metrics, short-reference tests, latency</td>
+</tr>
+<tr>
+<td>P mới có ích không?</td>
+<td>P gốc so directional P, cùng sampled crops; sau đó mới đổi crop policy</td>
+<td>KID/HWD, jagged strokes, per-crop errors</td>
+</tr>
+<tr>
+<td>Multi-resolution công bằng chưa?</td>
+<td>Cùng topology/weights schedule và compute budget; native data ở từng height</td>
+<td>Cả chất lượng lẫn number of G updates</td>
+</tr>
+<tr>
+<td>Loss mismatch fix có ích không?</td>
+<td>Ordered-local target so global-only target với scale tương đương</td>
+<td>Metric trajectories và local-collapse probes</td>
+</tr>
+</tbody>
+</table>
+<p>Tối thiểu nên có nhiều seeds và cùng một danh sách evaluation references/targets. Train từ checkpoint khác nhau không phải controlled on/off comparison. Chọn best theo FID không đồng nghĩa tối ưu mọi metric; cần báo cả KID/HWD cùng epoch và last để thấy trajectory.</p>
+<p>Reference swap test cũng cần cẩn thận: cùng global, đổi local writer; cùng local, đổi global; dùng nhiều writers và cùng targets. Một local branch làm ảnh thay đổi lớn chưa chứng minh thay đổi đúng style. Có thể bổ sung blinded preference study hoặc handwriting-aware feature similarity trên các pairs được kiểm soát.</p>
+<h2 id="13-gioi-han-va-nhung-ieu-khong-nen-claim">13. Giới hạn và những điều không nên claim</h2>
+<ol>
+<li><strong>Một reference nhỏ không xác định duy nhất writer style.</strong> Dấu <code>/</code> hoặc <code>.</code> không chứa đủ evidence cho mọi vòng chữ/ligature. Learned processing có thể generalize tốt hơn hardcoded cases nhưng không tạo ra thông tin đã mất.</li>
+<li><strong>Style slots chưa được gán semantic labels.</strong> Không có bằng chứng slot 1 là loops và slot 2 là descenders. Muốn nói điều đó cần visualization/intervention có hệ thống.</li>
+<li><strong>Current E chưa có full retraining score.</strong> FID 2.4463 là evidence cho checkpoint trước sửa, không phải chứng nhận cho K-only positional evidence mới.</li>
+<li><strong>Metrics không thay thế qualitative analysis.</strong> FID/KID dùng feature statistics; low scores không bảo đảm spelling, allographs, background match hay writer identity đều đúng ở từng mẫu.</li>
+<li><strong>P không đảm bảo nền đồng nhất.</strong> Nó chấm cả crop, bao gồm background trong valid image. Có thể học paper texture hữu ích hoặc artifacts; không có background-segmentation loss active.</li>
+<li><strong>Native 32/64 không hoàn toàn tương đương dữ liệu.</strong> Cùng topology không xóa được khác biệt resolution, preprocessing hoặc corruption. Không thay dataset benchmark để lấy điểm tốt hơn.</li>
+<li><strong>Parameter count không suy ra tốc độ.</strong> Kernel launches, attention, teacher passes, widths và R1 đều ảnh hưởng wall time. Đợt viết này không đo throughput mới.</li>
+</ol>
+<h2 id="14-ket-luan">14. Kết luận</h2>
+<p>Điểm mạnh nhất để trình bày không phải một danh sách dài các blocks và losses, mà là <strong>một câu chuyện thông tin xuyên suốt model</strong>: giữ global style đủ ổn định, nén local evidence mà không cài character-specific rules, dùng target content dựng structure, truy xuất local evidence tại spatial representation, rồi kiểm tra realism ở cả whole-word lẫn stroke scale.</p>
+<p>So với HiGAN+, ALPHA hiện tại có những thay đổi thực sự ở E, content/style interface trong G, local critic và resolution handling. Nhiều thành phần nền — residual CNN, CBN, OCR/writer teachers, contextual matching và dual critics — vẫn được kế thừa và phải ghi nhận đúng.</p>
+<p>Kết quả lưu trên native32 đã đạt FID khoảng 2.45 và KID khoảng 0.064; đó là một cột mốc đáng báo cáo, đồng thời local-collapse probe nhắc rằng điểm tốt chưa đủ chứng minh representation đúng ý định. Contribution có sức thuyết phục nhất khi <strong>motivation, mechanism, code evidence và controlled ablation</strong> đều nối với nhau, thay vì chỉ đặt một tên module mới cạnh một con số tốt.</p>
+<h2 id="phu-luc-a-hyperparameters-va-parameter-counts">Phụ lục A. Hyperparameters và parameter counts</h2>
+<table>
+<thead>
+<tr>
+<th>Profile</th>
+<th>G/D/P LR</th>
+<th style="text-align: right;">Critic:G</th>
+<th style="text-align: right;">Train batch</th>
+<th style="text-align: right;">Epochs</th>
+<th>LR decay start/duration/floor</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>gan_iam_32</td>
+<td>2e-4 / 2e-4 / 2e-4</td>
+<td style="text-align: right;">2:1</td>
+<td style="text-align: right;">8</td>
+<td style="text-align: right;">100</td>
+<td>36 / 48 / 0.15</td>
+</tr>
+<tr>
+<td>gan_iam_64</td>
+<td>2e-4 / 2e-4 / 2e-4</td>
+<td style="text-align: right;">2:1</td>
+<td style="text-align: right;">8</td>
+<td style="text-align: right;">100</td>
+<td>36 / 48 / 0.15</td>
+</tr>
+<tr>
+<td>gan_iam_local</td>
+<td>2e-4 / 2e-4 / 2e-4</td>
+<td style="text-align: right;">2:1</td>
+<td style="text-align: right;">2</td>
+<td style="text-align: right;">84</td>
+<td>36 / 48 / 0.15</td>
+</tr>
+</tbody>
+</table>
+<p>Adam betas 0.5/0.999, gradient clip 5, EMA beta 0.9998, alphabet 81 classes, style_dim 32, total tokens 8. FID/KID/HWD bật; CER/WER tắt trong current normal configs. Critic:G=2:1 nghĩa là D/P được update hai batches cho mỗi G/E update, không phải tăng batch G lên gấp đôi. Local profile bật thêm WidthContextMixer trong D; normal32/64 không bật.</p>
+<table>
+<thead>
+<tr>
+<th>Module</th>
+<th style="text-align: right;">32px parameters</th>
+<th style="text-align: right;">64px parameters</th>
+<th>Vai trò</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>G</td>
+<td style="text-align: right;">3,942,493</td>
+<td style="text-align: right;">3,946,653</td>
+<td>Train trong GAN</td>
+</tr>
+<tr>
+<td>E hiện tại</td>
+<td style="text-align: right;">1,332,913</td>
+<td style="text-align: right;">1,332,913</td>
+<td>Train trong GAN</td>
+</tr>
+<tr>
+<td>B</td>
+<td style="text-align: right;">1,617,328</td>
+<td style="text-align: right;">1,617,328</td>
+<td>Frozen teacher/features</td>
+</tr>
+<tr>
+<td>W</td>
+<td style="text-align: right;">317,780</td>
+<td style="text-align: right;">317,780</td>
+<td>Frozen writer head</td>
+</tr>
+<tr>
+<td>R</td>
+<td style="text-align: right;">2,428,673</td>
+<td style="text-align: right;">2,428,673</td>
+<td>Frozen OCR teacher</td>
+</tr>
+<tr>
+<td>D</td>
+<td style="text-align: right;">2,366,145</td>
+<td style="text-align: right;">2,366,145</td>
+<td>Train trong GAN</td>
+</tr>
+<tr>
+<td>P</td>
+<td style="text-align: right;">794,945</td>
+<td style="text-align: right;">794,945</td>
+<td>Train trong GAN</td>
+</tr>
+</tbody>
+</table>
+<p>Các counts là normal32/64, lấy từ constructor snapshots/verification artifacts ngày 14/10; không đo lại GPU trong báo cáo này. Không áp D count này cho local profile bật WidthContextMixer. E cũ có 1,391,666 parameters, E mới giảm 58,753 (~4.22%). Không dùng số giảm đó để suy ra wall-time speedup tương ứng. Deployment reference-guided cần tính cả B+E+G, không chỉ G+E; teachers R/W và critics chỉ cần khi training/evaluation liên quan.</p>
+<h2 id="phu-luc-b-evidence-va-source-map">Phụ lục B. Evidence và source map</h2>
+<table>
+<thead>
+<tr>
+<th>Nội dung</th>
+<th>File / vị trí đã kiểm tra</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Global/style context, B, E</td>
+<td><code>HGGAN_test/alpha/networks/module.py:105,167,301,438,455,548</code></td>
+</tr>
+<tr>
+<td>Content self-attention, depthwise FFN, spatial retrieval</td>
+<td><code>networks/fusion.py:14,62,132,166</code></td>
+</tr>
+<tr>
+<td>Shared 32/64 G, BSSP, G forward</td>
+<td><code>networks/BigGAN_networks.py:16,40,207</code></td>
+</tr>
+<tr>
+<td>Global D và P</td>
+<td><code>networks/BigGAN_networks.py:385,467,508,542</code></td>
+</tr>
+<tr>
+<td>Prior centering, rare words, stroke crop/aggregation</td>
+<td><code>networks/utils.py:244,263,445,498</code></td>
+</tr>
+<tr>
+<td>Frozen teacher modes</td>
+<td><code>networks/model.py:968</code></td>
+</tr>
+<tr>
+<td>GAN fake branches, objectives</td>
+<td><code>networks/model.py:2090,2230,2350,2500</code></td>
+</tr>
+<tr>
+<td>Contextual/global loss helpers</td>
+<td><code>networks/loss.py:42,236,260</code></td>
+</tr>
+<tr>
+<td>KID scale</td>
+<td><code>metric/val_metrics.py:458</code></td>
+</tr>
+<tr>
+<td>Checkpoint report cũ</td>
+<td><code>test_artifacts/checkpoint_analysis_14_10/report.md</code></td>
+</tr>
+<tr>
+<td>CSV đã đối chiếu</td>
+<td>Các CSV trong <code>test_artifacts/checkpoint_analysis_7_10</code> và <code>checkpoint_analysis_14_10</code></td>
+</tr>
+<tr>
+<td>Bằng chứng mới trong report bundle</td>
+<td><code>evidence/metrics_evidence_summary.json</code>, <code>evidence/checkpoint_metrics_extract.csv</code>, <code>evidence/extract_checkpoint_metadata.py</code></td>
+</tr>
+</tbody>
+</table>
+<p>Mọi đường tương đối <code>networks/...</code> trong bảng này được tính từ <code>/home/quq/machineLearning/HTG/HGGAN_test/alpha</code>. Các paper text extracts chỉ là bản đọc nội bộ của PDFs có sẵn, không phải tài liệu do dự án viết.</p>
+<h2 id="tai-lieu-tham-khao">Tài liệu tham khảo</h2>
+<p><strong>[P1]</strong> Ji Gan, Weiqiang Wang, Jiaxu Leng, Xinbo Gao. <em>HiGAN+: Handwriting Imitation GAN with Disentangled Representations</em>. ACM Transactions on Graphics, 42(1), article 11; publication 2022, issue metadata có thể ghi 2023. <a href="https://doi.org/10.1145/3550070">DOI: 10.1145/3550070</a>. Đã đối chiếu PDF 17 trang và code tác giả: <a href="https://github.com/ganji15/HiGANplus">ganji15/HiGANplus</a>.</p>
+<p><strong>[P2]</strong> Ankan Kumar Bhunia, Salman Khan, Hisham Cholakkal, Rao Muhammad Anwer, Fahad Shahbaz Khan, Mubarak Shah. <em>Handwriting Transformers</em>. ICCV 2021, pp.1086–1094. <a href="https://openaccess.thecvf.com/content/ICCV2021/html/Bhunia_Handwriting_Transformers_ICCV_2021_paper.html">CVF paper</a>, <a href="https://arxiv.org/abs/2104.03964">arXiv:2104.03964</a>. Đã đọc phần method và đối chiếu PDF kèm supplementary.</p>
+<p><strong>[P3]</strong> Phillip Isola, Jun-Yan Zhu, Tinghui Zhou, Alexei A. Efros. <em>Image-to-Image Translation with Conditional Adversarial Networks</em>. CVPR 2017. <a href="https://openaccess.thecvf.com/content_cvpr_2017/papers/Isola_Image-To-Image_Translation_With_CVPR_2017_paper.pdf">CVF PDF</a>, <a href="https://arxiv.org/abs/1611.07004">arXiv:1611.07004</a>. Dùng để đối chiếu nguyên lý PatchGAN, không coi implementation của HiGAN+ là đúng cùng kiến trúc pix2pix.</p>
+<p><strong>[P4]</strong> Nguyen Duy Hieu, Dang Hoai Nam, Pham Hoang Giap, Quang Huu Hieu, Vo Nguyen Le Duy. <em>SpiS-GAN: Spiral-Modulated Handwriting Synthesis with Star Operation</em>. arXiv preprint, 2026. <a href="https://arxiv.org/abs/2607.06949">arXiv:2607.06949</a>, <a href="https://github.com/DAIR-Group/SpiS-GAN">author repository</a>. Đã đối chiếu PDF/full text phần phương pháp và IAM tables.</p>
+<p><strong>[P5]</strong> Bram Vanherle, Vittorio Pippi, Silvia Cascianelli, Nick Michiels, Frank Van Reeth, Rita Cucchiara. <em>VATr++: Choose Your Words Wisely for Handwritten Text Generation</em>. 2024. <a href="https://arxiv.org/abs/2402.10798">arXiv:2402.10798</a>. Đã đọc phần input preparation, auxiliary regularization và evaluation protocol trong PDF.</p>
+<p><strong>[P6]</strong> Roey Mechrez, Itamar Talmi, Lihi Zelnik-Manor. <em>The Contextual Loss for Image Transformation with Non-Aligned Data</em>. ECCV 2018. <a href="https://arxiv.org/abs/1803.02077">arXiv:1803.02077</a>, <a href="https://github.com/roimehrez/contextualLoss">author code</a>. Dùng để xác nhận mục tiêu non-aligned feature matching và nguồn gốc loss.</p>
+<p><strong>[P7]</strong> Yaroslav Ganin, Evgeniya Ustinova, Hana Ajakan, Pascal Germain, Hugo Larochelle, François Laviolette, Mario Marchand, Victor Lempitsky. <em>Domain-Adversarial Training of Neural Networks</em>. JMLR 17(59), 2016. <a href="https://jmlr.org/papers/v17/15-239.html">JMLR</a>, <a href="https://arxiv.org/abs/1505.07818">arXiv:1505.07818</a>. Dùng cho cơ chế gradient reversal; task của ALPHA là content nuisance, không phải domain adaptation nguyên bản.</p></article></body></html>

@@ -1,0 +1,72 @@
+{
+  "extraction": {
+    "purpose": "Read-only extraction of archived checkpoint metrics and saved local baseline benchmark CSVs; no evaluation, inference, or training performed.",
+    "checkpoint_loader": "/home/quq/miniconda3/envs/HiGANplus/bin/python; CPU-only torch.load(map_location='cpu', weights_only=False); sequential load/delete; torch.cuda.is_available=false",
+    "checkpoint_metric_validation": "For the 9 inspected checkpoints, embedded eval_metrics_csv, structured eval_history, and paired exported CSV rows match exactly (rows_exact=true). The checkpoint's stored epoch's metrics are reported separately from the history minimum; KID/HWD accompanying min FID come from that same row.",
+    "checkpoint_files": [
+      "chkpoints/14_10_2026/best_fid_2.4463_alpha.pth",
+      "chkpoints/14_10_2026/best_fid_2.5052_alpha.pth",
+      "chkpoints/14_10_2026/last_fid_2.8220_alpha.pth",
+      "chkpoints/14_10_2026/best_fid_2.7598_main.pth",
+      "chkpoints/14_10_2026/last_fid_2.8652_main.pth",
+      "chkpoints/7_10_2026/best_fid_3.2614_alpha.pth",
+      "chkpoints/7_10_2026/last_fid_3.3180_alpha.pth",
+      "chkpoints/7_10_2026/best_fid_2.5464_main.pth",
+      "chkpoints/7_10_2026/last_fid_2.8561_main.pth"
+    ],
+    "history_csvs": [
+      "HGGAN_test/alpha/test_artifacts/checkpoint_analysis_14_10/*.csv",
+      "HGGAN_test/alpha/test_artifacts/checkpoint_analysis_7_10/*.csv"
+    ],
+    "machine_readable_extracts": [
+      "reports/alpha_vs_higanplus_2026_10_15/evidence/checkpoint_metrics_extract.csv",
+      "reports/alpha_vs_higanplus_2026_10_15/evidence/external_baseline_metrics_extract.csv"
+    ]
+  },
+  "checkpoint_protocol": {
+    "serialized_img_height": 32,
+    "dataset_and_split": "iam_word / test; source polarity white; history exports do not encode an auditable image count or HDF5 identity",
+    "seed": 123456,
+    "validation_batch_size": 32,
+    "hwd_batch_size": 32,
+    "n_rand_repeat": "The config says 10, but style-guided validation with use_rand_corpus=false forces actual n_rand_repeat=1.",
+    "weights": "Archived local metric histories are generated with EMA generator and EMA style encoder (EMA swapped in around validate).",
+    "preprocessing": "FID/KID implementations in alpha and dev have identical SHA-256 b6b75f3ad31427cd393e7aec2659b74f2a34c80c49bee45112eb2030153c4419. Metrics normalize to [0,1], replace padded width using image length, convert grayscale to RGB, pad/crop width to 4x height, resize to 299x299, and use Inception dimension 2048. KID uses cubic MMD, mean x100, 50 subsets of size 1000. Validation invokes crop=true.",
+    "hwd": "Both paths use HWDScore/VGG16 family; local saved config uses HWD batch 32. Historical exact HWD weight-file identity is not embedded/verified.",
+    "arch_and_training_caveat": "7-Oct ALPHA and 14-Oct ALPHA checkpoints are from distinct architectures/source revisions; the checkpoint analysis report attributes 7-Oct Star model compatibility to code HEAD 462dadf, and 14-Oct source snapshots to MAIN HEAD 54370a0 / ALPHA HEAD 255782b. 14-Oct ALPHA snapshots use ContentContext/ContentSelfAttention/SpatialStyleRefinement while 7-Oct ALPHA uses StarConv2d/SNDepthwiseConv2d with style-attention/fusion modules. MAIN snapshots use the older reference/style attention and fusion family. For 7-Oct ALPHA, saved report records batch 8, G/D/P base LR 2e-4, decay start 36, duration 48, floor ratio 0.15, EMA beta 0.9998. The 14-Oct saved ALPHA config has LR G/D/P 2e-4, rare_word_ratio 0.15, 100 epochs, decay start 36/duration 48/floor 0.15; MAIN config has LR G/D/P 2e-5, rare_word_ratio 0.25, 90 epochs, decay start 74/duration 16/floor 0.25. These differ in training hyperparameters and resume ancestry. The archived 2.4463 checkpoint predates current alpha HEAD 7eed74c6b2d5286dc7b3e446ec1db3b165322c39 (Oct-14 simplification); it is not evidence for that current source tree. These are historical outcomes, not a controlled causal attribution.",
+    "resume_caveat": "Saved config records pretrained_ckpt as the source checkpoint; train's fallback resume invokes full load of model, EMA, optimizer, scheduler, RNG, and eval history when no explicit resume path is given. Treat these as resumed trajectories, not from-scratch replicates."
+  },
+  "external_baseline_protocol": {
+    "native32": {
+      "source_csvs": [
+        "baseline_native_x32_benchmark/spis_gan_dev_all_metrics.csv",
+        "baseline_native_x32_benchmark/fw_gan_dev_all_metrics.csv"
+      ],
+      "data": "IAM /test_32.hdf5, 25,766 images; batch 4 (6,442 batches); seed 123456; native 32x32",
+      "polarity": "No polarity conversion (documented white background/dark ink); unlike the archived HGGAN source-white loader path that inverts input polarity for the model.",
+      "metric_code": "Uses DEV FID/KID/HWD code; FID/KID metric file is identical to local alpha implementation (hash above), and external call uses crop=true with width-to-4x-height/299px feature preprocessing.",
+      "generation": "Style-guided with explicit sampled latent/noise appended to encoder style before generator; local archived HGGAN image_generator feeds encoder style directly. Thus generation protocols are not equivalent.",
+      "weight_selection": "External adapter checkpoint has one canonical Generator state key, not a distinct Generator_EMA field; cannot establish from state key alone whether that saved state was EMA. Local checkpoint histories explicitly use EMA G/E.",
+      "hwd": "External evaluator uses HWD batch 64 vs local training validation HWD batch 32; exact historical VGG16 weight-file hash for the local checkpoint history is not embedded.",
+      "comparability": "Indicative context only, not a sufficiently controlled direct baseline: polarity and generation path differ, sample identity/count in local history is unavailable, and EMA state correspondence is unresolved."
+    },
+    "x64_dev": {
+      "source_csvs": [
+        "baseline_dev_metric_benchmark/spis_gan_dev_all_metrics.csv",
+        "baseline_dev_metric_benchmark/fw_gan_dev_all_metrics.csv"
+      ],
+      "data": "11,170 IAM test items; seed 123456; x64 references bridged through x32 encoder/generator, then bilinear-resized to x64; polarity bridge used.",
+      "comparability": "Not comparable to archived 32px local histories or native32 benchmark as a direct performance result; different resolution and preprocessing."
+    },
+    "classic_optimized": {
+      "runs_dir": "HGGAN_test/classic_optimized/runs (empty)",
+      "wandb_evidence": "Archived output logs include metric attempts that fail when HWD VGG16 checkpoint is missing; newer 64px run fails on scheduler TypeError before metrics. No completed FID/KID/HWD run suitable as a same-protocol comparison was found."
+    }
+  },
+  "safe_reporting": [
+    "Report archived checkpoint values with date, resolution, checkpoint epoch, and same-epoch KID/HWD; do not mix independent minima.",
+    "Keep 7-Oct and 14-Oct architecture/revision separate; distinguish archived 14-Oct best from current alpha HEAD.",
+    "Native32 and x64 DEV benchmark rows are useful local context only; do not call them controlled ablations or paper/SOTA comparisons.",
+    "Do not attribute metric differences causally to random-crop recognition changes from these historical resumed runs."
+  ]
+}

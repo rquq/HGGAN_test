@@ -1,0 +1,12 @@
+[
+  {
+    "destination": "shared/main_design_vs_higanplus_vi.html",
+    "original_sha256": "9d748c2f2545b565961c0881bcb00418bd1c234b7615d04dd7660a6a578394ad",
+    "archived_sha256": "af1e236429bfc36ac3b648ed9dd9ac6b776df44d69a7b2d5f5c6d14d1804e546"
+  },
+  {
+    "destination": "shared/random_crop_design_vs_higanplus_vi.html",
+    "original_sha256": "0ff6af8d9ba2f9ad4425888a6a1ee66c1031326ca20e2a4b5cc514ea5c5291e5",
+    "archived_sha256": "bb0e17b3bc6e9fbb55a9a24db733a4147d8c3bdc9d8614fafabcca90af4777a9"
+  }
+]

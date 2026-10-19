@@ -1,0 +1,1205 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ALPHA training atlas</title><style>body{margin:0;background:#e9edf0;color:#263746;font-family:Arial,sans-serif}nav{padding:20px;display:flex;gap:12px;flex-wrap:wrap}a{color:#263746}section{margin:24px 0;background:white}.diagram-container{width:100%;overflow-x:auto}svg{width:100%;min-width:1600px;display:block;font-family:Arial,DejaVu Sans,sans-serif}@media print{nav{display:none}section{break-after:page;margin:0}.diagram-container{overflow-x:visible}svg{min-width:0}body{background:white}}</style>
+<nav><a href="#guide">00 Read me</a><a href="#overview">01 GAN overview</a><a href="#alternation">02 Alternating updates</a><a href="#global-d">03 Global discriminator</a><a href="#patch-d">04 StrokePatchD</a><a href="#random">05 Random + latent recovery</a><a href="#transfer">06 Style transfer</a><a href="#recon">07 Reconstruction + disentanglement</a><a href="#encoder">08 Style encoder</a><a href="#generator">09 Fusion + Generator</a><a href="#ocr">10 OCR pretraining</a><a href="#writer">11 Writer + backbone pretraining</a><a href="#inference">12 Inference</a><a href="#validation">13 Validation + checkpoints</a><a href="#losses">14 Loss ledger</a></nav>
+<section id="guide"><div class="diagram-container"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1040" role="img" aria-labelledby="guide-title guide-desc">
+<title id="guide-title">ALPHA · training atlas</title>
+<desc id="guide-desc">Native editable diagrams · current code snapshot · 32 px and 64 px · no baseline modules copied. Solid arrows represent forward dependencies; dashed arrows represent targets or optimizer actions.</desc>
+<rect width="1600" height="1040" fill="white"/>
+<rect x="52" y="148" width="1496" height="176" rx="8" fill="white" stroke="#cbd3da" stroke-dasharray="5 4"/>
+<text x="72" y="176" font-size="14" text-anchor="start" fill="#526171" font-weight="bold">HOW TO READ</text>
+<rect x="80" y="200" width="680" height="96" rx="6" fill="#f1f3f5" stroke="#263746" stroke-width="1.3"/>
+<text x="420.0" y="231.32000000000002" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Notation</text>
+<text x="420.0" y="257.28000000000003" font-size="14" text-anchor="middle" fill="#263746">x_ref: original reference geometry · x: canonical reconstruction target</text>
+<text x="420.0" y="275.28000000000003" font-size="14" text-anchor="middle" fill="#263746">y: reference transcript · y′: sampled target text · w: writer ID</text>
+<rect x="800" y="200" width="720" height="96" rx="6" fill="#e6f3ee" stroke="#263746" stroke-width="1.3"/>
+<text x="1160.0" y="231.32000000000002" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Style representation S = [g, L]</text>
+<text x="1160.0" y="257.28000000000003" font-size="14" text-anchor="middle" fill="#263746">g: 1 global token, 32-D · L: 7 local tokens, 7 × 32-D</text>
+<text x="1160.0" y="275.28000000000003" font-size="14" text-anchor="middle" fill="#263746">Prior z has the same layout; local slots are centered.</text>
+<rect x="80" y="380" width="680" height="104" rx="6" fill="#f7f3e9" stroke="#263746" stroke-width="1.3"/>
+<text x="420.0" y="415.32" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">TRAINABLE vs FROZEN</text>
+<text x="420.0" y="441.28" font-size="14" text-anchor="middle" fill="#263746">Dashed module border = frozen parameters in that phase.</text>
+<text x="420.0" y="459.28" font-size="14" text-anchor="middle" fill="#263746">Frozen modules can still transmit gradients to generated pixels.</text>
+<rect x="800" y="380" width="720" height="104" rx="6" fill="#fff2d6" stroke="#263746" stroke-width="1.3"/>
+<text x="1160.0" y="415.32" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Solid vs dashed arrows</text>
+<text x="1160.0" y="441.28" font-size="14" text-anchor="middle" fill="#263746">Solid: forward tensor or measured prediction.</text>
+<text x="1160.0" y="459.28" font-size="14" text-anchor="middle" fill="#263746">Dashed brown: target, detached target, initialization, or optimizer action.</text>
+<rect x="80" y="548" width="440" height="104" rx="6" fill="#e8f0f8" stroke="#263746" stroke-width="1.3"/>
+<text x="300.0" y="583.3199999999999" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">01–04 · GAN training</text>
+<text x="300.0" y="609.28" font-size="14" text-anchor="middle" fill="#263746">Overview · alternating updates</text>
+<text x="300.0" y="627.28" font-size="14" text-anchor="middle" fill="#263746">Global discriminator · StrokePatchD</text>
+<rect x="580" y="548" width="440" height="104" rx="6" fill="#e6f3ee" stroke="#263746" stroke-width="1.3"/>
+<text x="800.0" y="583.3199999999999" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">05–09 · Branches + architecture</text>
+<text x="800.0" y="609.28" font-size="14" text-anchor="middle" fill="#263746">Random · transfer · reconstruction</text>
+<text x="800.0" y="627.28" font-size="14" text-anchor="middle" fill="#263746">Style encoder · fusion / Generator</text>
+<rect x="1080" y="548" width="440" height="104" rx="6" fill="#fff2d6" stroke="#263746" stroke-width="1.3"/>
+<text x="1300.0" y="583.3199999999999" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">10–14 · Pretrain + evaluation</text>
+<text x="1300.0" y="609.28" font-size="14" text-anchor="middle" fill="#263746">OCR · writer + backbone</text>
+<text x="1300.0" y="627.28" font-size="14" text-anchor="middle" fill="#263746">Inference · metrics · loss ledger</text>
+<rect x="80" y="720" width="1440" height="104" rx="6" fill="#f1f3f5" stroke="#263746" stroke-width="1.3"/>
+<text x="800.0" y="755.3199999999999" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Scope / presentation references</text>
+<text x="800.0" y="781.28" font-size="14" text-anchor="middle" fill="#263746">All pages describe ALPHA only. HiGAN+, SpiS-GAN and FW-GAN figures inform panel layout and the loss-arrow convention.</text>
+<text x="800.0" y="799.28" font-size="14" text-anchor="middle" fill="#263746">Boxes and connectors are native mxGraph objects, not one flattened image.</text>
+<text x="64" y="64" font-size="32" text-anchor="start" fill="#263746" font-weight="bold">ALPHA · training atlas</text>
+<text x="64" y="108" font-size="15" text-anchor="start" fill="#526171">Native editable diagrams · current code snapshot · 32 px and 64 px · no baseline modules copied</text>
+<text x="64" y="912" font-size="14" text-anchor="start" fill="#526171">Open the file with File → Open From → Device in diagrams.net; choose tabs along the bottom. Ctrl/Cmd + mouse wheel zooms.</text>
+<text x="64" y="944" font-size="14" text-anchor="start" fill="#526171">Repeated B, E, G, D, P, R or W labels denote shared weights within the corresponding training phase, not separate networks.</text>
+<text x="80" y="872" font-size="14" text-anchor="start" fill="#526171">HiGAN+ · original implementation</text>
+<text x="580" y="872" font-size="14" text-anchor="start" fill="#526171">SpiS-GAN · paper</text>
+<text x="1080" y="872" font-size="14" text-anchor="start" fill="#526171">FW-GAN · paper</text>
+<text x="64" y="992" font-size="12" text-anchor="start" fill="#526171">ALPHA · networks/model.py · snapshot 2026-10-15</text>
+<text x="64" y="1024" font-size="12" text-anchor="start" fill="#526171">Solid = forward dependency     Dashed brown = target / update     Dashed module = parameter-frozen</text>
+</svg></div></section>
+<section id="overview"><div class="diagram-container"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1040" role="img" aria-labelledby="overview-title overview-desc">
+<title id="overview-title">Three connected generation branches</title>
+<desc id="overview-desc">Same G / E weights across branches · image paths and loss families only; details follow in separate tabs. Solid arrows represent forward dependencies; dashed arrows represent targets or optimizer actions.</desc>
+<rect width="1600" height="1040" fill="white"/>
+<rect x="52" y="148" width="1496" height="196" rx="8" fill="white" stroke="#cbd3da" stroke-dasharray="5 4"/>
+<text x="72" y="176" font-size="14" text-anchor="start" fill="#526171" font-weight="bold">A · RANDOM GENERATION</text>
+<rect x="52" y="380" width="1496" height="196" rx="8" fill="white" stroke="#cbd3da" stroke-dasharray="5 4"/>
+<text x="72" y="408" font-size="14" text-anchor="start" fill="#526171" font-weight="bold">B · REFERENCE-GUIDED TRANSFER</text>
+<rect x="52" y="612" width="1496" height="196" rx="8" fill="white" stroke="#cbd3da" stroke-dasharray="5 4"/>
+<text x="72" y="640" font-size="14" text-anchor="start" fill="#526171" font-weight="bold">C · RECONSTRUCTION</text>
+<polyline points="332,252.0 392,252.0" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="332,252.0 392,252.0" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="392,252.0 382.0,248.0 382.0,256.0" fill="#263746"/>
+<polyline points="608,252.0 668,252.0" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="608,252.0 668,252.0" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="668,252.0 658.0,248.0 658.0,256.0" fill="#263746"/>
+<polyline points="920,252.0 992,252.0" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="920,252.0 992,252.0" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="992,252.0 982.0,248.0 982.0,256.0" fill="#263746"/>
+<polyline points="332,484.0 392,484.0" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="332,484.0 392,484.0" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="392,484.0 382.0,480.0 382.0,488.0" fill="#263746"/>
+<polyline points="608,484.0 668,484.0" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="608,484.0 668,484.0" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="668,484.0 658.0,480.0 658.0,488.0" fill="#263746"/>
+<polyline points="920,484.0 992,484.0" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="920,484.0 992,484.0" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="992,484.0 982.0,480.0 982.0,488.0" fill="#263746"/>
+<polyline points="332,716.0 392,716.0" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="332,716.0 392,716.0" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="392,716.0 382.0,712.0 382.0,720.0" fill="#263746"/>
+<polyline points="608,716.0 668,716.0" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="608,716.0 668,716.0" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="668,716.0 658.0,712.0 658.0,720.0" fill="#263746"/>
+<polyline points="920,716.0 992,716.0" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="920,716.0 992,716.0" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="992,716.0 982.0,712.0 982.0,720.0" fill="#263746"/>
+<rect x="80" y="212" width="252" height="80" rx="6" fill="#e6f3ee" stroke="#263746" stroke-width="1.3"/>
+<text x="206.0" y="244.32000000000002" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Prior z + target y′</text>
+<text x="206.0" y="270.28000000000003" font-size="14" text-anchor="middle" fill="#263746">1 global + 7 centered locals</text>
+<rect x="392" y="212" width="216" height="80" rx="6" fill="#e8f0f8" stroke="#263746" stroke-width="1.3"/>
+<text x="500.0" y="244.32000000000002" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Generator G</text>
+<text x="500.0" y="270.28000000000003" font-size="14" text-anchor="middle" fill="#263746">trainable; shared weights</text>
+<rect x="668" y="212" width="252" height="80" rx="6" fill="#f1f3f5" stroke="#263746" stroke-width="1.3"/>
+<text x="794.0" y="244.32000000000002" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Random word x_rand</text>
+<text x="794.0" y="270.28000000000003" font-size="14" text-anchor="middle" fill="#263746">new style, new text</text>
+<rect x="992" y="212" width="528" height="80" rx="6" fill="#fff2d6" stroke="#263746" stroke-width="1.3"/>
+<text x="1256.0" y="244.32000000000002" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">D + P · R · B → E_global</text>
+<text x="1256.0" y="270.28000000000003" font-size="14" text-anchor="middle" fill="#263746">Adversarial · CTC · global latent recovery</text>
+<rect x="80" y="444" width="252" height="80" rx="6" fill="#e6f3ee" stroke="#263746" stroke-width="1.3"/>
+<text x="206.0" y="476.32" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">x_ref → B → E</text>
+<text x="206.0" y="502.28" font-size="14" text-anchor="middle" fill="#263746">B frozen; E trainable</text>
+<rect x="392" y="444" width="216" height="80" rx="6" fill="#e8f0f8" stroke="#263746" stroke-width="1.3"/>
+<text x="500.0" y="476.32" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Generator G + y′</text>
+<text x="500.0" y="502.28" font-size="14" text-anchor="middle" fill="#263746">new text; reference style</text>
+<rect x="668" y="444" width="252" height="80" rx="6" fill="#f1f3f5" stroke="#263746" stroke-width="1.3"/>
+<text x="794.0" y="476.32" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Transfer word x_style</text>
+<text x="794.0" y="502.28" font-size="14" text-anchor="middle" fill="#263746">same writer, different text</text>
+<rect x="992" y="444" width="528" height="80" rx="6" fill="#fff2d6" stroke="#263746" stroke-width="1.3"/>
+<text x="1256.0" y="476.32" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">D + P · R · W+B · E_global</text>
+<text x="1256.0" y="502.28" font-size="14" text-anchor="middle" fill="#263746">Adversarial · CTC · writer · context · style cycle</text>
+<rect x="80" y="676" width="252" height="80" rx="6" fill="#e6f3ee" stroke="#263746" stroke-width="1.3"/>
+<text x="206.0" y="708.3199999999999" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">x_ref → B → E</text>
+<text x="206.0" y="734.28" font-size="14" text-anchor="middle" fill="#263746">same encoded S as transfer</text>
+<rect x="392" y="676" width="216" height="80" rx="6" fill="#e8f0f8" stroke="#263746" stroke-width="1.3"/>
+<text x="500.0" y="699.3199999999999" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Generator G + y</text>
+<text x="500.0" y="725.28" font-size="14" text-anchor="middle" fill="#263746">original reference</text>
+<text x="500.0" y="743.28" font-size="14" text-anchor="middle" fill="#263746">transcript</text>
+<rect x="668" y="676" width="252" height="80" rx="6" fill="#f1f3f5" stroke="#263746" stroke-width="1.3"/>
+<text x="794.0" y="708.3199999999999" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Reconstruction x_rec</text>
+<text x="794.0" y="734.28" font-size="14" text-anchor="middle" fill="#263746">canonical target geometry</text>
+<rect x="992" y="676" width="528" height="80" rx="6" fill="#fff2d6" stroke="#263746" stroke-width="1.3"/>
+<text x="1256.0" y="708.3199999999999" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">D + P · valid-pixel L1</text>
+<text x="1256.0" y="734.28" font-size="14" text-anchor="middle" fill="#263746">Adversarial · reconstruction (no reconstruction CTC)</text>
+<text x="64" y="64" font-size="32" text-anchor="start" fill="#263746" font-weight="bold">Three connected generation branches</text>
+<text x="64" y="108" font-size="15" text-anchor="start" fill="#526171">Same G / E weights across branches · image paths and loss families only; details follow in separate tabs</text>
+<text x="64" y="912" font-size="14" text-anchor="start" fill="#526171">Reference E also receives global-posterior KL and a gradient-reversed content probe; those are expanded on page 07.</text>
+<text x="64" y="944" font-size="14" text-anchor="start" fill="#526171">The code concatenates the three branches into one batched G forward for efficiency; the separate rows show their semantics.</text>
+<text x="64" y="992" font-size="12" text-anchor="start" fill="#526171">ALPHA · networks/model.py · snapshot 2026-10-15</text>
+<text x="64" y="1024" font-size="12" text-anchor="start" fill="#526171">Solid = forward dependency     Dashed brown = target / update     Dashed module = parameter-frozen</text>
+</svg></div></section>
+<section id="alternation"><div class="diagram-container"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1040" role="img" aria-labelledby="alternation-title alternation-desc">
+<title id="alternation-title">Who learns at each GAN step?</title>
+<desc id="alternation-desc">Current normal 32/64 configs: num_critic_train = 2 · one G/E optimizer, separate D and P optimizers. Solid arrows represent forward dependencies; dashed arrows represent targets or optimizer actions.</desc>
+<rect width="1600" height="1040" fill="white"/>
+<rect x="52" y="148" width="1496" height="264" rx="8" fill="white" stroke="#cbd3da" stroke-dasharray="5 4"/>
+<text x="72" y="176" font-size="14" text-anchor="start" fill="#526171" font-weight="bold">A · EVERY TRAINING BATCH — UPDATE D AND P</text>
+<rect x="52" y="484" width="1496" height="320" rx="8" fill="white" stroke="#cbd3da" stroke-dasharray="5 4"/>
+<text x="72" y="512" font-size="14" text-anchor="start" fill="#526171" font-weight="bold">B · EVERY SECOND CRITIC BATCH — UPDATE G AND E</text>
+<polyline points="332,284.0 372,284.0 372,276.0 392,276.0" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="332,284.0 372,284.0 372,276.0 392,276.0" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="392,276.0 382.0,272.0 382.0,280.0" fill="#263746"/>
+<polyline points="696,276.0 756,276.0" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="696,276.0 756,276.0" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="756,276.0 746.0,272.0 746.0,280.0" fill="#263746"/>
+<polyline points="1056,276.0 1116,276.0" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="1056,276.0 1116,276.0" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="1116,276.0 1106.0,272.0 1106.0,280.0" fill="#263746"/>
+<polyline points="368,640.0 432,640.0" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="368,640.0 432,640.0" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="432,640.0 422.0,636.0 422.0,644.0" fill="#263746"/>
+<polyline points="764,640.0 828,640.0" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="764,640.0 828,640.0" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="828,640.0 818.0,636.0 818.0,644.0" fill="#263746"/>
+<polyline points="1128,640.0 1192,640.0" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="1128,640.0 1192,640.0" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="1192,640.0 1182.0,636.0 1182.0,644.0" fill="#263746"/>
+<rect x="80" y="236" width="252" height="96" rx="6" fill="#f1f3f5" stroke="#263746" stroke-width="1.3"/>
+<text x="206.0" y="267.32" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Real batch + text</text>
+<text x="206.0" y="293.28" font-size="14" text-anchor="middle" fill="#263746">x_ref, target x, transcript y,</text>
+<text x="206.0" y="311.28" font-size="14" text-anchor="middle" fill="#263746">writer w</text>
+<rect x="392" y="236" width="304" height="80" rx="6" fill="#e8f0f8" stroke="#263746" stroke-width="1.3"/>
+<text x="544.0" y="259.32" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Generate three fake groups</text>
+<text x="544.0" y="285.28" font-size="14" text-anchor="middle" fill="#263746">B/E/G forward with no_grad</text>
+<text x="544.0" y="303.28" font-size="14" text-anchor="middle" fill="#263746">random · transfer · reconstruction</text>
+<rect x="756" y="236" width="300" height="80" rx="6" fill="#f9e9e5" stroke="#263746" stroke-width="1.3"/>
+<text x="906.0" y="268.32" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">D / P hinge + lazy R1</text>
+<text x="906.0" y="294.28" font-size="14" text-anchor="middle" fill="#263746">detach fake images; train D/P</text>
+<rect x="1116" y="236" width="404" height="80" rx="6" fill="#fff2d6" stroke="#263746" stroke-width="1.3"/>
+<text x="1318.0" y="268.32" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Adam step: D and P</text>
+<text x="1318.0" y="294.28" font-size="14" text-anchor="middle" fill="#263746">G/E are not updated by this phase</text>
+<rect x="80" y="588" width="288" height="104" rx="6" fill="#e8f0f8" stroke="#263746" stroke-width="1.3"/>
+<text x="224.0" y="623.3199999999999" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Regenerate with autograd</text>
+<text x="224.0" y="649.28" font-size="14" text-anchor="middle" fill="#263746">G + E trainable</text>
+<text x="224.0" y="667.28" font-size="14" text-anchor="middle" fill="#263746">B/R/W/D/P parameter-frozen</text>
+<rect x="432" y="588" width="332" height="104" rx="6" fill="#fff2d6" stroke="#263746" stroke-width="1.3"/>
+<text x="598.0" y="623.3199999999999" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">All generator objectives</text>
+<text x="598.0" y="649.28" font-size="14" text-anchor="middle" fill="#263746">D/P + CTC + writer + L1</text>
+<text x="598.0" y="667.28" font-size="14" text-anchor="middle" fill="#263746">latent/cycle + content + context + KL</text>
+<rect x="828" y="588" width="300" height="104" rx="6" fill="#e8f0f8" stroke="#263746" stroke-width="1.3"/>
+<text x="978.0" y="632.3199999999999" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Adam step: G and E</text>
+<text x="978.0" y="658.28" font-size="14" text-anchor="middle" fill="#263746">gradients through frozen teachers</text>
+<rect x="1192" y="588" width="328" height="104" rx="6" fill="#e6f3ee" stroke="#263746" stroke-width="1.3"/>
+<text x="1356.0" y="623.3199999999999" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">EMA update: G and E</text>
+<text x="1356.0" y="649.28" font-size="14" text-anchor="middle" fill="#263746">beta = 0.9998</text>
+<text x="1356.0" y="667.28" font-size="14" text-anchor="middle" fill="#263746">used by configured evaluation</text>
+<text x="64" y="64" font-size="32" text-anchor="start" fill="#263746" font-weight="bold">Who learns at each GAN step?</text>
+<text x="64" y="108" font-size="15" text-anchor="start" fill="#526171">Current normal 32/64 configs: num_critic_train = 2 · one G/E optimizer, separate D and P optimizers</text>
+<text x="64" y="912" font-size="14" text-anchor="start" fill="#526171">D/P remain differentiable with respect to generated pixels during G/E training; parameter freezing is not torch.no_grad().</text>
+<text x="64" y="944" font-size="14" text-anchor="start" fill="#526171">B/W run in eval mode. R uses eval behavior except its recurrent block is kept in training mode for cuDNN backward support.</text>
+<text x="64" y="992" font-size="12" text-anchor="start" fill="#526171">ALPHA · networks/model.py · snapshot 2026-10-15</text>
+<text x="64" y="1024" font-size="12" text-anchor="start" fill="#526171">Solid = forward dependency     Dashed brown = target / update     Dashed module = parameter-frozen</text>
+</svg></div></section>
+<section id="global-d"><div class="diagram-container"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1040" role="img" aria-labelledby="global-d-title global-d-desc">
+<title id="global-d-title">Whole-word adversarial learning</title>
+<desc id="global-d-desc">No patches are presented to the global D · shared D weights are repeated below to keep the loss comparisons explicit. Solid arrows represent forward dependencies; dashed arrows represent targets or optimizer actions.</desc>
+<rect width="1600" height="1040" fill="white"/>
+<rect x="52" y="148" width="1496" height="308" rx="8" fill="white" stroke="#cbd3da" stroke-dasharray="5 4"/>
+<text x="72" y="176" font-size="14" text-anchor="start" fill="#526171" font-weight="bold">A · CRITIC UPDATE — TRAIN D ONLY</text>
+<rect x="52" y="520" width="1496" height="272" rx="8" fill="white" stroke="#cbd3da" stroke-dasharray="5 4"/>
+<text x="72" y="548" font-size="14" text-anchor="start" fill="#526171" font-weight="bold">B · GENERATOR UPDATE — FREEZE D PARAMETERS, KEEP INPUT GRADIENTS</text>
+<polyline points="340,252.0 404,252.0" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="340,252.0 404,252.0" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="404,252.0 394.0,248.0 394.0,256.0" fill="#263746"/>
+<polyline points="340,392.0 404,392.0" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="340,392.0 404,392.0" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="404,392.0 394.0,388.0 394.0,396.0" fill="#263746"/>
+<polyline points="684,252.0 748,252.0" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="684,252.0 748,252.0" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="748,252.0 738.0,248.0 738.0,256.0" fill="#263746"/>
+<polyline points="684,392.0 748,392.0" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="684,392.0 748,392.0" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="748,392.0 738.0,388.0 738.0,396.0" fill="#263746"/>
+<polyline points="980,236.0 1032,236.0 1032,238.0 1052,238.0" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="980,236.0 1032,236.0 1032,238.0 1052,238.0" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="1052,238.0 1042.0,234.0 1042.0,242.0" fill="#263746"/>
+<polyline points="980,392.0 1000,392.0 1000,336 1286.0,336 1286.0,316" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="980,392.0 1000,392.0 1000,336 1286.0,336 1286.0,316" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="1286.0,316 1282.0,326.0 1290.0,326.0" fill="#263746"/>
+<polyline points="980,272.0 1032,272.0 1032,392.0 1052,392.0" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="980,272.0 1032,272.0 1032,392.0 1052,392.0" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="1052,392.0 1042.0,388.0 1042.0,396.0" fill="#263746"/>
+<polyline points="372,656.0 436,656.0" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="372,656.0 436,656.0" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="436,656.0 426.0,652.0 426.0,660.0" fill="#263746"/>
+<polyline points="728,656.0 792,656.0" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="728,656.0 792,656.0" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="792,656.0 782.0,652.0 782.0,660.0" fill="#263746"/>
+<polyline points="1052,656.0 1116,656.0" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="1052,656.0 1116,656.0" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="1116,656.0 1106.0,652.0 1106.0,660.0" fill="#263746"/>
+<rect x="80" y="212" width="260" height="80" rx="6" fill="#f1f3f5" stroke="#263746" stroke-width="1.3"/>
+<text x="210.0" y="244.32000000000002" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Real word x</text>
+<text x="210.0" y="270.28000000000003" font-size="14" text-anchor="middle" fill="#263746">valid width</text>
+<rect x="80" y="352" width="260" height="80" rx="6" fill="#f1f3f5" stroke="#263746" stroke-width="1.3"/>
+<text x="210.0" y="384.32" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Three fake groups</text>
+<text x="210.0" y="410.28" font-size="14" text-anchor="middle" fill="#263746">x_rand / x_style / x_rec; detach</text>
+<rect x="404" y="212" width="280" height="80" rx="6" fill="#e8f0f8" stroke="#263746" stroke-width="1.3"/>
+<text x="544.0" y="244.32000000000002" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Differentiable augmentation</text>
+<text x="544.0" y="270.28000000000003" font-size="14" text-anchor="middle" fill="#263746">mild translation + width scaling</text>
+<rect x="404" y="352" width="280" height="80" rx="6" fill="#e8f0f8" stroke="#263746" stroke-width="1.3"/>
+<text x="544.0" y="384.32" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Same augmentation policy</text>
+<text x="544.0" y="410.28" font-size="14" text-anchor="middle" fill="#263746">independent draws, same strength</text>
+<rect x="748" y="212" width="232" height="80" rx="6" fill="#f9e9e5" stroke="#263746" stroke-width="1.3"/>
+<text x="864.0" y="244.32000000000002" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Global D</text>
+<text x="864.0" y="270.28000000000003" font-size="14" text-anchor="middle" fill="#263746">whole-word score</text>
+<rect x="748" y="352" width="232" height="80" rx="6" fill="#f9e9e5" stroke="#263746" stroke-width="1.3"/>
+<text x="864.0" y="384.32" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Global D</text>
+<text x="864.0" y="410.28" font-size="14" text-anchor="middle" fill="#263746">shared parameters</text>
+<rect x="1052" y="212" width="468" height="104" rx="6" fill="#fff2d6" stroke="#263746" stroke-width="1.3"/>
+<text x="1286.0" y="247.32000000000002" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Discriminator hinge loss</text>
+<text x="1286.0" y="273.28000000000003" font-size="14" text-anchor="middle" fill="#263746">L_D = mean ReLU(1 − D(real))</text>
+<text x="1286.0" y="291.28000000000003" font-size="14" text-anchor="middle" fill="#263746">+ mean_branches mean ReLU(1 + D(fake))</text>
+<rect x="1052" y="352" width="468" height="80" rx="6" fill="#fff2d6" stroke="#263746" stroke-width="1.3"/>
+<text x="1286.0" y="375.32" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Lazy real-image R1</text>
+<text x="1286.0" y="401.28" font-size="14" text-anchor="middle" fill="#263746">0.5 × λ_R1 × interval × ||∇_x D(x)||²</text>
+<text x="1286.0" y="419.28" font-size="14" text-anchor="middle" fill="#263746">λ_R1 = 0.01; interval = 32</text>
+<rect x="80" y="616" width="292" height="80" rx="6" fill="#f1f3f5" stroke="#263746" stroke-width="1.3"/>
+<text x="226.0" y="648.3199999999999" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Generated words</text>
+<text x="226.0" y="674.28" font-size="14" text-anchor="middle" fill="#263746">not detached; all three branches</text>
+<rect x="436" y="616" width="292" height="80" rx="6" fill="#e8f0f8" stroke="#263746" stroke-width="1.3"/>
+<text x="582.0" y="648.3199999999999" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Differentiable augmentation</text>
+<text x="582.0" y="674.28" font-size="14" text-anchor="middle" fill="#263746">same global-D input policy</text>
+<rect x="792" y="616" width="260" height="80" rx="6" fill="#f9e9e5" stroke="#263746" stroke-width="1.3" stroke-dasharray="5 3"/>
+<text x="922.0" y="648.3199999999999" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Global D</text>
+<text x="922.0" y="674.28" font-size="14" text-anchor="middle" fill="#263746">frozen parameters</text>
+<rect x="1116" y="600" width="404" height="112" rx="6" fill="#fff2d6" stroke="#263746" stroke-width="1.3"/>
+<text x="1318.0" y="639.3199999999999" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Global generator adversarial</text>
+<text x="1318.0" y="665.28" font-size="14" text-anchor="middle" fill="#263746">L_adv = −mean_branches mean D(fake)</text>
+<text x="1318.0" y="683.28" font-size="14" text-anchor="middle" fill="#263746">weight = 1.0 → updates G/E</text>
+<text x="64" y="64" font-size="32" text-anchor="start" fill="#263746" font-weight="bold">Whole-word adversarial learning</text>
+<text x="64" y="108" font-size="15" text-anchor="start" fill="#526171">No patches are presented to the global D · shared D weights are repeated below to keep the loss comparisons explicit</text>
+<text x="64" y="912" font-size="14" text-anchor="start" fill="#526171">D: residual CNN → optional width context → valid-area mean × 32 → scalar score. Width context is OFF in normal 32/64 configs.</text>
+<text x="64" y="944" font-size="14" text-anchor="start" fill="#526171">Augmented real and fake whole words use the same global-D policy. Patch crops are taken from the unwarped image paths.</text>
+<text x="64" y="992" font-size="12" text-anchor="start" fill="#526171">ALPHA · networks/model.py · snapshot 2026-10-15</text>
+<text x="64" y="1024" font-size="12" text-anchor="start" fill="#526171">Solid = forward dependency     Dashed brown = target / update     Dashed module = parameter-frozen</text>
+</svg></div></section>
+<section id="patch-d"><div class="diagram-container"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1040" role="img" aria-labelledby="patch-d-title patch-d-desc">
+<title id="patch-d-title">Local stroke critic: sampling, comparison and network</title>
+<desc id="patch-d-desc">One policy for real and all three fake branches · patch logits are supervised before spatial/crop reductions. Solid arrows represent forward dependencies; dashed arrows represent targets or optimizer actions.</desc>
+<rect width="1600" height="1040" fill="white"/>
+<rect x="52" y="148" width="1496" height="284" rx="8" fill="white" stroke="#cbd3da" stroke-dasharray="5 4"/>
+<text x="72" y="176" font-size="14" text-anchor="start" fill="#526171" font-weight="bold">A · SHARED CROP POLICY — NO CHARACTER-ID OR DATASET-SPECIFIC RULE</text>
+<rect x="52" y="472" width="1496" height="176" rx="8" fill="white" stroke="#cbd3da" stroke-dasharray="5 4"/>
+<text x="72" y="500" font-size="14" text-anchor="start" fill="#526171" font-weight="bold">B · P NETWORK — SAME STRUCTURE AT BOTH HEIGHTS</text>
+<polyline points="344,272.0 404,272.0" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="344,272.0 404,272.0" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="404,272.0 394.0,268.0 394.0,276.0" fill="#263746"/>
+<polyline points="768,272.0 828,272.0" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="768,272.0 828,272.0" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="828,272.0 818.0,268.0 818.0,276.0" fill="#263746"/>
+<polyline points="1108,272.0 1172,272.0" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="1108,272.0 1172,272.0" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="1172,272.0 1162.0,268.0 1162.0,276.0" fill="#263746"/>
+<polyline points="332,568.0 392,568.0" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="332,568.0 392,568.0" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="392,568.0 382.0,564.0 382.0,572.0" fill="#263746"/>
+<polyline points="864,568.0 924,568.0" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="864,568.0 924,568.0" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="924,568.0 914.0,564.0 914.0,572.0" fill="#263746"/>
+<polyline points="1184,568.0 1244,568.0" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="1184,568.0 1244,568.0" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="1244,568.0 1234.0,564.0 1234.0,572.0" fill="#263746"/>
+<polyline points="1346.0,320 1346.0,456.0 60,456.0 60,548.0 80,548.0" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="1346.0,320 1346.0,456.0 60,456.0 60,548.0 80,548.0" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="80,548.0 70.0,544.0 70.0,552.0" fill="#263746"/>
+<polyline points="1326.8,608 1326.8,628 784,628 784,768.0 764,768.0" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="1326.8,608 1326.8,628 784,628 784,768.0 764,768.0" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="764,768.0 774.0,772.0 774.0,764.0" fill="#263746"/>
+<polyline points="1437.2,608 1437.2,696 1172.0,696 1172.0,716" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="1437.2,608 1437.2,696 1172.0,696 1172.0,716" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="1172.0,716 1176.0,706.0 1168.0,706.0" fill="#263746"/>
+<rect x="80" y="224" width="264" height="96" rx="6" fill="#f1f3f5" stroke="#263746" stroke-width="1.3"/>
+<text x="212.0" y="253.34" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Real / random / transfer /</text>
+<text x="212.0" y="275.3" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">rec</text>
+<text x="212.0" y="301.26" font-size="14" text-anchor="middle" fill="#263746">whole image + valid width</text>
+<rect x="404" y="204" width="364" height="136" rx="6" fill="#e8f0f8" stroke="#263746" stroke-width="1.3"/>
+<text x="586.0" y="246.32" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Stratified stroke patches</text>
+<text x="586.0" y="272.28" font-size="14" text-anchor="middle" fill="#263746">side s = H/2</text>
+<text x="586.0" y="290.28" font-size="14" text-anchor="middle" fill="#263746">K = clamp(ceil(valid_width/s), 4, 8)</text>
+<text x="586.0" y="308.28" font-size="14" text-anchor="middle" fill="#263746">x: strata; y: alternate upper/lower</text>
+<rect x="828" y="224" width="280" height="96" rx="6" fill="#f1f3f5" stroke="#263746" stroke-width="1.3"/>
+<text x="968.0" y="255.32000000000002" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">K native patches per word</text>
+<text x="968.0" y="281.28000000000003" font-size="14" text-anchor="middle" fill="#263746">H32 → 16×16 · H64 → 32×32</text>
+<text x="968.0" y="299.28000000000003" font-size="14" text-anchor="middle" fill="#263746">short-width outside fill = −1</text>
+<rect x="1172" y="224" width="348" height="96" rx="6" fill="#f9e9e5" stroke="#263746" stroke-width="1.3"/>
+<text x="1346.0" y="255.32000000000002" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Shared StrokePatchD P</text>
+<text x="1346.0" y="281.28000000000003" font-size="14" text-anchor="middle" fill="#263746">one spatial logit map per crop</text>
+<text x="1346.0" y="299.28000000000003" font-size="14" text-anchor="middle" fill="#263746">never enters global D</text>
+<rect x="80" y="528" width="252" height="80" rx="6" fill="#f9e9e5" stroke="#263746" stroke-width="1.3"/>
+<text x="206.0" y="560.3199999999999" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">3×3 stem</text>
+<text x="206.0" y="586.28" font-size="14" text-anchor="middle" fill="#263746">1 → 64 channels</text>
+<rect x="392" y="528" width="472" height="80" rx="6" fill="#f9e9e5" stroke="#263746" stroke-width="1.3"/>
+<text x="628.0" y="551.3199999999999" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">StrokePatchBlock ×3</text>
+<text x="628.0" y="577.28" font-size="14" text-anchor="middle" fill="#263746">128 → 192 → 192; 3×3 + axial DW(1×5, 5×1)</text>
+<text x="628.0" y="595.28" font-size="14" text-anchor="middle" fill="#263746">1×1 fusion + residual; pool only when grid stays ≥4</text>
+<rect x="924" y="528" width="260" height="80" rx="6" fill="#f9e9e5" stroke="#263746" stroke-width="1.3"/>
+<text x="1054.0" y="560.3199999999999" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">1×1 logit head</text>
+<text x="1054.0" y="586.28" font-size="14" text-anchor="middle" fill="#263746">spatial score map</text>
+<rect x="1244" y="528" width="276" height="80" rx="6" fill="#fff2d6" stroke="#263746" stroke-width="1.3"/>
+<text x="1382.0" y="551.3199999999999" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Per-word reduction</text>
+<text x="1382.0" y="577.28" font-size="14" text-anchor="middle" fill="#263746">map → crop → word</text>
+<text x="1382.0" y="595.28" font-size="14" text-anchor="middle" fill="#263746">equal word / branch weighting</text>
+<rect x="80" y="716" width="684" height="104" rx="6" fill="#fff2d6" stroke="#263746" stroke-width="1.3"/>
+<text x="422.0" y="760.3199999999999" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Critic: L_P = Hinge(P(real), +1) + mean_b Hinge(P(fake_b), −1)</text>
+<text x="422.0" y="786.28" font-size="14" text-anchor="middle" fill="#263746">Train P; fake tensors detached. Hinge is applied per logit BEFORE spatial and crop averaging.</text>
+<rect x="824" y="716" width="696" height="104" rx="6" fill="#fff2d6" stroke="#263746" stroke-width="1.3"/>
+<text x="1172.0" y="760.3199999999999" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Generator: L_adv,P = −mean_b mean_word P(fake_b)</text>
+<text x="1172.0" y="786.28" font-size="14" text-anchor="middle" fill="#263746">Freeze P; preserve input gradients. Generator weight λ_patch_adv = 0.45.</text>
+<text x="64" y="64" font-size="32" text-anchor="start" fill="#263746" font-weight="bold">Local stroke critic: sampling, comparison and network</text>
+<text x="64" y="108" font-size="15" text-anchor="start" fill="#526171">One policy for real and all three fake branches · patch logits are supervised before spatial/crop reductions</text>
+<text x="64" y="912" font-size="14" text-anchor="start" fill="#526171">Independent coordinates are drawn for each image; “same policy” does not mean pixel-aligned real/fake crops.</text>
+<text x="64" y="944" font-size="14" text-anchor="start" fill="#526171">P receives no writer/text labels. It learns local realism from adversarial real-vs-fake supervision, not predefined stroke classes.</text>
+<text x="64" y="992" font-size="12" text-anchor="start" fill="#526171">ALPHA · networks/utils.py; networks/BigGAN_networks.py; networks/model.py · snapshot 2026-10-15</text>
+<text x="64" y="1024" font-size="12" text-anchor="start" fill="#526171">Solid = forward dependency     Dashed brown = target / update     Dashed module = parameter-frozen</text>
+</svg></div></section>
+<section id="random"><div class="diagram-container"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1040" role="img" aria-labelledby="random-title random-desc">
+<title id="random-title">Random generation: content and global-style recovery</title>
+<desc id="random-desc">Train G/E · freeze B/R and both critics · local prior slots are centered; no local-token recovery loss. Solid arrows represent forward dependencies; dashed arrows represent targets or optimizer actions.</desc>
+<rect width="1600" height="1040" fill="white"/>
+<rect x="52" y="148" width="1496" height="216" rx="8" fill="white" stroke="#cbd3da" stroke-dasharray="5 4"/>
+<text x="72" y="176" font-size="14" text-anchor="start" fill="#526171" font-weight="bold">A · GENERATE</text>
+<rect x="52" y="420" width="1496" height="384" rx="8" fill="white" stroke="#cbd3da" stroke-dasharray="5 4"/>
+<text x="72" y="448" font-size="14" text-anchor="start" fill="#526171" font-weight="bold">B · DIFFERENTIABLE SUPERVISION</text>
+<polyline points="232.0,292 232.0,312 825.0,312 825.0,292" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="232.0,292 232.0,312 825.0,312 825.0,292" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="825.0,292 821.0,302.0 829.0,302.0" fill="#263746"/>
+<polyline points="692,252.0 756,252.0" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="692,252.0 756,252.0" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="756,252.0 746.0,248.0 746.0,256.0" fill="#263746"/>
+<polyline points="1032,252.0 1096,252.0" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="1032,252.0 1096,252.0" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="1096,252.0 1086.0,248.0 1086.0,256.0" fill="#263746"/>
+<polyline points="1096,236.0 1076,236.0 1076,484 220.0,484 220.0,504" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="1096,236.0 1076,236.0 1076,484 220.0,484 220.0,504" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="220.0,504 224.0,494.0 216.0,494.0" fill="#263746"/>
+<polyline points="360,544.0 424,544.0" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="360,544.0 424,544.0" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="424,544.0 414.0,540.0 414.0,548.0" fill="#263746"/>
+<polyline points="568.0,292 568.0,476.0 608.0,476.0 608.0,504" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="568.0,292 568.0,476.0 608.0,476.0 608.0,504" fill="none" stroke="#8a4b23" stroke-width="1.6" stroke-linejoin="round" stroke-dasharray="6 4"/>
+<polygon points="608.0,504 612.0,494.0 604.0,494.0" fill="#8a4b23"/>
+<polyline points="1223.2,292 1223.2,312 1052.0,312 1052.0,668 220.0,668 220.0,688" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="1223.2,292 1223.2,312 1052.0,312 1052.0,668 220.0,668 220.0,688" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="220.0,688 224.0,678.0 216.0,678.0" fill="#263746"/>
+<polyline points="360,728.0 424,728.0" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="360,728.0 424,728.0" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="424,728.0 414.0,724.0 414.0,732.0" fill="#263746"/>
+<polyline points="720,728.0 784,728.0" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="720,728.0 784,728.0" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="784,728.0 774.0,724.0 774.0,732.0" fill="#263746"/>
+<polyline points="171.2,292 171.2,404.0 958.0,404.0 958.0,680" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="171.2,292 171.2,404.0 958.0,404.0 958.0,680" fill="none" stroke="#8a4b23" stroke-width="1.6" stroke-linejoin="round" stroke-dasharray="6 4"/>
+<polygon points="958.0,680 962.0,670.0 954.0,670.0" fill="#8a4b23"/>
+<polyline points="1392.8,292 1392.8,484 1358.0,484 1358.0,504" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="1392.8,292 1392.8,484 1358.0,484 1358.0,504" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="1358.0,504 1362.0,494.0 1354.0,494.0" fill="#263746"/>
+<rect x="80" y="212" width="304" height="80" rx="6" fill="#e6f3ee" stroke="#263746" stroke-width="1.3"/>
+<text x="232.0" y="244.32000000000002" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Sample prior z = [z_g, z_L]</text>
+<text x="232.0" y="270.28000000000003" font-size="14" text-anchor="middle" fill="#263746">z_g ∼ N(0,I); z_L centered over slots</text>
+<rect x="444" y="212" width="248" height="80" rx="6" fill="#f1f3f5" stroke="#263746" stroke-width="1.3"/>
+<text x="568.0" y="244.32000000000002" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Sample target text y′</text>
+<text x="568.0" y="270.28000000000003" font-size="14" text-anchor="middle" fill="#263746">lexicon; encoded character IDs</text>
+<rect x="756" y="212" width="276" height="80" rx="6" fill="#e8f0f8" stroke="#263746" stroke-width="1.3"/>
+<text x="894.0" y="244.32000000000002" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Generator G</text>
+<text x="894.0" y="270.28000000000003" font-size="14" text-anchor="middle" fill="#263746">input: z and y′</text>
+<rect x="1096" y="212" width="424" height="80" rx="6" fill="#f1f3f5" stroke="#263746" stroke-width="1.3"/>
+<text x="1308.0" y="244.32000000000002" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Random word x_rand</text>
+<text x="1308.0" y="270.28000000000003" font-size="14" text-anchor="middle" fill="#263746">H × (character_width × text_length)</text>
+<rect x="80" y="504" width="280" height="80" rx="6" fill="#e8f0f8" stroke="#263746" stroke-width="1.3" stroke-dasharray="5 3"/>
+<text x="220.0" y="536.3199999999999" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Frozen recognizer R</text>
+<text x="220.0" y="562.28" font-size="14" text-anchor="middle" fill="#263746">CNN + BiLSTM + log-softmax</text>
+<rect x="424" y="504" width="368" height="80" rx="6" fill="#fff2d6" stroke="#263746" stroke-width="1.3"/>
+<text x="608.0" y="527.3199999999999" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Random CTC loss</text>
+<text x="608.0" y="553.28" font-size="14" text-anchor="middle" fill="#263746">CTC(R(x_rand), y′)</text>
+<text x="608.0" y="571.28" font-size="14" text-anchor="middle" fill="#263746">weight: 1.0 → 0.4 (epochs 10–20)</text>
+<rect x="80" y="688" width="280" height="80" rx="6" fill="#e8f0f8" stroke="#263746" stroke-width="1.3" stroke-dasharray="5 3"/>
+<text x="220.0" y="720.3199999999999" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Frozen backbone B</text>
+<text x="220.0" y="746.28" font-size="14" text-anchor="middle" fill="#263746">input gradients retained</text>
+<rect x="424" y="688" width="296" height="80" rx="6" fill="#e8f0f8" stroke="#263746" stroke-width="1.3"/>
+<text x="572.0" y="720.3199999999999" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">E_global</text>
+<text x="572.0" y="746.28" font-size="14" text-anchor="middle" fill="#263746">skip local-token retrieval</text>
+<rect x="784" y="680" width="348" height="96" rx="6" fill="#fff2d6" stroke="#263746" stroke-width="1.3"/>
+<text x="958.0" y="711.3199999999999" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Global information loss</text>
+<text x="958.0" y="737.28" font-size="14" text-anchor="middle" fill="#263746">mean |g_hat − stop(z_g)| / 8</text>
+<text x="958.0" y="755.28" font-size="14" text-anchor="middle" fill="#263746">λ_info = 1.0</text>
+<rect x="1196" y="504" width="324" height="104" rx="6" fill="#fff2d6" stroke="#263746" stroke-width="1.3"/>
+<text x="1358.0" y="539.3199999999999" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Global D + StrokePatchD</text>
+<text x="1358.0" y="565.28" font-size="14" text-anchor="middle" fill="#263746">L_adv + 0.45 L_adv,P</text>
+<text x="1358.0" y="583.28" font-size="14" text-anchor="middle" fill="#263746">see pages 03 and 04</text>
+<text x="64" y="64" font-size="32" text-anchor="start" fill="#263746" font-weight="bold">Random generation: content and global-style recovery</text>
+<text x="64" y="108" font-size="15" text-anchor="start" fill="#526171">Train G/E · freeze B/R and both critics · local prior slots are centered; no local-token recovery loss</text>
+<text x="64" y="912" font-size="14" text-anchor="start" fill="#526171">z_g is a detached target in the information loss; E and G still receive gradients through the re-encoding prediction.</text>
+<text x="64" y="944" font-size="14" text-anchor="start" fill="#526171">All losses on these pages are forward objective dependencies. Backpropagation is not drawn as a second set of reversed arrows.</text>
+<text x="64" y="992" font-size="12" text-anchor="start" fill="#526171">ALPHA · networks/model.py · snapshot 2026-10-15</text>
+<text x="64" y="1024" font-size="12" text-anchor="start" fill="#526171">Solid = forward dependency     Dashed brown = target / update     Dashed module = parameter-frozen</text>
+</svg></div></section>
+<section id="transfer"><div class="diagram-container"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1040" role="img" aria-labelledby="transfer-title transfer-desc">
+<title id="transfer-title">Reference-guided generation: which signal compares to what?</title>
+<desc id="transfer-desc">Train G/E · freeze B/W/R · W and cycle/context supervision reuse the same generated B features. Solid arrows represent forward dependencies; dashed arrows represent targets or optimizer actions.</desc>
+<rect width="1600" height="1040" fill="white"/>
+<rect x="52" y="148" width="1496" height="208" rx="8" fill="white" stroke="#cbd3da" stroke-dasharray="5 4"/>
+<text x="72" y="176" font-size="14" text-anchor="start" fill="#526171" font-weight="bold">A · REFERENCE → NEW TEXT</text>
+<rect x="52" y="404" width="1496" height="416" rx="8" fill="white" stroke="#cbd3da" stroke-dasharray="5 4"/>
+<text x="72" y="432" font-size="14" text-anchor="start" fill="#526171" font-weight="bold">B · FROZEN TEACHERS AND TRAINABLE GLOBAL RE-ENCODER</text>
+<polyline points="312,248.0 372,248.0" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="312,248.0 372,248.0" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="372,248.0 362.0,244.0 362.0,252.0" fill="#263746"/>
+<polyline points="640,248.0 700,248.0" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="640,248.0 700,248.0" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="700,248.0 690.0,244.0 690.0,252.0" fill="#263746"/>
+<polyline points="932,248.0 992,248.0" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="932,248.0 992,248.0" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="992,248.0 982.0,244.0 982.0,252.0" fill="#263746"/>
+<polyline points="1232,248.0 1292,248.0" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="1232,248.0 1292,248.0" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="1292,248.0 1282.0,244.0 1282.0,252.0" fill="#263746"/>
+<polyline points="1349.0,288 1349.0,448 196.0,448 196.0,468" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="1349.0,288 1349.0,448 196.0,448 196.0,468" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="196.0,468 200.0,458.0 192.0,458.0" fill="#263746"/>
+<polyline points="312,508.0 372,508.0" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="312,508.0 372,508.0" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="372,508.0 362.0,504.0 362.0,512.0" fill="#263746"/>
+<polyline points="1394.6,288 1394.6,460.0 704.0,460.0 704.0,592.0 196.0,592.0 196.0,692" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="1394.6,288 1394.6,460.0 704.0,460.0 704.0,592.0 196.0,592.0 196.0,692" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="196.0,692 200.0,682.0 192.0,682.0" fill="#263746"/>
+<polyline points="312,712.0 332,712.0 332,652.0 372,652.0" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="312,712.0 332,712.0 332,652.0 372,652.0" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="372,652.0 362.0,648.0 362.0,656.0" fill="#263746"/>
+<polyline points="620,652.0 684,652.0" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="620,652.0 684,652.0" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="684,652.0 674.0,648.0 674.0,656.0" fill="#263746"/>
+<polyline points="312,752.0 352,752.0 352,764.0 372,764.0" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="312,752.0 352,752.0 352,764.0 372,764.0" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="372,764.0 362.0,760.0 362.0,768.0" fill="#263746"/>
+<polyline points="620,764.0 684,764.0" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="620,764.0 684,764.0" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="684,764.0 674.0,760.0 674.0,768.0" fill="#263746"/>
+<polyline points="196.0,772 196.0,824.0 1290.0,824.0 1290.0,724" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="196.0,772 196.0,824.0 1290.0,824.0 1290.0,724" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="1290.0,724 1286.0,734.0 1294.0,734.0" fill="#263746"/>
+<polyline points="439.0,288 439.0,308 1040.0,308 1040.0,592 1290.0,592 1290.0,612" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="439.0,288 439.0,308 1040.0,308 1040.0,592 1290.0,592 1290.0,612" fill="none" stroke="#8a4b23" stroke-width="1.6" stroke-linejoin="round" stroke-dasharray="6 4"/>
+<polygon points="1290.0,612 1294.0,602.0 1286.0,602.0" fill="#8a4b23"/>
+<polyline points="816.0,288 816.0,592.0 1016.0,592.0 1016.0,832 840.0,832 840.0,812" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="816.0,288 816.0,592.0 1016.0,592.0 1016.0,832 840.0,832 840.0,812" fill="none" stroke="#8a4b23" stroke-width="1.6" stroke-linejoin="round" stroke-dasharray="6 4"/>
+<polygon points="840.0,812 836.0,822.0 844.0,822.0" fill="#8a4b23"/>
+<polyline points="1463.0,288 1463.0,308 1290.0,308 1290.0,468" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="1463.0,288 1463.0,308 1290.0,308 1290.0,468" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="1290.0,468 1294.0,458.0 1286.0,458.0" fill="#263746"/>
+<rect x="80" y="208" width="232" height="80" rx="6" fill="#f1f3f5" stroke="#263746" stroke-width="1.3"/>
+<text x="196.0" y="240.32000000000002" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Reference x_ref</text>
+<text x="196.0" y="266.28000000000003" font-size="14" text-anchor="middle" fill="#263746">original word geometry</text>
+<rect x="372" y="208" width="268" height="80" rx="6" fill="#e8f0f8" stroke="#263746" stroke-width="1.3"/>
+<text x="506.0" y="240.32000000000002" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">B → E</text>
+<text x="506.0" y="266.28000000000003" font-size="14" text-anchor="middle" fill="#263746">B frozen; E trainable</text>
+<rect x="700" y="208" width="232" height="80" rx="6" fill="#e6f3ee" stroke="#263746" stroke-width="1.3"/>
+<text x="816.0" y="231.32000000000002" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Reference S = [g,L]</text>
+<text x="816.0" y="257.28000000000003" font-size="14" text-anchor="middle" fill="#263746">g sampled; locals</text>
+<text x="816.0" y="275.28000000000003" font-size="14" text-anchor="middle" fill="#263746">deterministic</text>
+<rect x="992" y="208" width="240" height="80" rx="6" fill="#e8f0f8" stroke="#263746" stroke-width="1.3"/>
+<text x="1112.0" y="240.32000000000002" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">G + target text y′</text>
+<text x="1112.0" y="266.28000000000003" font-size="14" text-anchor="middle" fill="#263746">different text, same style</text>
+<rect x="1292" y="208" width="228" height="80" rx="6" fill="#f1f3f5" stroke="#263746" stroke-width="1.3"/>
+<text x="1406.0" y="240.32000000000002" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Transfer x_style</text>
+<text x="1406.0" y="266.28000000000003" font-size="14" text-anchor="middle" fill="#263746">generated word</text>
+<rect x="80" y="468" width="232" height="80" rx="6" fill="#e8f0f8" stroke="#263746" stroke-width="1.3" stroke-dasharray="5 3"/>
+<text x="196.0" y="500.32" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Recognizer R</text>
+<text x="196.0" y="526.28" font-size="14" text-anchor="middle" fill="#263746">frozen</text>
+<rect x="372" y="468" width="312" height="80" rx="6" fill="#fff2d6" stroke="#263746" stroke-width="1.3"/>
+<text x="528.0" y="491.32" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">CTC vs target y′</text>
+<text x="528.0" y="517.28" font-size="14" text-anchor="middle" fill="#263746">weight: 0.5 → 0.20</text>
+<text x="528.0" y="535.28" font-size="14" text-anchor="middle" fill="#263746">epochs 8–28</text>
+<rect x="80" y="692" width="232" height="80" rx="6" fill="#e8f0f8" stroke="#263746" stroke-width="1.3" stroke-dasharray="5 3"/>
+<text x="196.0" y="724.3199999999999" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Backbone B</text>
+<text x="196.0" y="750.28" font-size="14" text-anchor="middle" fill="#263746">frozen; cache fake features</text>
+<rect x="372" y="612" width="248" height="80" rx="6" fill="#e8f0f8" stroke="#263746" stroke-width="1.3" stroke-dasharray="5 3"/>
+<text x="496.0" y="644.3199999999999" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Writer head W</text>
+<text x="496.0" y="670.28" font-size="14" text-anchor="middle" fill="#263746">frozen; known train writers</text>
+<rect x="684" y="600" width="312" height="104" rx="6" fill="#fff2d6" stroke="#263746" stroke-width="1.3"/>
+<text x="840.0" y="635.3199999999999" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Writer CE vs w_ref</text>
+<text x="840.0" y="661.28" font-size="14" text-anchor="middle" fill="#263746">λ_wid = 0.5</text>
+<text x="840.0" y="679.28" font-size="14" text-anchor="middle" fill="#263746">writer label of reference image</text>
+<rect x="372" y="724" width="248" height="80" rx="6" fill="#e8f0f8" stroke="#263746" stroke-width="1.3"/>
+<text x="496.0" y="756.3199999999999" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">E_global</text>
+<text x="496.0" y="782.28" font-size="14" text-anchor="middle" fill="#263746">trainable; local path skipped</text>
+<rect x="684" y="716" width="312" height="96" rx="6" fill="#fff2d6" stroke="#263746" stroke-width="1.3"/>
+<text x="840.0" y="747.3199999999999" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Global style-cycle L1</text>
+<text x="840.0" y="773.28" font-size="14" text-anchor="middle" fill="#263746">vs stop(mu_g,ref); divide by 8</text>
+<text x="840.0" y="791.28" font-size="14" text-anchor="middle" fill="#263746">λ_style_cycle = 1.0</text>
+<rect x="1060" y="612" width="460" height="112" rx="6" fill="#fff2d6" stroke="#263746" stroke-width="1.3"/>
+<text x="1290.0" y="642.3199999999999" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Multiscale contextual loss</text>
+<text x="1290.0" y="668.28" font-size="14" text-anchor="middle" fill="#263746">fake B maps vs stop(reference B maps)</text>
+<text x="1290.0" y="686.28" font-size="14" text-anchor="middle" fill="#263746">non-aligned content; bounded spatial sampling</text>
+<text x="1290.0" y="704.28" font-size="14" text-anchor="middle" fill="#263746">λ_ctx = 0.1</text>
+<rect x="1060" y="468" width="460" height="80" rx="6" fill="#fff2d6" stroke="#263746" stroke-width="1.3"/>
+<text x="1290.0" y="500.32" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">D + P adversarial</text>
+<text x="1290.0" y="526.28" font-size="14" text-anchor="middle" fill="#263746">L_adv + 0.45 L_adv,P</text>
+<text x="64" y="64" font-size="32" text-anchor="start" fill="#263746" font-weight="bold">Reference-guided generation: which signal compares to what?</text>
+<text x="64" y="108" font-size="15" text-anchor="start" fill="#526171">Train G/E · freeze B/W/R · W and cycle/context supervision reuse the same generated B features</text>
+<text x="64" y="912" font-size="14" text-anchor="start" fill="#526171">CTC compares against y′, NOT the reference transcript y. Writer CE compares against the reference writer ID w.</text>
+<text x="64" y="944" font-size="14" text-anchor="start" fill="#526171">The reference B pass and generated B pass supply both E and contextual features; duplicate drawing does not imply duplicate computation.</text>
+<text x="64" y="992" font-size="12" text-anchor="start" fill="#526171">ALPHA · networks/model.py · snapshot 2026-10-15</text>
+<text x="64" y="1024" font-size="12" text-anchor="start" fill="#526171">Solid = forward dependency     Dashed brown = target / update     Dashed module = parameter-frozen</text>
+</svg></div></section>
+<section id="recon"><div class="diagram-container"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1040" role="img" aria-labelledby="recon-title recon-desc">
+<title id="recon-title">Exact reconstruction and reference-posterior regularization</title>
+<desc id="recon-desc">A reconstruction target, a prior target and a content-adversary target are different signals — do not merge them. Solid arrows represent forward dependencies; dashed arrows represent targets or optimizer actions.</desc>
+<rect width="1600" height="1040" fill="white"/>
+<rect x="52" y="148" width="1496" height="292" rx="8" fill="white" stroke="#cbd3da" stroke-dasharray="5 4"/>
+<text x="72" y="176" font-size="14" text-anchor="start" fill="#526171" font-weight="bold">A · IMAGE RECONSTRUCTION — SAME REFERENCE TRANSCRIPT y</text>
+<rect x="52" y="464" width="1496" height="344" rx="8" fill="white" stroke="#cbd3da" stroke-dasharray="5 4"/>
+<text x="72" y="492" font-size="14" text-anchor="start" fill="#526171" font-weight="bold">B · REGULARIZE REFERENCE GLOBAL CODE — NO GENERATED IMAGE IS REQUIRED HERE</text>
+<polyline points="320,252.0 380,252.0" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="320,252.0 380,252.0" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="380,252.0 370.0,248.0 370.0,256.0" fill="#263746"/>
+<polyline points="648,252.0 708,252.0" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="648,252.0 708,252.0" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="708,252.0 698.0,248.0 698.0,256.0" fill="#263746"/>
+<polyline points="968,252.0 1028,252.0" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="968,252.0 1028,252.0" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="1028,252.0 1018.0,248.0 1018.0,256.0" fill="#263746"/>
+<polyline points="1248,252.0 1308,252.0" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="1248,252.0 1308,252.0" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="1308,252.0 1298.0,248.0 1298.0,256.0" fill="#263746"/>
+<polyline points="1446.2,352 1446.2,308" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="1446.2,352 1446.2,308" fill="none" stroke="#8a4b23" stroke-width="1.6" stroke-linejoin="round" stroke-dasharray="6 4"/>
+<polygon points="1446.2,308 1442.2,318.0 1450.2,318.0" fill="#8a4b23"/>
+<polyline points="460.4,292 460.4,312 60.0,312 60.0,532 216.0,532 216.0,552" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="460.4,292 460.4,312 60.0,312 60.0,532 216.0,532 216.0,552" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="216.0,552 220.0,542.0 212.0,542.0" fill="#263746"/>
+<polyline points="352,604.0 416,604.0" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="352,604.0 416,604.0" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="416,604.0 406.0,600.0 406.0,608.0" fill="#263746"/>
+<polyline points="216.0,656 216.0,704" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="216.0,656 216.0,704" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="216.0,704 220.0,694.0 212.0,694.0" fill="#263746"/>
+<polyline points="352,744.0 416,744.0" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="352,744.0 416,744.0" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="416,744.0 406.0,740.0 406.0,748.0" fill="#263746"/>
+<polyline points="676,744.0 740,744.0" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="676,744.0 740,744.0" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="740,744.0 730.0,740.0 730.0,748.0" fill="#263746"/>
+<polyline points="1204,744.0 1140,744.0" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="1204,744.0 1140,744.0" fill="none" stroke="#8a4b23" stroke-width="1.6" stroke-linejoin="round" stroke-dasharray="6 4"/>
+<polygon points="1140,744.0 1150.0,748.0 1150.0,740.0" fill="#8a4b23"/>
+<rect x="80" y="212" width="240" height="80" rx="6" fill="#f1f3f5" stroke="#263746" stroke-width="1.3"/>
+<text x="200.0" y="244.32000000000002" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Reference x_ref</text>
+<text x="200.0" y="270.28000000000003" font-size="14" text-anchor="middle" fill="#263746">original geometry</text>
+<rect x="380" y="212" width="268" height="80" rx="6" fill="#e8f0f8" stroke="#263746" stroke-width="1.3"/>
+<text x="514.0" y="244.32000000000002" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Frozen B → trainable E</text>
+<text x="514.0" y="270.28000000000003" font-size="14" text-anchor="middle" fill="#263746">posterior mu_g, logvar_g; L</text>
+<rect x="708" y="212" width="260" height="80" rx="6" fill="#e8f0f8" stroke="#263746" stroke-width="1.3"/>
+<text x="838.0" y="244.32000000000002" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">G(S_ref, y)</text>
+<text x="838.0" y="270.28000000000003" font-size="14" text-anchor="middle" fill="#263746">reference text, NOT y′</text>
+<rect x="1028" y="212" width="220" height="80" rx="6" fill="#f1f3f5" stroke="#263746" stroke-width="1.3"/>
+<text x="1138.0" y="244.32000000000002" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">x_rec</text>
+<text x="1138.0" y="270.28000000000003" font-size="14" text-anchor="middle" fill="#263746">canonical geometry</text>
+<rect x="1308" y="196" width="212" height="112" rx="6" fill="#fff2d6" stroke="#263746" stroke-width="1.3"/>
+<text x="1414.0" y="235.32000000000002" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Pixel L1</text>
+<text x="1414.0" y="261.28000000000003" font-size="14" text-anchor="middle" fill="#263746">x_rec versus x</text>
+<text x="1414.0" y="279.28000000000003" font-size="14" text-anchor="middle" fill="#263746">valid image area only</text>
+<rect x="1028" y="352" width="492" height="64" rx="6" fill="#f1f3f5" stroke="#263746" stroke-width="1.3"/>
+<text x="1274.0" y="376.32" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Canonical real target x</text>
+<text x="1274.0" y="402.28" font-size="14" text-anchor="middle" fill="#263746">same sample; original x_ref and target x may differ in width</text>
+<rect x="80" y="552" width="272" height="104" rx="6" fill="#e6f3ee" stroke="#263746" stroke-width="1.3"/>
+<text x="216.0" y="576.3399999999999" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Global posterior</text>
+<text x="216.0" y="598.3" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">parameters</text>
+<text x="216.0" y="624.26" font-size="14" text-anchor="middle" fill="#263746">mu_g, logvar_g</text>
+<text x="216.0" y="642.26" font-size="14" text-anchor="middle" fill="#263746">from the reference E pass</text>
+<rect x="416" y="552" width="440" height="104" rx="6" fill="#fff2d6" stroke="#263746" stroke-width="1.3"/>
+<text x="636.0" y="587.3199999999999" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Global KL to N(0,I)</text>
+<text x="636.0" y="613.28" font-size="14" text-anchor="middle" fill="#263746">L_KL = KL(q(g|x_ref) || N(0,I)) / 8</text>
+<text x="636.0" y="631.28" font-size="14" text-anchor="middle" fill="#263746">λ_KL = 0.1; local tokens have no KL</text>
+<rect x="80" y="704" width="272" height="80" rx="6" fill="#e8f0f8" stroke="#263746" stroke-width="1.3"/>
+<text x="216.0" y="727.3199999999999" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">mu_g → gradient reversal</text>
+<text x="216.0" y="753.28" font-size="14" text-anchor="middle" fill="#263746">identity forward; reverse gradient</text>
+<text x="216.0" y="771.28" font-size="14" text-anchor="middle" fill="#263746">to E</text>
+<rect x="416" y="704" width="260" height="80" rx="6" fill="#e8f0f8" stroke="#263746" stroke-width="1.3"/>
+<text x="546.0" y="736.3199999999999" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Content probe inside E</text>
+<text x="546.0" y="762.28" font-size="14" text-anchor="middle" fill="#263746">trainable linear prediction</text>
+<rect x="740" y="688" width="400" height="112" rx="6" fill="#fff2d6" stroke="#263746" stroke-width="1.3"/>
+<text x="940.0" y="727.3199999999999" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Content-adversarial BCE</text>
+<text x="940.0" y="753.28" font-size="14" text-anchor="middle" fill="#263746">vs bag of reference characters</text>
+<text x="940.0" y="771.28" font-size="14" text-anchor="middle" fill="#263746">BCE / 8; λ_content_adv = 0.02</text>
+<rect x="1204" y="688" width="316" height="112" rx="6" fill="#f1f3f5" stroke="#263746" stroke-width="1.3"/>
+<text x="1362.0" y="727.3199999999999" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Bag of characters in y</text>
+<text x="1362.0" y="753.28" font-size="14" text-anchor="middle" fill="#263746">multi-hot content target</text>
+<text x="1362.0" y="771.28" font-size="14" text-anchor="middle" fill="#263746">not a handcrafted character case</text>
+<text x="64" y="64" font-size="32" text-anchor="start" fill="#263746" font-weight="bold">Exact reconstruction and reference-posterior regularization</text>
+<text x="64" y="108" font-size="15" text-anchor="start" fill="#526171">A reconstruction target, a prior target and a content-adversary target are different signals — do not merge them</text>
+<text x="64" y="912" font-size="14" text-anchor="start" fill="#526171">Reconstruction also receives both adversarial losses (pages 03/04). Pixel weight decays 10 → 2.5 over epochs 24–42.</text>
+<text x="64" y="944" font-size="14" text-anchor="start" fill="#526171">The probe learns to recover content; gradient reversal trains the global encoder code to hide it. No extra OCR loss is applied to x_rec.</text>
+<text x="64" y="992" font-size="12" text-anchor="start" fill="#526171">ALPHA · networks/model.py · snapshot 2026-10-15</text>
+<text x="64" y="1024" font-size="12" text-anchor="start" fill="#526171">Solid = forward dependency     Dashed brown = target / update     Dashed module = parameter-frozen</text>
+</svg></div></section>
+<section id="encoder"><div class="diagram-container"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1040" role="img" aria-labelledby="encoder-title encoder-desc">
+<title id="encoder-title">Style encoder E: separate global statistics and local evidence</title>
+<desc id="encoder-desc">B is frozen in GAN; E is trainable · 8 total style tokens (1 global + 7 local) · token dimension 32. Solid arrows represent forward dependencies; dashed arrows represent targets or optimizer actions.</desc>
+<rect width="1600" height="1040" fill="white"/>
+<rect x="52" y="148" width="1496" height="280" rx="8" fill="white" stroke="#cbd3da" stroke-dasharray="5 4"/>
+<text x="72" y="176" font-size="14" text-anchor="start" fill="#526171" font-weight="bold">A · GLOBAL PATH — STOCHASTIC STYLE POSTERIOR</text>
+<rect x="52" y="480" width="1496" height="336" rx="8" fill="white" stroke="#cbd3da" stroke-dasharray="5 4"/>
+<text x="72" y="508" font-size="14" text-anchor="start" fill="#526171" font-weight="bold">B · LOCAL PATH — DETERMINISTIC MULTISCALE EVIDENCE</text>
+<polyline points="340,272.0 400,272.0" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="340,272.0 400,272.0" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="400,272.0 390.0,268.0 390.0,276.0" fill="#263746"/>
+<polyline points="660,272.0 700,272.0 700,268.0 720,268.0" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="660,272.0 700,272.0 700,268.0 720,268.0" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="720,268.0 710.0,264.0 710.0,272.0" fill="#263746"/>
+<polyline points="1072,268.0 1132,268.0" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="1072,268.0 1132,268.0" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="1132,268.0 1122.0,264.0 1122.0,272.0" fill="#263746"/>
+<polyline points="210.0,312 210.0,332 60.0,332 60.0,532 210.0,532 210.0,552" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="210.0,312 210.0,332 60.0,332 60.0,532 210.0,532 210.0,552" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="210.0,552 214.0,542.0 206.0,542.0" fill="#263746"/>
+<polyline points="340,592.0 400,592.0" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="340,592.0 400,592.0" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="400,592.0 390.0,588.0 390.0,596.0" fill="#263746"/>
+<polyline points="680,592.0 740,592.0" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="680,592.0 740,592.0" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="740,592.0 730.0,588.0 730.0,596.0" fill="#263746"/>
+<polyline points="1088,592.0 1148,592.0" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="1088,592.0 1148,592.0" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="1148,592.0 1138.0,588.0 1138.0,596.0" fill="#263746"/>
+<polyline points="596.0,792 596.0,812 1128.0,812 1128.0,668 1241.0,668 1241.0,648" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="596.0,792 596.0,812 1128.0,812 1128.0,668 1241.0,668 1241.0,648" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="1241.0,648 1237.0,658.0 1245.0,658.0" fill="#263746"/>
+<polyline points="1334.0,648 1334.0,712" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="1334.0,648 1334.0,712" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="1334.0,712 1338.0,702.0 1330.0,702.0" fill="#263746"/>
+<rect x="80" y="232" width="260" height="80" rx="6" fill="#e8f0f8" stroke="#263746" stroke-width="1.3" stroke-dasharray="5 3"/>
+<text x="210.0" y="264.32" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Reference → backbone B</text>
+<text x="210.0" y="290.28" font-size="14" text-anchor="middle" fill="#263746">valid-width-aware; frozen</text>
+<rect x="400" y="232" width="260" height="80" rx="6" fill="#e8f0f8" stroke="#263746" stroke-width="1.3"/>
+<text x="530.0" y="264.32" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Deep 256-D sequence</text>
+<text x="530.0" y="290.28" font-size="14" text-anchor="middle" fill="#263746">deepest B features</text>
+<rect x="720" y="212" width="352" height="112" rx="6" fill="#e8f0f8" stroke="#263746" stroke-width="1.3"/>
+<text x="896.0" y="251.32000000000002" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">GatedStyleContext: 2 blocks</text>
+<text x="896.0" y="277.28000000000003" font-size="14" text-anchor="middle" fill="#263746">DW k7, dilation 1 then 2</text>
+<text x="896.0" y="295.28000000000003" font-size="14" text-anchor="middle" fill="#263746">gated channel MLP + residual</text>
+<rect x="1132" y="212" width="388" height="112" rx="6" fill="#e6f3ee" stroke="#263746" stroke-width="1.3"/>
+<text x="1326.0" y="251.32000000000002" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Valid mean → LN → MLP</text>
+<text x="1326.0" y="277.28000000000003" font-size="14" text-anchor="middle" fill="#263746">mu_g, logvar_g → reparameterize</text>
+<text x="1326.0" y="295.28000000000003" font-size="14" text-anchor="middle" fill="#263746">g = mu_g + exp(0.5 logvar_g) ε</text>
+<rect x="80" y="552" width="260" height="80" rx="6" fill="#e6f3ee" stroke="#263746" stroke-width="1.3"/>
+<text x="210.0" y="584.3199999999999" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">B maps: 64 / 128 / 256</text>
+<text x="210.0" y="610.28" font-size="14" text-anchor="middle" fill="#263746">three spatial scales</text>
+<rect x="400" y="552" width="280" height="80" rx="6" fill="#e8f0f8" stroke="#263746" stroke-width="1.3"/>
+<text x="540.0" y="575.3199999999999" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Pool height to 4 rows</text>
+<text x="540.0" y="601.28" font-size="14" text-anchor="middle" fill="#263746">per-scale 1×1 projection → 256</text>
+<text x="540.0" y="619.28" font-size="14" text-anchor="middle" fill="#263746">flatten + normalization</text>
+<rect x="740" y="536" width="348" height="112" rx="6" fill="#e6f3ee" stroke="#263746" stroke-width="1.3"/>
+<text x="914.0" y="575.3199999999999" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">K = visual + 2-D position</text>
+<text x="914.0" y="601.28" font-size="14" text-anchor="middle" fill="#263746">V = visual − valid spatial mean</text>
+<text x="914.0" y="619.28" font-size="14" text-anchor="middle" fill="#263746">positions address evidence; not appearance</text>
+<rect x="400" y="712" width="280" height="80" rx="6" fill="#e6f3ee" stroke="#263746" stroke-width="1.3"/>
+<text x="540.0" y="744.3199999999999" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">7 learned local queries</text>
+<text x="540.0" y="770.28" font-size="14" text-anchor="middle" fill="#263746">orthogonally initialized</text>
+<rect x="1148" y="536" width="372" height="112" rx="6" fill="#e8f0f8" stroke="#263746" stroke-width="1.3"/>
+<text x="1334.0" y="575.3199999999999" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">4-head cross-attention</text>
+<text x="1334.0" y="601.28" font-size="14" text-anchor="middle" fill="#263746">Q: learned queries; K/V: B evidence</text>
+<text x="1334.0" y="619.28" font-size="14" text-anchor="middle" fill="#263746">bias-free local output projection</text>
+<rect x="1148" y="712" width="372" height="80" rx="6" fill="#e6f3ee" stroke="#263746" stroke-width="1.3"/>
+<text x="1334.0" y="735.3199999999999" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">256 → 32; center over slots</text>
+<text x="1334.0" y="761.28" font-size="14" text-anchor="middle" fill="#263746">L_j ← L_j − mean_k L_k</text>
+<text x="1334.0" y="779.28" font-size="14" text-anchor="middle" fill="#263746">7 deterministic local tokens</text>
+<text x="64" y="64" font-size="32" text-anchor="start" fill="#263746" font-weight="bold">Style encoder E: separate global statistics and local evidence</text>
+<text x="64" y="108" font-size="15" text-anchor="start" fill="#526171">B is frozen in GAN; E is trainable · 8 total style tokens (1 global + 7 local) · token dimension 32</text>
+<text x="64" y="912" font-size="14" text-anchor="start" fill="#526171">Output S = [g, L1, …, L7] has shape batch × 8 × 32. Only the global posterior is sampled and KL-regularized.</text>
+<text x="64" y="944" font-size="14" text-anchor="start" fill="#526171">global_only=True skips the local retrieval path during fake re-encoding. There is no special rule for “/”, digits, or reference text length.</text>
+<text x="64" y="992" font-size="12" text-anchor="start" fill="#526171">ALPHA · networks/module.py: StyleBackbone; GatedStyleContext; StyleEncoder · snapshot 2026-10-15</text>
+<text x="64" y="1024" font-size="12" text-anchor="start" fill="#526171">Solid = forward dependency     Dashed brown = target / update     Dashed module = parameter-frozen</text>
+</svg></div></section>
+<section id="generator"><div class="diagram-container"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1040" role="img" aria-labelledby="generator-title generator-desc">
+<title id="generator-title">Content-first generation with two distinct style routes</title>
+<desc id="generator-desc">Same four-stage G at H32/H64; final-stage geometry changes with requested height, not dataset identity. Solid arrows represent forward dependencies; dashed arrows represent targets or optimizer actions.</desc>
+<rect width="1600" height="1040" fill="white"/>
+<rect x="52" y="148" width="1496" height="260" rx="8" fill="white" stroke="#cbd3da" stroke-dasharray="5 4"/>
+<text x="72" y="176" font-size="14" text-anchor="start" fill="#526171" font-weight="bold">A · TEXT LAYOUT — CONTENT ONLY, BEFORE STYLE REFINEMENT</text>
+<rect x="52" y="456" width="1496" height="388" rx="8" fill="white" stroke="#cbd3da" stroke-dasharray="5 4"/>
+<text x="72" y="484" font-size="14" text-anchor="start" fill="#526171" font-weight="bold">B · STYLE-CONDITIONED IMAGE SYNTHESIS</text>
+<polyline points="308,260.0 368,260.0" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="308,260.0 368,260.0" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="368,260.0 358.0,256.0 358.0,264.0" fill="#263746"/>
+<polyline points="608,260.0 648,260.0 648,256.0 668,256.0" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="608,260.0 648,260.0 648,256.0 668,256.0" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="668,256.0 658.0,252.0 658.0,260.0" fill="#263746"/>
+<polyline points="1004,256.0 1064,256.0" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="1004,256.0 1064,256.0" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="1064,256.0 1054.0,252.0 1054.0,260.0" fill="#263746"/>
+<polyline points="308,564.0 368,564.0" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="308,564.0 368,564.0" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="368,564.0 358.0,560.0 358.0,568.0" fill="#263746"/>
+<polyline points="1200.8,312 1200.8,664.0 530.0,664.0 530.0,704" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="1200.8,312 1200.8,664.0 530.0,664.0 530.0,704" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="530.0,704 534.0,694.0 526.0,694.0" fill="#263746"/>
+<polyline points="584,744.0 628,744.0 628,752.0 648,752.0" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="584,744.0 628,744.0 628,752.0 648,752.0" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="648,752.0 638.0,748.0 638.0,756.0" fill="#263746"/>
+<polyline points="194.0,784 194.0,840 747.6,840 747.6,820" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="194.0,784 194.0,840 747.6,840 747.6,820" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="747.6,820 743.6,830.0 751.6,830.0" fill="#263746"/>
+<polyline points="452.0,620 452.0,684 422.0,684 422.0,704" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="452.0,620 452.0,684 422.0,684 422.0,704" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="422.0,704 426.0,694.0 418.0,694.0" fill="#263746"/>
+<polyline points="704,564.0 1172.0,564.0 1172.0,684" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="704,564.0 1172.0,564.0 1172.0,684" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="1172.0,684 1176.0,674.0 1168.0,674.0" fill="#263746"/>
+<polyline points="980,752.0 1044,752.0" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="980,752.0 1044,752.0" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="1044,752.0 1034.0,748.0 1034.0,756.0" fill="#263746"/>
+<polyline points="1300,752.0 1340,752.0 1340,744.0 1360,744.0" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="1300,752.0 1340,752.0 1340,744.0 1360,744.0" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="1360,744.0 1350.0,740.0 1350.0,748.0" fill="#263746"/>
+<rect x="80" y="220" width="228" height="80" rx="6" fill="#f1f3f5" stroke="#263746" stroke-width="1.3"/>
+<text x="194.0" y="252.32000000000002" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Target character IDs</text>
+<text x="194.0" y="278.28000000000003" font-size="14" text-anchor="middle" fill="#263746">text length T</text>
+<rect x="368" y="220" width="240" height="80" rx="6" fill="#e8f0f8" stroke="#263746" stroke-width="1.3"/>
+<text x="488.0" y="252.32000000000002" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Embedding</text>
+<text x="488.0" y="278.28000000000003" font-size="14" text-anchor="middle" fill="#263746">120-D per character</text>
+<rect x="668" y="200" width="336" height="112" rx="6" fill="#e8f0f8" stroke="#263746" stroke-width="1.3"/>
+<text x="836.0" y="239.32000000000002" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Content self-attention</text>
+<text x="836.0" y="265.28000000000003" font-size="14" text-anchor="middle" fill="#263746">relative-position; 4 heads</text>
+<text x="836.0" y="283.28000000000003" font-size="14" text-anchor="middle" fill="#263746">attention width 128; residual</text>
+<rect x="1064" y="200" width="456" height="112" rx="6" fill="#e8f0f8" stroke="#263746" stroke-width="1.3"/>
+<text x="1292.0" y="239.32000000000002" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Local gated FFN → spatial seed</text>
+<text x="1292.0" y="265.28000000000003" font-size="14" text-anchor="middle" fill="#263746">DWConv1D k5; hidden width 360</text>
+<text x="1292.0" y="283.28000000000003" font-size="14" text-anchor="middle" fill="#263746">linear + reshape → 512 × 4 × (4T)</text>
+<rect x="80" y="524" width="228" height="80" rx="6" fill="#e6f3ee" stroke="#263746" stroke-width="1.3"/>
+<text x="194.0" y="556.3199999999999" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Global token g</text>
+<text x="194.0" y="582.28" font-size="14" text-anchor="middle" fill="#263746">32-D</text>
+<rect x="368" y="508" width="336" height="112" rx="6" fill="#e6f3ee" stroke="#263746" stroke-width="1.3"/>
+<text x="536.0" y="547.3199999999999" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Block-specific style projections</text>
+<text x="536.0" y="573.28" font-size="14" text-anchor="middle" fill="#263746">4 independent MLPs: 32 → 32 → 32</text>
+<text x="536.0" y="591.28" font-size="14" text-anchor="middle" fill="#263746">one vector per GBlock → CBN</text>
+<rect x="80" y="704" width="228" height="80" rx="6" fill="#e6f3ee" stroke="#263746" stroke-width="1.3"/>
+<text x="194.0" y="736.3199999999999" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">7 local tokens L</text>
+<text x="194.0" y="762.28" font-size="14" text-anchor="middle" fill="#263746">7 × 32-D</text>
+<rect x="368" y="704" width="216" height="80" rx="6" fill="#e8f0f8" stroke="#263746" stroke-width="1.3"/>
+<text x="476.0" y="736.3199999999999" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">GBlock 1</text>
+<text x="476.0" y="762.28" font-size="14" text-anchor="middle" fill="#263746">512 → 256; H=8</text>
+<rect x="648" y="684" width="332" height="136" rx="6" fill="#e8f0f8" stroke="#263746" stroke-width="1.3"/>
+<text x="814.0" y="726.3199999999999" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Spatial style refinement</text>
+<text x="814.0" y="752.28" font-size="14" text-anchor="middle" fill="#263746">Q: spatial content features</text>
+<text x="814.0" y="770.28" font-size="14" text-anchor="middle" fill="#263746">K: LN(local); V: raw local</text>
+<text x="814.0" y="788.28" font-size="14" text-anchor="middle" fill="#263746">4 heads, width 128; learned residual</text>
+<rect x="1044" y="684" width="256" height="136" rx="6" fill="#e8f0f8" stroke="#263746" stroke-width="1.3"/>
+<text x="1172.0" y="735.3199999999999" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">GBlocks 2–4</text>
+<text x="1172.0" y="761.28" font-size="14" text-anchor="middle" fill="#263746">256 → 128 → 64 → 64</text>
+<text x="1172.0" y="779.28" font-size="14" text-anchor="middle" fill="#263746">each has global-conditioned BN</text>
+<rect x="1360" y="704" width="160" height="80" rx="6" fill="#f1f3f5" stroke="#263746" stroke-width="1.3"/>
+<text x="1440.0" y="736.3199999999999" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">BN → conv</text>
+<text x="1440.0" y="762.28" font-size="14" text-anchor="middle" fill="#263746">tanh image</text>
+<text x="64" y="64" font-size="32" text-anchor="start" fill="#263746" font-weight="bold">Content-first generation with two distinct style routes</text>
+<text x="64" y="108" font-size="15" text-anchor="start" fill="#526171">Same four-stage G at H32/H64; final-stage geometry changes with requested height, not dataset identity</text>
+<text x="64" y="912" font-size="14" text-anchor="start" fill="#526171">GBlock stages: H=8 → 16 → 32 → (32 or 64). Output width is 16T at H32 and 32T at H64; padding is not a foreground mask.</text>
+<text x="64" y="944" font-size="14" text-anchor="start" fill="#526171">Local attention is applied ONCE after GBlock 1. No Mamba, allograph-ID gate, texture generator, or frequency loss is active here.</text>
+<text x="64" y="992" font-size="12" text-anchor="start" fill="#526171">ALPHA · networks/fusion.py; networks/BigGAN_networks.py: Generator; BlockSpecificStyleProjection · snapshot 2026-10-15</text>
+<text x="64" y="1024" font-size="12" text-anchor="start" fill="#526171">Solid = forward dependency     Dashed brown = target / update     Dashed module = parameter-frozen</text>
+</svg></div></section>
+<section id="ocr"><div class="diagram-container"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1040" role="img" aria-labelledby="ocr-title ocr-desc">
+<title id="ocr-title">Pretrain recognizer R on real labeled word images</title>
+<desc id="ocr-desc">R alone is trainable · no GAN, no writer classifier, no local-style encoder · height-matched 32/64 configurations. Solid arrows represent forward dependencies; dashed arrows represent targets or optimizer actions.</desc>
+<rect width="1600" height="1040" fill="white"/>
+<rect x="52" y="148" width="1496" height="300" rx="8" fill="white" stroke="#cbd3da" stroke-dasharray="5 4"/>
+<text x="72" y="176" font-size="14" text-anchor="start" fill="#526171" font-weight="bold">A · SUPERVISED CTC TRAINING — TRAINING SPLIT: trnval</text>
+<rect x="52" y="504" width="1496" height="300" rx="8" fill="white" stroke="#cbd3da" stroke-dasharray="5 4"/>
+<text x="72" y="532" font-size="14" text-anchor="start" fill="#526171" font-weight="bold">B · OPTIMIZATION, EVALUATION AND EXPORT</text>
+<polyline points="332,276.0 392,276.0" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="332,276.0 392,276.0" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="392,276.0 382.0,272.0 382.0,280.0" fill="#263746"/>
+<polyline points="668,276.0 728,276.0" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="668,276.0 728,276.0" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="728,276.0 718.0,272.0 718.0,280.0" fill="#263746"/>
+<polyline points="976,276.0 1036,276.0" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="976,276.0 1036,276.0" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="1036,276.0 1026.0,272.0 1026.0,280.0" fill="#263746"/>
+<polyline points="1260,276.0 1320,276.0" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="1260,276.0 1320,276.0" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="1320,276.0 1310.0,272.0 1310.0,280.0" fill="#263746"/>
+<polyline points="155.6,332 155.6,372 1420.0,372 1420.0,352" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="155.6,332 155.6,372 1420.0,372 1420.0,352" fill="none" stroke="#8a4b23" stroke-width="1.6" stroke-linejoin="round" stroke-dasharray="6 4"/>
+<polygon points="1420.0,352 1416.0,362.0 1424.0,362.0" fill="#8a4b23"/>
+<polyline points="1420.0,352 1420.0,580 234.0,580 234.0,600" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="1420.0,352 1420.0,580 234.0,580 234.0,600" fill="none" stroke="#8a4b23" stroke-width="1.6" stroke-linejoin="round" stroke-dasharray="6 4"/>
+<polygon points="234.0,600 238.0,590.0 230.0,590.0" fill="#8a4b23"/>
+<polyline points="388,656.0 448,656.0" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="388,656.0 448,656.0" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="448,656.0 438.0,652.0 438.0,660.0" fill="#263746"/>
+<polyline points="728,656.0 788,656.0" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="728,656.0 788,656.0" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="788,656.0 778.0,652.0 778.0,660.0" fill="#263746"/>
+<polyline points="1124,656.0 1184,656.0" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="1124,656.0 1184,656.0" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="1184,656.0 1174.0,652.0 1174.0,660.0" fill="#263746"/>
+<rect x="80" y="220" width="252" height="112" rx="6" fill="#f1f3f5" stroke="#263746" stroke-width="1.3"/>
+<text x="206.0" y="250.32" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Real image + transcript</text>
+<text x="206.0" y="276.28" font-size="14" text-anchor="middle" fill="#263746">normalized image, valid width</text>
+<text x="206.0" y="294.28" font-size="14" text-anchor="middle" fill="#263746">source white → model black</text>
+<text x="206.0" y="312.28" font-size="14" text-anchor="middle" fill="#263746">polarity</text>
+<rect x="392" y="220" width="276" height="112" rx="6" fill="#e8f0f8" stroke="#263746" stroke-width="1.3"/>
+<text x="530.0" y="268.32" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Handwriting augmentation</text>
+<text x="530.0" y="294.28" font-size="14" text-anchor="middle" fill="#263746">scale + mild handwriting transform</text>
+<rect x="728" y="220" width="248" height="112" rx="6" fill="#e8f0f8" stroke="#263746" stroke-width="1.3"/>
+<text x="852.0" y="268.32" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">R: residual CNN</text>
+<text x="852.0" y="294.28" font-size="14" text-anchor="middle" fill="#263746">width reduction: 8 or 16</text>
+<rect x="1036" y="220" width="224" height="112" rx="6" fill="#e8f0f8" stroke="#263746" stroke-width="1.3"/>
+<text x="1148.0" y="268.32" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">2-layer BiLSTM</text>
+<text x="1148.0" y="294.28" font-size="14" text-anchor="middle" fill="#263746">packed valid sequence</text>
+<rect x="1320" y="200" width="200" height="152" rx="6" fill="#fff2d6" stroke="#263746" stroke-width="1.3"/>
+<text x="1420.0" y="259.32" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Linear + CTC</text>
+<text x="1420.0" y="285.28" font-size="14" text-anchor="middle" fill="#263746">81-class logits</text>
+<text x="1420.0" y="303.28" font-size="14" text-anchor="middle" fill="#263746">CTC vs transcript</text>
+<rect x="80" y="600" width="308" height="112" rx="6" fill="#e8f0f8" stroke="#263746" stroke-width="1.3"/>
+<text x="234.0" y="639.3199999999999" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Adam update: R</text>
+<text x="234.0" y="665.28" font-size="14" text-anchor="middle" fill="#263746">100 epochs; batch 128; lr 1e−3</text>
+<text x="234.0" y="683.28" font-size="14" text-anchor="middle" fill="#263746">linear decay epochs 60–100</text>
+<rect x="448" y="600" width="280" height="112" rx="6" fill="#e6f3ee" stroke="#263746" stroke-width="1.3"/>
+<text x="588.0" y="639.3199999999999" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Optional EMA(R)</text>
+<text x="588.0" y="665.28" font-size="14" text-anchor="middle" fill="#263746">teacher_ema toggle</text>
+<text x="588.0" y="683.28" font-size="14" text-anchor="middle" fill="#263746">beta = 0.999</text>
+<rect x="788" y="600" width="336" height="112" rx="6" fill="#fff2d6" stroke="#263746" stroke-width="1.3"/>
+<text x="956.0" y="639.3199999999999" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Validate on test split</text>
+<text x="956.0" y="665.28" font-size="14" text-anchor="middle" fill="#263746">every 10 epochs; batch 256</text>
+<text x="956.0" y="683.28" font-size="14" text-anchor="middle" fill="#263746">decode → CER / WER</text>
+<rect x="1184" y="600" width="336" height="112" rx="6" fill="#f1f3f5" stroke="#263746" stroke-width="1.3"/>
+<text x="1352.0" y="639.3199999999999" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Export OCR checkpoint</text>
+<text x="1352.0" y="665.28" font-size="14" text-anchor="middle" fill="#263746">ocr_iam_train32.pth</text>
+<text x="1352.0" y="683.28" font-size="14" text-anchor="middle" fill="#263746">or ocr_iam_train64.pth</text>
+<text x="64" y="64" font-size="32" text-anchor="start" fill="#263746" font-weight="bold">Pretrain recognizer R on real labeled word images</text>
+<text x="64" y="108" font-size="15" text-anchor="start" fill="#526171">R alone is trainable · no GAN, no writer classifier, no local-style encoder · height-matched 32/64 configurations</text>
+<text x="64" y="912" font-size="14" text-anchor="start" fill="#526171">When teacher_ema=false, validation/export use current online R weights directly; EMA is not a second independently trained OCR.</text>
+<text x="64" y="944" font-size="14" text-anchor="start" fill="#526171">OCR CNN weights can initialize B for W+B pretraining. In GAN training, R is frozen and generated images are NOT inverted before R.</text>
+<text x="64" y="992" font-size="12" text-anchor="start" fill="#526171">ALPHA · networks/model.py: RecognizeModel; networks/module.py: Recognizer; configs/ocr_iam_{32,64}.yml · snapshot 2026-10-15</text>
+<text x="64" y="1024" font-size="12" text-anchor="start" fill="#526171">Solid = forward dependency     Dashed brown = target / update     Dashed module = parameter-frozen</text>
+</svg></div></section>
+<section id="writer"><div class="diagram-container"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1040" role="img" aria-labelledby="writer-title writer-desc">
+<title id="writer-title">Pretrain the shared writer backbone B and writer head W</title>
+<desc id="writer-desc">Both B and W train here · E is not part of pretraining · a single writer checkpoint stores both networks. Solid arrows represent forward dependencies; dashed arrows represent targets or optimizer actions.</desc>
+<rect width="1600" height="1040" fill="white"/>
+<rect x="52" y="148" width="1496" height="328" rx="8" fill="white" stroke="#cbd3da" stroke-dasharray="5 4"/>
+<text x="72" y="176" font-size="14" text-anchor="start" fill="#526171" font-weight="bold">A · WRITER CLASSIFICATION — KNOWN TRAINING WRITERS</text>
+<rect x="52" y="524" width="1496" height="296" rx="8" fill="white" stroke="#cbd3da" stroke-dasharray="5 4"/>
+<text x="72" y="552" font-size="14" text-anchor="start" fill="#526171" font-weight="bold">B · LOSS, WEIGHT UPDATE AND EXPORT</text>
+<polyline points="360,280.0 420,280.0" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="360,280.0 420,280.0" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="420,280.0 410.0,276.0 410.0,284.0" fill="#263746"/>
+<polyline points="700,280.0 760,280.0" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="700,280.0 760,280.0" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="760,280.0 750.0,276.0 750.0,284.0" fill="#263746"/>
+<polyline points="992,280.0 1052,280.0" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="992,280.0 1052,280.0" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="1052,280.0 1042.0,276.0 1042.0,284.0" fill="#263746"/>
+<polyline points="1284,280.0 1344,280.0" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="1284,280.0 1344,280.0" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="1344,280.0 1334.0,276.0 1334.0,284.0" fill="#263746"/>
+<polyline points="1432.0,336 1432.0,592 236.0,592 236.0,612" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="1432.0,336 1432.0,592 236.0,592 236.0,612" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="236.0,612 240.0,602.0 232.0,602.0" fill="#263746"/>
+<polyline points="150.0,336 150.0,356 60.0,356 60.0,592 158.0,592 158.0,612" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="150.0,336 150.0,356 60.0,356 60.0,592 158.0,592 158.0,612" fill="none" stroke="#8a4b23" stroke-width="1.6" stroke-linejoin="round" stroke-dasharray="6 4"/>
+<polygon points="158.0,612 162.0,602.0 154.0,602.0" fill="#8a4b23"/>
+<polyline points="392,668.0 452,668.0" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="392,668.0 452,668.0" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="452,668.0 442.0,664.0 442.0,672.0" fill="#263746"/>
+<polyline points="752,668.0 812,668.0" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="752,668.0 812,668.0" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="812,668.0 802.0,664.0 802.0,672.0" fill="#263746"/>
+<polyline points="1112,668.0 1172,668.0" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="1112,668.0 1172,668.0" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="1172,668.0 1162.0,664.0 1162.0,672.0" fill="#263746"/>
+<rect x="80" y="224" width="280" height="112" rx="6" fill="#f1f3f5" stroke="#263746" stroke-width="1.3"/>
+<text x="220.0" y="263.32" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Writer-balanced real batch</text>
+<text x="220.0" y="289.28" font-size="14" text-anchor="middle" fill="#263746">trnval; inverse-count sampling</text>
+<text x="220.0" y="307.28" font-size="14" text-anchor="middle" fill="#263746">power 0.5; capped weight 3</text>
+<rect x="420" y="224" width="280" height="112" rx="6" fill="#e8f0f8" stroke="#263746" stroke-width="1.3"/>
+<text x="560.0" y="263.32" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Mixed image input policy</text>
+<text x="560.0" y="289.28" font-size="14" text-anchor="middle" fill="#263746">raw or augmented / canonical</text>
+<text x="560.0" y="307.28" font-size="14" text-anchor="middle" fill="#263746">raw probability = 0.5</text>
+<rect x="760" y="224" width="232" height="112" rx="6" fill="#e8f0f8" stroke="#263746" stroke-width="1.3"/>
+<text x="876.0" y="272.32" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Backbone B</text>
+<text x="876.0" y="298.28" font-size="14" text-anchor="middle" fill="#263746">trainable; OCR CNN init</text>
+<rect x="1052" y="204" width="232" height="152" rx="6" fill="#e8f0f8" stroke="#263746" stroke-width="1.3"/>
+<text x="1168.0" y="254.32" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Attentive statistics</text>
+<text x="1168.0" y="280.28" font-size="14" text-anchor="middle" fill="#263746">valid-width weights</text>
+<text x="1168.0" y="298.28" font-size="14" text-anchor="middle" fill="#263746">weighted mean + std</text>
+<text x="1168.0" y="316.28" font-size="14" text-anchor="middle" fill="#263746">512 → 256 projection</text>
+<rect x="1344" y="224" width="176" height="112" rx="6" fill="#e8f0f8" stroke="#263746" stroke-width="1.3"/>
+<text x="1432.0" y="272.32" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">W: MLP</text>
+<text x="1432.0" y="298.28" font-size="14" text-anchor="middle" fill="#263746">339 writer logits</text>
+<rect x="80" y="612" width="312" height="112" rx="6" fill="#fff2d6" stroke="#263746" stroke-width="1.3"/>
+<text x="236.0" y="651.3199999999999" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Writer cross-entropy</text>
+<text x="236.0" y="677.28" font-size="14" text-anchor="middle" fill="#263746">prediction W(B(x)) vs writer ID w</text>
+<text x="236.0" y="695.28" font-size="14" text-anchor="middle" fill="#263746">no OCR / CTC objective here</text>
+<rect x="452" y="612" width="300" height="112" rx="6" fill="#e8f0f8" stroke="#263746" stroke-width="1.3"/>
+<text x="602.0" y="651.3199999999999" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Adam update: W + B</text>
+<text x="602.0" y="677.28" font-size="14" text-anchor="middle" fill="#263746">100 epochs; batch 128; lr 1e−3</text>
+<text x="602.0" y="695.28" font-size="14" text-anchor="middle" fill="#263746">linear decay epochs 60–100</text>
+<rect x="812" y="612" width="300" height="112" rx="6" fill="#e6f3ee" stroke="#263746" stroke-width="1.3"/>
+<text x="962.0" y="651.3199999999999" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Optional EMA(W + B)</text>
+<text x="962.0" y="677.28" font-size="14" text-anchor="middle" fill="#263746">beta 0.999; validate every 10 epochs</text>
+<text x="962.0" y="695.28" font-size="14" text-anchor="middle" fill="#263746">trnval split: closed-set writer error</text>
+<rect x="1172" y="612" width="348" height="112" rx="6" fill="#f1f3f5" stroke="#263746" stroke-width="1.3"/>
+<text x="1346.0" y="651.3199999999999" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Export W and B together</text>
+<text x="1346.0" y="677.28" font-size="14" text-anchor="middle" fill="#263746">wid_iam_train32.pth</text>
+<text x="1346.0" y="695.28" font-size="14" text-anchor="middle" fill="#263746">or wid_iam_train64.pth</text>
+<text x="64" y="64" font-size="32" text-anchor="start" fill="#263746" font-weight="bold">Pretrain the shared writer backbone B and writer head W</text>
+<text x="64" y="108" font-size="15" text-anchor="start" fill="#526171">Both B and W train here · E is not part of pretraining · a single writer checkpoint stores both networks</text>
+<text x="64" y="912" font-size="14" text-anchor="start" fill="#526171">Default frozen_backbone=false means B IS updated. The writer checkpoint carries StyleBackbone and WriterIdentifier weights.</text>
+<text x="64" y="944" font-size="14" text-anchor="start" fill="#526171">Writer validation uses trnval known identities; this is not an unseen-writer identification test. GAN test-writer metrics are a separate task.</text>
+<text x="64" y="992" font-size="12" text-anchor="start" fill="#526171">ALPHA · networks/model.py: WriterIdentifyModel; networks/module.py: MaskedAttentiveStatsPool; WriterIdentifier · snapshot 2026-10-15</text>
+<text x="64" y="1024" font-size="12" text-anchor="start" fill="#526171">Solid = forward dependency     Dashed brown = target / update     Dashed module = parameter-frozen</text>
+</svg></div></section>
+<section id="inference"><div class="diagram-container"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1040" role="img" aria-labelledby="inference-title inference-desc">
+<title id="inference-title">Two ways to generate handwriting — no training critics required</title>
+<desc id="inference-desc">Inference uses G only for a prior style, or B/E/G for reference-guided style; configured GAN evaluation uses EMA G/E. Solid arrows represent forward dependencies; dashed arrows represent targets or optimizer actions.</desc>
+<rect width="1600" height="1040" fill="white"/>
+<rect x="52" y="148" width="1496" height="260" rx="8" fill="white" stroke="#cbd3da" stroke-dasharray="5 4"/>
+<text x="72" y="176" font-size="14" text-anchor="start" fill="#526171" font-weight="bold">A · RANDOM STYLE — NO REFERENCE IMAGE</text>
+<rect x="52" y="480" width="1496" height="328" rx="8" fill="white" stroke="#cbd3da" stroke-dasharray="5 4"/>
+<text x="72" y="508" font-size="14" text-anchor="start" fill="#526171" font-weight="bold">B · STYLE TRANSFER — REFERENCE WORD CAN HAVE DIFFERENT TEXT</text>
+<polyline points="226.0,316 226.0,336 822.0,336 822.0,316" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="226.0,316 226.0,336 822.0,336 822.0,316" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="822.0,316 818.0,326.0 826.0,326.0" fill="#263746"/>
+<polyline points="688,276.0 752,276.0" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="688,276.0 752,276.0" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="752,276.0 742.0,272.0 742.0,280.0" fill="#263746"/>
+<polyline points="1032,276.0 1096,276.0" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="1032,276.0 1096,276.0" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="1096,276.0 1086.0,272.0 1086.0,280.0" fill="#263746"/>
+<polyline points="332,612.0 392,612.0" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="332,612.0 392,612.0" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="392,612.0 382.0,608.0 382.0,616.0" fill="#263746"/>
+<polyline points="640,612.0 700,612.0" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="640,612.0 700,612.0" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="700,612.0 690.0,608.0 690.0,616.0" fill="#263746"/>
+<polyline points="960,612.0 1020,612.0" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="960,612.0 1020,612.0" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="1020,612.0 1010.0,608.0 1010.0,616.0" fill="#263746"/>
+<polyline points="1252,612.0 1312,612.0" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="1252,612.0 1312,612.0" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="1312,612.0 1302.0,608.0 1302.0,616.0" fill="#263746"/>
+<polyline points="1136.0,716 1136.0,652" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="1136.0,716 1136.0,652" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="1136.0,652 1132.0,662.0 1140.0,662.0" fill="#263746"/>
+<rect x="80" y="236" width="292" height="80" rx="6" fill="#e6f3ee" stroke="#263746" stroke-width="1.3"/>
+<text x="226.0" y="268.32" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Sample z = [z_g, z_L]</text>
+<text x="226.0" y="294.28" font-size="14" text-anchor="middle" fill="#263746">Gaussian prior; center local slots</text>
+<rect x="436" y="236" width="252" height="80" rx="6" fill="#f1f3f5" stroke="#263746" stroke-width="1.3"/>
+<text x="562.0" y="268.32" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Target text y′</text>
+<text x="562.0" y="294.28" font-size="14" text-anchor="middle" fill="#263746">arbitrary supported text</text>
+<rect x="752" y="236" width="280" height="80" rx="6" fill="#e8f0f8" stroke="#263746" stroke-width="1.3"/>
+<text x="892.0" y="268.32" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Generator G</text>
+<text x="892.0" y="294.28" font-size="14" text-anchor="middle" fill="#263746">same weights as training</text>
+<rect x="1096" y="236" width="424" height="80" rx="6" fill="#f1f3f5" stroke="#263746" stroke-width="1.3"/>
+<text x="1308.0" y="268.32" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Generated word</text>
+<text x="1308.0" y="294.28" font-size="14" text-anchor="middle" fill="#263746">no D/P/R/W at inference</text>
+<rect x="80" y="572" width="252" height="80" rx="6" fill="#f1f3f5" stroke="#263746" stroke-width="1.3"/>
+<text x="206.0" y="604.3199999999999" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Style reference x_ref</text>
+<text x="206.0" y="630.28" font-size="14" text-anchor="middle" fill="#263746">real image + valid width</text>
+<rect x="392" y="572" width="248" height="80" rx="6" fill="#e8f0f8" stroke="#263746" stroke-width="1.3" stroke-dasharray="5 3"/>
+<text x="516.0" y="604.3199999999999" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Frozen backbone B</text>
+<text x="516.0" y="630.28" font-size="14" text-anchor="middle" fill="#263746">pretrained writer backbone</text>
+<rect x="700" y="572" width="260" height="80" rx="6" fill="#e6f3ee" stroke="#263746" stroke-width="1.3"/>
+<text x="830.0" y="595.3199999999999" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Style encoder E</text>
+<text x="830.0" y="621.28" font-size="14" text-anchor="middle" fill="#263746">g=mu_g at deterministic eval</text>
+<text x="830.0" y="639.28" font-size="14" text-anchor="middle" fill="#263746">7 deterministic local tokens</text>
+<rect x="1020" y="572" width="232" height="80" rx="6" fill="#e8f0f8" stroke="#263746" stroke-width="1.3"/>
+<text x="1136.0" y="604.3199999999999" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Generator G</text>
+<text x="1136.0" y="630.28" font-size="14" text-anchor="middle" fill="#263746">S_ref + target y′</text>
+<rect x="1312" y="572" width="208" height="80" rx="6" fill="#f1f3f5" stroke="#263746" stroke-width="1.3"/>
+<text x="1416.0" y="604.3199999999999" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Styled output</text>
+<text x="1416.0" y="630.28" font-size="14" text-anchor="middle" fill="#263746">same writer, new text</text>
+<rect x="1020" y="716" width="232" height="64" rx="6" fill="#f1f3f5" stroke="#263746" stroke-width="1.3"/>
+<text x="1136.0" y="740.3199999999999" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Target text y′</text>
+<text x="1136.0" y="766.28" font-size="14" text-anchor="middle" fill="#263746">not the reference transcript</text>
+<text x="64" y="64" font-size="32" text-anchor="start" fill="#263746" font-weight="bold">Two ways to generate handwriting — no training critics required</text>
+<text x="64" y="108" font-size="15" text-anchor="start" fill="#526171">Inference uses G only for a prior style, or B/E/G for reference-guided style; configured GAN evaluation uses EMA G/E</text>
+<text x="64" y="912" font-size="14" text-anchor="start" fill="#526171">B is loaded from the W+B checkpoint. W is unnecessary for forward generation once B is available; R and critics are training/eval tools.</text>
+<text x="64" y="944" font-size="14" text-anchor="start" fill="#526171">Display inversion is separate from model-space tensors. Source images and fake tensors use one consistent polarity throughout the model.</text>
+<text x="64" y="992" font-size="12" text-anchor="start" fill="#526171">ALPHA · networks/model.py · snapshot 2026-10-15</text>
+<text x="64" y="1024" font-size="12" text-anchor="start" fill="#526171">Solid = forward dependency     Dashed brown = target / update     Dashed module = parameter-frozen</text>
+</svg></div></section>
+<section id="validation"><div class="diagram-container"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1040" role="img" aria-labelledby="validation-title validation-desc">
+<title id="validation-title">Evaluation is a measurement flow, not a GAN loss</title>
+<desc id="validation-desc">Frozen evaluation networks · fixed validation seed · enabled metrics are configured independently. Solid arrows represent forward dependencies; dashed arrows represent targets or optimizer actions.</desc>
+<rect width="1600" height="1040" fill="white"/>
+<rect x="52" y="148" width="1496" height="332" rx="8" fill="white" stroke="#cbd3da" stroke-dasharray="5 4"/>
+<text x="72" y="176" font-size="14" text-anchor="start" fill="#526171" font-weight="bold">A · GENERATE THE VALIDATION SET</text>
+<rect x="52" y="528" width="1496" height="280" rx="8" fill="white" stroke="#cbd3da" stroke-dasharray="5 4"/>
+<text x="72" y="556" font-size="14" text-anchor="start" fill="#526171" font-weight="bold">B · METRICS, HISTORY AND SELECTION</text>
+<polyline points="372,280.0 436,280.0" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="372,280.0 436,280.0" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="436,280.0 426.0,276.0 426.0,284.0" fill="#263746"/>
+<polyline points="768,280.0 832,280.0" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="768,280.0 832,280.0" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="832,280.0 822.0,276.0 822.0,284.0" fill="#263746"/>
+<polyline points="1128,280.0 1192,280.0" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="1128,280.0 1192,280.0" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="1192,280.0 1182.0,276.0 1182.0,284.0" fill="#263746"/>
+<polyline points="226.0,336 226.0,356 1356.0,356 1356.0,336" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="226.0,336 226.0,356 1356.0,356 1356.0,336" fill="none" stroke="#8a4b23" stroke-width="1.6" stroke-linejoin="round" stroke-dasharray="6 4"/>
+<polygon points="1356.0,336 1352.0,346.0 1360.0,346.0" fill="#8a4b23"/>
+<polyline points="1274.0,336 1274.0,588 236.0,588 236.0,608" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="1274.0,336 1274.0,588 236.0,588 236.0,608" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="236.0,608 240.0,598.0 232.0,598.0" fill="#263746"/>
+<polyline points="1438.0,336 1438.0,584.0 602.0,584.0 602.0,608" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="1438.0,336 1438.0,584.0 602.0,584.0 602.0,608" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="602.0,608 606.0,598.0 598.0,598.0" fill="#263746"/>
+<polyline points="236.0,720 236.0,740 966.0,740 966.0,720" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="236.0,720 236.0,740 966.0,740 966.0,720" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="966.0,720 962.0,730.0 970.0,730.0" fill="#263746"/>
+<polyline points="752,664.0 812,664.0" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="752,664.0 812,664.0" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="812,664.0 802.0,660.0 802.0,668.0" fill="#263746"/>
+<polyline points="1120,664.0 1180,664.0" fill="none" stroke="white" stroke-width="5" stroke-linejoin="round"/>
+<polyline points="1120,664.0 1180,664.0" fill="none" stroke="#263746" stroke-width="1.6" stroke-linejoin="round"/>
+<polygon points="1180,664.0 1170.0,660.0 1170.0,668.0" fill="#263746"/>
+<rect x="80" y="224" width="292" height="112" rx="6" fill="#f1f3f5" stroke="#263746" stroke-width="1.3"/>
+<text x="226.0" y="263.32" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Held-out real test words</text>
+<text x="226.0" y="289.28" font-size="14" text-anchor="middle" fill="#263746">real images + valid lengths</text>
+<text x="226.0" y="307.28" font-size="14" text-anchor="middle" fill="#263746">style references and target text</text>
+<rect x="436" y="224" width="332" height="112" rx="6" fill="#e8f0f8" stroke="#263746" stroke-width="1.3" stroke-dasharray="5 3"/>
+<text x="602.0" y="263.32" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Reference B → EMA E/G</text>
+<text x="602.0" y="289.28" font-size="14" text-anchor="middle" fill="#263746">deterministic evaluation mode</text>
+<text x="602.0" y="307.28" font-size="14" text-anchor="middle" fill="#263746">no parameter updates</text>
+<rect x="832" y="224" width="296" height="112" rx="6" fill="#f1f3f5" stroke="#263746" stroke-width="1.3"/>
+<text x="980.0" y="263.32" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Generated validation words</text>
+<text x="980.0" y="289.28" font-size="14" text-anchor="middle" fill="#263746">same real/fake protocol</text>
+<text x="980.0" y="307.28" font-size="14" text-anchor="middle" fill="#263746">fixed eval seed</text>
+<rect x="1192" y="224" width="328" height="112" rx="6" fill="#f1f3f5" stroke="#263746" stroke-width="1.3"/>
+<text x="1356.0" y="263.32" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Real and generated inputs</text>
+<text x="1356.0" y="289.28" font-size="14" text-anchor="middle" fill="#263746">length-aware metric preprocessing</text>
+<text x="1356.0" y="307.28" font-size="14" text-anchor="middle" fill="#263746">not training DiffAug or P patches</text>
+<rect x="80" y="608" width="312" height="112" rx="6" fill="#e8f0f8" stroke="#263746" stroke-width="1.3" stroke-dasharray="5 3"/>
+<text x="236.0" y="647.3199999999999" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Inception features</text>
+<text x="236.0" y="673.28" font-size="14" text-anchor="middle" fill="#263746">configured FID / KID / IS</text>
+<text x="236.0" y="691.28" font-size="14" text-anchor="middle" fill="#263746">FID/KID use their own preprocessing</text>
+<rect x="452" y="608" width="300" height="112" rx="6" fill="#e8f0f8" stroke="#263746" stroke-width="1.3" stroke-dasharray="5 3"/>
+<text x="602.0" y="647.3199999999999" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Handwriting features / OCR</text>
+<text x="602.0" y="673.28" font-size="14" text-anchor="middle" fill="#263746">HWD; optional OCR CER/WER</text>
+<text x="602.0" y="691.28" font-size="14" text-anchor="middle" fill="#263746">other configured metrics</text>
+<rect x="812" y="608" width="308" height="112" rx="6" fill="#fff2d6" stroke="#263746" stroke-width="1.3"/>
+<text x="966.0" y="647.3199999999999" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">Epoch metrics history</text>
+<text x="966.0" y="673.28" font-size="14" text-anchor="middle" fill="#263746">all metric columns retained</text>
+<text x="966.0" y="691.28" font-size="14" text-anchor="middle" fill="#263746">disabled fields left empty</text>
+<rect x="1180" y="608" width="340" height="112" rx="6" fill="#f1f3f5" stroke="#263746" stroke-width="1.3"/>
+<text x="1350.0" y="647.3199999999999" font-size="18" text-anchor="middle" fill="#263746" font-weight="bold">CSV + checkpoint state</text>
+<text x="1350.0" y="673.28" font-size="14" text-anchor="middle" fill="#263746">eval_metrics.csv in run directory</text>
+<text x="1350.0" y="691.28" font-size="14" text-anchor="middle" fill="#263746">history embedded in .pth; best by FID</text>
+<text x="64" y="64" font-size="32" text-anchor="start" fill="#263746" font-weight="bold">Evaluation is a measurement flow, not a GAN loss</text>
+<text x="64" y="108" font-size="15" text-anchor="start" fill="#526171">Frozen evaluation networks · fixed validation seed · enabled metrics are configured independently</text>
+<text x="64" y="912" font-size="14" text-anchor="start" fill="#526171">Metrics do not backpropagate into G/E. Normal GAN configs currently enable FID, KID and HWD; additional metrics remain toggles.</text>
+<text x="64" y="944" font-size="14" text-anchor="start" fill="#526171">All epochs persist across compatible resumes; checkpoints without history are allowed. Best-checkpoint selection remains FID, not KID.</text>
+<text x="64" y="992" font-size="12" text-anchor="start" fill="#526171">ALPHA · networks/model.py: validate; metric/val_metrics.py; checkpoint and CSV utilities · snapshot 2026-10-15</text>
+<text x="64" y="1024" font-size="12" text-anchor="start" fill="#526171">Solid = forward dependency     Dashed brown = target / update     Dashed module = parameter-frozen</text>
+</svg></div></section>
+<section id="losses"><div class="diagram-container"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1040" role="img" aria-labelledby="losses-title losses-desc">
+<title id="losses-title">Complete GAN objective — ownership and comparison targets</title>
+<desc id="losses-desc">Normal gan_iam_32.yml / gan_iam_64.yml weights · schedules are epoch-based; this page is a reference, not an extra graph. Solid arrows represent forward dependencies; dashed arrows represent targets or optimizer actions.</desc>
+<rect width="1600" height="1040" fill="white"/>
+<rect x="52" y="148" width="1496" height="684" rx="8" fill="white" stroke="#cbd3da" stroke-dasharray="5 4"/>
+<text x="72" y="176" font-size="14" text-anchor="start" fill="#526171" font-weight="bold">GENERATOR / ENCODER — L_G,E = SUM OF THE WEIGHTED TERMS BELOW</text>
+<rect x="80" y="224" width="280" height="44" rx="6" fill="#fff2d6" stroke="#263746" stroke-width="1.3"/>
+<text x="220.0" y="249.36" font-size="14" text-anchor="middle" fill="#263746" font-weight="bold">Global adversarial</text>
+<rect x="360" y="224" width="160" height="44" rx="6" fill="#f1f3f5" stroke="#263746" stroke-width="1.3"/>
+<text x="440.0" y="249.36" font-size="14" text-anchor="middle" fill="#263746" font-weight="bold">1.0</text>
+<rect x="520" y="224" width="360" height="44" rx="6" fill="#f1f3f5" stroke="#263746" stroke-width="1.3"/>
+<text x="700.0" y="249.36" font-size="14" text-anchor="middle" fill="#263746" font-weight="bold">all three generated branches</text>
+<rect x="880" y="224" width="640" height="44" rx="6" fill="#f1f3f5" stroke="#263746" stroke-width="1.3"/>
+<text x="1200.0" y="249.36" font-size="14" text-anchor="middle" fill="#263746" font-weight="bold">− mean D(fake); gradients through frozen D</text>
+<rect x="80" y="276" width="280" height="44" rx="6" fill="#fff2d6" stroke="#263746" stroke-width="1.3"/>
+<text x="220.0" y="301.35999999999996" font-size="14" text-anchor="middle" fill="#263746" font-weight="bold">Patch adversarial</text>
+<rect x="360" y="276" width="160" height="44" rx="6" fill="#f1f3f5" stroke="#263746" stroke-width="1.3"/>
+<text x="440.0" y="301.35999999999996" font-size="14" text-anchor="middle" fill="#263746" font-weight="bold">0.45</text>
+<rect x="520" y="276" width="360" height="44" rx="6" fill="#f1f3f5" stroke="#263746" stroke-width="1.3"/>
+<text x="700.0" y="301.35999999999996" font-size="14" text-anchor="middle" fill="#263746" font-weight="bold">all three generated branches</text>
+<rect x="880" y="276" width="640" height="44" rx="6" fill="#f1f3f5" stroke="#263746" stroke-width="1.3"/>
+<text x="1200.0" y="301.35999999999996" font-size="14" text-anchor="middle" fill="#263746" font-weight="bold">− mean P(patches(fake)); equal word/branch reduction</text>
+<rect x="80" y="328" width="280" height="44" rx="6" fill="#fff2d6" stroke="#263746" stroke-width="1.3"/>
+<text x="220.0" y="353.35999999999996" font-size="14" text-anchor="middle" fill="#263746" font-weight="bold">Random CTC</text>
+<rect x="360" y="328" width="160" height="44" rx="6" fill="#f1f3f5" stroke="#263746" stroke-width="1.3"/>
+<text x="440.0" y="353.35999999999996" font-size="14" text-anchor="middle" fill="#263746" font-weight="bold">1.0 → 0.4</text>
+<rect x="520" y="328" width="360" height="44" rx="6" fill="#f1f3f5" stroke="#263746" stroke-width="1.3"/>
+<text x="700.0" y="353.35999999999996" font-size="14" text-anchor="middle" fill="#263746" font-weight="bold">random only; epochs 10–20</text>
+<rect x="880" y="328" width="640" height="44" rx="6" fill="#f1f3f5" stroke="#263746" stroke-width="1.3"/>
+<text x="1200.0" y="353.35999999999996" font-size="14" text-anchor="middle" fill="#263746" font-weight="bold">R(x_rand) compared against sampled text y′</text>
+<rect x="80" y="380" width="280" height="44" rx="6" fill="#fff2d6" stroke="#263746" stroke-width="1.3"/>
+<text x="220.0" y="405.35999999999996" font-size="14" text-anchor="middle" fill="#263746" font-weight="bold">Transfer CTC</text>
+<rect x="360" y="380" width="160" height="44" rx="6" fill="#f1f3f5" stroke="#263746" stroke-width="1.3"/>
+<text x="440.0" y="405.35999999999996" font-size="14" text-anchor="middle" fill="#263746" font-weight="bold">0.5 → 0.20</text>
+<rect x="520" y="380" width="360" height="44" rx="6" fill="#f1f3f5" stroke="#263746" stroke-width="1.3"/>
+<text x="700.0" y="405.35999999999996" font-size="14" text-anchor="middle" fill="#263746" font-weight="bold">transfer only; epochs 8–28</text>
+<rect x="880" y="380" width="640" height="44" rx="6" fill="#f1f3f5" stroke="#263746" stroke-width="1.3"/>
+<text x="1200.0" y="405.35999999999996" font-size="14" text-anchor="middle" fill="#263746" font-weight="bold">R(x_style) compared against sampled text y′</text>
+<rect x="80" y="432" width="280" height="44" rx="6" fill="#fff2d6" stroke="#263746" stroke-width="1.3"/>
+<text x="220.0" y="457.35999999999996" font-size="14" text-anchor="middle" fill="#263746" font-weight="bold">Global information</text>
+<rect x="360" y="432" width="160" height="44" rx="6" fill="#f1f3f5" stroke="#263746" stroke-width="1.3"/>
+<text x="440.0" y="457.35999999999996" font-size="14" text-anchor="middle" fill="#263746" font-weight="bold">1.0</text>
+<rect x="520" y="432" width="360" height="44" rx="6" fill="#f1f3f5" stroke="#263746" stroke-width="1.3"/>
+<text x="700.0" y="457.35999999999996" font-size="14" text-anchor="middle" fill="#263746" font-weight="bold">random only</text>
+<rect x="880" y="432" width="640" height="44" rx="6" fill="#f1f3f5" stroke="#263746" stroke-width="1.3"/>
+<text x="1200.0" y="457.35999999999996" font-size="14" text-anchor="middle" fill="#263746" font-weight="bold">mean |E_g(B(x_rand)) − stop(z_g)| / 8</text>
+<rect x="80" y="484" width="280" height="44" rx="6" fill="#fff2d6" stroke="#263746" stroke-width="1.3"/>
+<text x="220.0" y="509.35999999999996" font-size="14" text-anchor="middle" fill="#263746" font-weight="bold">Global style cycle</text>
+<rect x="360" y="484" width="160" height="44" rx="6" fill="#f1f3f5" stroke="#263746" stroke-width="1.3"/>
+<text x="440.0" y="509.35999999999996" font-size="14" text-anchor="middle" fill="#263746" font-weight="bold">1.0</text>
+<rect x="520" y="484" width="360" height="44" rx="6" fill="#f1f3f5" stroke="#263746" stroke-width="1.3"/>
+<text x="700.0" y="509.35999999999996" font-size="14" text-anchor="middle" fill="#263746" font-weight="bold">transfer only</text>
+<rect x="880" y="484" width="640" height="44" rx="6" fill="#f1f3f5" stroke="#263746" stroke-width="1.3"/>
+<text x="1200.0" y="509.35999999999996" font-size="14" text-anchor="middle" fill="#263746" font-weight="bold">mean |E_g(B(x_style)) − stop(mu_g,ref)| / 8</text>
+<rect x="80" y="536" width="280" height="44" rx="6" fill="#fff2d6" stroke="#263746" stroke-width="1.3"/>
+<text x="220.0" y="561.36" font-size="14" text-anchor="middle" fill="#263746" font-weight="bold">Content adversary</text>
+<rect x="360" y="536" width="160" height="44" rx="6" fill="#f1f3f5" stroke="#263746" stroke-width="1.3"/>
+<text x="440.0" y="561.36" font-size="14" text-anchor="middle" fill="#263746" font-weight="bold">0.02</text>
+<rect x="520" y="536" width="360" height="44" rx="6" fill="#f1f3f5" stroke="#263746" stroke-width="1.3"/>
+<text x="700.0" y="561.36" font-size="14" text-anchor="middle" fill="#263746" font-weight="bold">reference global posterior</text>
+<rect x="880" y="536" width="640" height="44" rx="6" fill="#f1f3f5" stroke="#263746" stroke-width="1.3"/>
+<text x="1200.0" y="561.36" font-size="14" text-anchor="middle" fill="#263746" font-weight="bold">GRL + learned content probe BCE vs bag(y), divided by 8</text>
+<rect x="80" y="588" width="280" height="44" rx="6" fill="#fff2d6" stroke="#263746" stroke-width="1.3"/>
+<text x="220.0" y="613.36" font-size="14" text-anchor="middle" fill="#263746" font-weight="bold">Writer identity</text>
+<rect x="360" y="588" width="160" height="44" rx="6" fill="#f1f3f5" stroke="#263746" stroke-width="1.3"/>
+<text x="440.0" y="613.36" font-size="14" text-anchor="middle" fill="#263746" font-weight="bold">0.5</text>
+<rect x="520" y="588" width="360" height="44" rx="6" fill="#f1f3f5" stroke="#263746" stroke-width="1.3"/>
+<text x="700.0" y="613.36" font-size="14" text-anchor="middle" fill="#263746" font-weight="bold">transfer only</text>
+<rect x="880" y="588" width="640" height="44" rx="6" fill="#f1f3f5" stroke="#263746" stroke-width="1.3"/>
+<text x="1200.0" y="613.36" font-size="14" text-anchor="middle" fill="#263746" font-weight="bold">CE(W(B(x_style)), writer ID of reference)</text>
+<rect x="80" y="640" width="280" height="44" rx="6" fill="#fff2d6" stroke="#263746" stroke-width="1.3"/>
+<text x="220.0" y="665.36" font-size="14" text-anchor="middle" fill="#263746" font-weight="bold">Pixel reconstruction</text>
+<rect x="360" y="640" width="160" height="44" rx="6" fill="#f1f3f5" stroke="#263746" stroke-width="1.3"/>
+<text x="440.0" y="665.36" font-size="14" text-anchor="middle" fill="#263746" font-weight="bold">10 → 2.5</text>
+<rect x="520" y="640" width="360" height="44" rx="6" fill="#f1f3f5" stroke="#263746" stroke-width="1.3"/>
+<text x="700.0" y="665.36" font-size="14" text-anchor="middle" fill="#263746" font-weight="bold">reconstruction; epochs 24–42</text>
+<rect x="880" y="640" width="640" height="44" rx="6" fill="#f1f3f5" stroke="#263746" stroke-width="1.3"/>
+<text x="1200.0" y="665.36" font-size="14" text-anchor="middle" fill="#263746" font-weight="bold">valid-pixel L1(x_rec, canonical real target x)</text>
+<rect x="80" y="692" width="280" height="44" rx="6" fill="#fff2d6" stroke="#263746" stroke-width="1.3"/>
+<text x="220.0" y="717.36" font-size="14" text-anchor="middle" fill="#263746" font-weight="bold">Contextual</text>
+<rect x="360" y="692" width="160" height="44" rx="6" fill="#f1f3f5" stroke="#263746" stroke-width="1.3"/>
+<text x="440.0" y="717.36" font-size="14" text-anchor="middle" fill="#263746" font-weight="bold">0.1</text>
+<rect x="520" y="692" width="360" height="44" rx="6" fill="#f1f3f5" stroke="#263746" stroke-width="1.3"/>
+<text x="700.0" y="717.36" font-size="14" text-anchor="middle" fill="#263746" font-weight="bold">transfer vs reference</text>
+<rect x="880" y="692" width="640" height="44" rx="6" fill="#f1f3f5" stroke="#263746" stroke-width="1.3"/>
+<text x="1200.0" y="717.36" font-size="14" text-anchor="middle" fill="#263746" font-weight="bold">non-aligned multiscale B-feature comparison</text>
+<rect x="80" y="744" width="280" height="44" rx="6" fill="#fff2d6" stroke="#263746" stroke-width="1.3"/>
+<text x="220.0" y="769.36" font-size="14" text-anchor="middle" fill="#263746" font-weight="bold">Global KL</text>
+<rect x="360" y="744" width="160" height="44" rx="6" fill="#f1f3f5" stroke="#263746" stroke-width="1.3"/>
+<text x="440.0" y="769.36" font-size="14" text-anchor="middle" fill="#263746" font-weight="bold">0.1</text>
+<rect x="520" y="744" width="360" height="44" rx="6" fill="#f1f3f5" stroke="#263746" stroke-width="1.3"/>
+<text x="700.0" y="769.36" font-size="14" text-anchor="middle" fill="#263746" font-weight="bold">reference posterior only</text>
+<rect x="880" y="744" width="640" height="44" rx="6" fill="#f1f3f5" stroke="#263746" stroke-width="1.3"/>
+<text x="1200.0" y="769.36" font-size="14" text-anchor="middle" fill="#263746" font-weight="bold">KL(q(g|x_ref) || N(0,I)) / 8; no local KL</text>
+<text x="64" y="64" font-size="32" text-anchor="start" fill="#263746" font-weight="bold">Complete GAN objective — ownership and comparison targets</text>
+<text x="64" y="108" font-size="15" text-anchor="start" fill="#526171">Normal gan_iam_32.yml / gan_iam_64.yml weights · schedules are epoch-based; this page is a reference, not an extra graph</text>
+<text x="64" y="912" font-size="14" text-anchor="start" fill="#526171">Critic objective: L_D + L_P + lazy R1 on real whole-word D. P has no R1 term in the current training loop.</text>
+<text x="64" y="944" font-size="14" text-anchor="start" fill="#526171">Each /8 is the explicit num_style_tokens normalization for this 8-token model. No frequency/Gram/texture-head objective is active.</text>
+<text x="220.0" y="210" font-size="12" text-anchor="middle" fill="#526171" font-weight="bold">TERM</text>
+<text x="440.0" y="210" font-size="12" text-anchor="middle" fill="#526171" font-weight="bold">WEIGHT</text>
+<text x="700.0" y="210" font-size="12" text-anchor="middle" fill="#526171" font-weight="bold">APPLIES TO</text>
+<text x="1200.0" y="210" font-size="12" text-anchor="middle" fill="#526171" font-weight="bold">PREDICTION / TARGET</text>
+<text x="64" y="992" font-size="12" text-anchor="start" fill="#526171">ALPHA · networks/model.py · snapshot 2026-10-15</text>
+<text x="64" y="1024" font-size="12" text-anchor="start" fill="#526171">Solid = forward dependency     Dashed brown = target / update     Dashed module = parameter-frozen</text>
+</svg></div></section>
+</html>

@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>HGGAN Dev Autoresearch: Metric Trends & Kaggle GPU Optimization</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+    line-height: 1.6;
+    color: #1e293b;
+    background-color: #f8fafc;
+    margin: 0;
+    padding: 30px 20px;
+  }
+  .container {
+    max-width: 1100px;
+    margin: 0 auto;
+    background: #ffffff;
+    padding: 40px;
+    border-radius: 12px;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.06);
+  }
+  h1 { color: #0f172a; border-bottom: 2px solid #e2e8f0; padding-bottom: 10px; }
+  h2 { color: #1e293b; margin-top: 30px; border-bottom: 1px solid #f1f5f9; padding-bottom: 6px; }
+  .kpi-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 15px;
+    margin: 25px 0;
+  }
+  .kpi-card {
+    background: #f1f5f9;
+    padding: 20px;
+    border-radius: 8px;
+    text-align: center;
+    border-left: 4px solid #3b82f6;
+  }
+  .kpi-val { font-size: 26px; font-weight: bold; color: #0f172a; }
+  .kpi-lbl { font-size: 13px; color: #64748b; margin-top: 4px; text-transform: uppercase; }
+  .chart-box {
+    background: #ffffff;
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+    padding: 20px;
+    margin: 25px 0;
+  }
+  table { width: 100%; border-collapse: collapse; margin: 20px 0; font-size: 14px; }
+  th { background: #1e293b; color: white; text-align: left; padding: 10px 12px; }
+  td { padding: 9px 12px; border-bottom: 1px solid #e2e8f0; }
+  tr:nth-child(even) { background-color: #f8fafc; }
+  .badge { display: inline-block; padding: 3px 8px; border-radius: 4px; font-weight: 600; font-size: 12px; }
+  .badge-opt { background: #dcfce7; color: #15803d; }
+  .badge-cur { background: #fee2e2; color: #b91c1c; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>HGGAN Dev Autoresearch Progress & Kaggle Optimization Report</h1>
+  <p><strong>Baseline Checkpoint:</strong> <code>best_fid_3.0260_main.pth</code> (Epoch 56) | <strong>Primary Target:</strong> KID minimization & Rare Character Synthesis</p>
+
+  <div class="kpi-grid">
+    <div class="kpi-card" style="border-left-color: #10b981;">
+      <div class="kpi-val">3.0260</div>
+      <div class="kpi-lbl">Best Test FID (Ep 56)</div>
+    </div>
+    <div class="kpi-card" style="border-left-color: #3b82f6;">
+      <div class="kpi-val">0.0633</div>
+      <div class="kpi-lbl">Current KID (Target &lt; 0.050)</div>
+    </div>
+    <div class="kpi-card" style="border-left-color: #8b5cf6;">
+      <div class="kpi-val">0.1001</div>
+      <div class="kpi-lbl">Current HWD (Target &lt; 0.090)</div>
+    </div>
+    <div class="kpi-card" style="border-left-color: #f59e0b;">
+      <div class="kpi-val">~26 min</div>
+      <div class="kpi-lbl">Optimized Epoch Time (Was 90m)</div>
+    </div>
+  </div>
+
+  <h2>1. 56-Epoch Metric Trajectory Analysis</h2>
+  <div class="chart-box">
+    <canvas id="metricsChart" height="110"></canvas>
+  </div>
+
+  <h2>2. Kaggle GPU Throughput Optimization (8 Epochs -> ~27 Epochs per 12 Hours)</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Parameter</th>
+        <th>Current Setting</th>
+        <th>Optimized Setting</th>
+        <th>Impact on Throughput & Convergence</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Batch Size (Training)</strong></td>
+        <td><code>8</code> (4,352 iters/ep)</td>
+        <td><span class="badge badge-opt">16</span> (2,176 iters/ep)</td>
+        <td>Saturates GPU Tensor Cores, cutting compute time by ~45%.</td>
+      </tr>
+      <tr>
+        <td><strong>Critic Ratio (num_critic_train)</strong></td>
+        <td><code>2</code> (8,704 D-passes/ep)</td>
+        <td><span class="badge badge-opt">1</span> (resumed training)</td>
+        <td>Discriminator is already mature; cuts D forward/backward passes by 50%.</td>
+      </tr>
+      <tr>
+        <td><strong>Validation Batch Size</strong></td>
+        <td><code>8</code> (3,125 eval batches)</td>
+        <td><span class="badge badge-opt">32</span> (781 eval batches)</td>
+        <td>Cuts evaluation time from 18 mins to ~4 mins per epoch.</td>
+      </tr>
+      <tr>
+        <td><strong>LR Decay Floor (min_lr_ratio)</strong></td>
+        <td><code>0.25</code></td>
+        <td><span class="badge badge-opt">0.15</span></td>
+        <td>Enables fine-grained terminal settling to push KID &lt; 0.050.</td>
+      </tr>
+      <tr>
+        <td><strong>Patch Adversarial (&lambda;<sub>patch_adv</sub>)</strong></td>
+        <td><code>0.40</code></td>
+        <td><span class="badge badge-opt">0.45</span></td>
+        <td>Sharpens high-frequency pen edges and cursive joins.</td>
+      </tr>
+      <tr>
+        <td><strong>Rare Character Synthesis</strong></td>
+        <td>0% (Standard dictionary)</td>
+        <td><span class="badge badge-opt">25% (RARE_ENTITIES)</span></td>
+        <td>Trains all 80 IAM characters (capitals, numbers, punctuation).</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>3. Mechanistic Insights & Autoresearch Actions</h2>
+  <ul>
+    <li><strong>Phase 1 (Epochs 1-24):</strong> Pixel reconstruction loss (&lambda;<sub>recn</sub> = 10.0) locks in character layout, dropping CTC loss from 11.6 to 0.9.</li>
+    <li><strong>Phase 2 (Epochs 25-42):</strong> Reconstruction decay to 2.5 allows adversarial critics to sharpen stroke boundaries (FID drops 5.23 -> 3.63).</li>
+    <li><strong>Phase 3 (Epochs 36-56):</strong> Linear LR decay begins terminal convergence, reaching FID 3.0260 and KID 0.0633.</li>
+    <li><strong>Anti-Elongation Fix:</strong> Breadth-aware slot scaling and norm bounding (&le; 9.5) prevent 1D vertical stroke spikes on isolated punctuation crops.</li>
+  </ul>
+</div>
+
+<script>
+const ctx = document.getElementById('metricsChart').getContext('2d');
+new Chart(ctx, {
+  type: 'line',
+  data: {
+    labels: [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0, 17.0, 18.0, 19.0, 20.0, 21.0, 22.0, 23.0, 24.0, 25.0, 26.0, 27.0, 28.0, 29.0, 30.0, 31.0, 32.0, 33.0, 34.0, 35.0, 36.0, 37.0, 38.0, 39.0, 40.0, 41.0, 42.0, 43.0, 44.0, 45.0, 46.0, 47.0, 48.0, 49.0, 50.0, 51.0, 52.0, 53.0, 54.0, 55.0, 56.0],
+    datasets: [
+      {
+        label: 'FID (Lower is better)',
+        data: [79.9645, 56.2748, 38.6249, 24.3248, 19.5261, 18.4369, 16.1828, 12.7763, 11.8689, 10.7972, 9.6448, 8.7522, 8.7918, 8.352, 7.6417, 6.7291, 6.027, 7.1019, 6.0553, 5.7837, 5.9916, 5.4822, 5.2352, 4.9411, 5.2341, 4.4967, 5.19, 4.2201, 4.8254, 4.3089, 4.713, 4.8673, 4.5063, 4.7787, 4.454, 4.2076, 3.9753, 3.69, 3.8513, 3.8924, 3.8621, 3.6349, 3.5696, 3.5591, 3.5981, 3.4611, 3.6086, 3.4072, 3.7041, 3.7307, 3.1565, 3.1498, 3.3674, 3.4585, 3.2215, 3.026],
+        borderColor: '#10b981',
+        backgroundColor: 'rgba(16, 185, 129, 0.1)',
+        yAxisID: 'y',
+        tension: 0.2
+      },
+      {
+        label: 'KID x 100 (Lower is better)',
+        data: [479.7878, 311.3111, 201.8032, 93.4951, 73.5709, 71.3225, 68.272, 42.5292, 40.1982, 29.7526, 27.2627, 24.1715, 27.0656, 22.0558, 20.2443, 17.9326, 14.7681, 22.7135, 16.4207, 16.0146, 19.1882, 15.8628, 15.6755, 14.7729, 16.952, 11.6073, 18.5754, 11.3522, 16.7002, 12.5954, 15.2754, 17.1156, 15.5452, 17.9951, 14.589, 12.2418, 10.3807, 8.7656, 11.6791, 10.9366, 9.6639, 8.5281, 8.7579, 8.0637, 8.6915, 8.5927, 9.5086, 8.0928, 12.1907, 11.8594, 7.6844, 7.7822, 8.5705, 9.6075, 7.495, 6.3323],
+        borderColor: '#3b82f6',
+        backgroundColor: 'rgba(59, 130, 246, 0.1)',
+        yAxisID: 'y',
+        tension: 0.2
+      },
+      {
+        label: 'HWD x 100 (Lower is better)',
+        data: [34.3625, 42.7776, 29.7731, 25.1889, 18.4211, 16.4802, 12.7882, 11.1017, 13.8746, 14.0858, 14.82, 14.1129, 14.845, 15.7258, 15.9684, 14.6664, 13.0789, 16.7383, 15.1695, 15.606, 15.8068, 15.5769, 14.7977, 15.6276, 15.3626, 12.3044, 13.534, 12.2741, 15.3406, 13.2969, 16.5712, 16.6945, 14.3383, 11.7537, 10.1651, 12.2876, 12.1754, 10.8414, 10.686, 10.3489, 12.8599, 9.1946, 11.1562, 12.7835, 11.1835, 11.511, 13.537, 10.9129, 12.9405, 12.2497, 10.4903, 9.2167, 10.3566, 10.0389, 11.3084, 10.0128],
+        borderColor: '#8b5cf6',
+        backgroundColor: 'rgba(139, 92, 246, 0.1)',
+        yAxisID: 'y',
+        tension: 0.2
+      }
+    ]
+  },
+  options: {
+    responsive: true,
+    scales: {
+      x: { title: { display: true, text: 'Epoch' } },
+      y: { title: { display: true, text: 'Score' }, min: 0 }
+    }
+  }
+});
+</script>
+</body>
+</html>

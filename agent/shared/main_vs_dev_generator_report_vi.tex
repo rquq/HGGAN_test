@@ -1,0 +1,414 @@
+\documentclass[10pt,a4paper]{article}
+
+\usepackage[margin=1.65cm]{geometry}
+\usepackage[T5,T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage[vietnamese,english]{babel}
+\usepackage{lmodern}
+\usepackage{microtype}
+\usepackage{xcolor}
+\usepackage{amsmath}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{array}
+\usepackage{enumitem}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning,calc,fit,shapes.geometric}
+\usepackage{hyperref}
+\usepackage{xurl}
+\hypersetup{colorlinks=true, linkcolor=blue!55!black, urlcolor=blue!55!black, citecolor=blue!55!black}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{5pt}
+\renewcommand{\arraystretch}{1.16}
+
+\definecolor{devblue}{HTML}{DDEEFF}
+\definecolor{mainorange}{HTML}{FFE7C2}
+\definecolor{stylepurple}{HTML}{EEE2FF}
+\definecolor{contentgreen}{HTML}{E1F5E4}
+\definecolor{sharedgray}{HTML}{F2F4F7}
+\definecolor{alertred}{HTML}{FDE2E2}
+\definecolor{ink}{HTML}{203040}
+
+\newcommand{\dev}{\textcolor{blue!65!black}{\textbf{DEV}}}
+\newcommand{\mainbranch}{\textcolor{orange!55!black}{\textbf{MAIN}}}
+\newcommand{\code}[2]{\href{#1}{\texttt{#2}}}
+\newcommand{\paper}[2]{\href{#1}{#2}}
+\newcommand{\srcmainG}{\code{https://github.com/rquq/HGGAN_test/blob/main/networks/BigGAN_networks.py}{MAIN BigGAN\_networks.py}}
+\newcommand{\srcdevG}{\code{https://github.com/rquq/HGGAN_test/blob/dev/networks/BigGAN_networks.py}{DEV BigGAN\_networks.py}}
+\newcommand{\srctexture}{\code{https://github.com/rquq/HGGAN_test/blob/main/networks/texture_generator.py}{MAIN texture\_generator.py}}
+\newcommand{\srcfusion}{\code{https://github.com/rquq/HGGAN_test/blob/dev/networks/fusion.py}{fusion.py dùng chung}}
+\newcommand{\srccfg}{\code{https://github.com/rquq/HGGAN_test/blob/dev/configs/gan_iam.yml}{gan\_iam.yml dùng chung}}
+
+\tikzset{
+  flow/.style={-{Latex[length=2.0mm,width=1.3mm]}, thick, draw=ink},
+  skipflow/.style={-{Latex[length=2.0mm,width=1.3mm]}, thick, draw=gray!65, dashed},
+  tinyflow/.style={-{Latex[length=1.5mm,width=1.0mm]}, semithick, draw=ink},
+  box/.style={draw=ink, rounded corners=2pt, minimum height=8mm, align=center, inner sep=3.2pt, font=\footnotesize},
+  devbox/.style={box, fill=devblue},
+  mainbox/.style={box, fill=mainorange},
+  stylebox/.style={box, fill=stylepurple},
+  contentbox/.style={box, fill=contentgreen},
+  sharedbox/.style={box, fill=sharedgray},
+  warnbox/.style={box, fill=alertred},
+  label/.style={font=\scriptsize, text=ink, align=center}
+}
+
+\title{\vspace{-1.5em}\textbf{So sánh Generator: MAIN và DEV}\\[-0.25em]
+\large Khác biệt code chính xác, nguồn gốc kỹ thuật và sơ đồ kiến trúc đầy đủ}
+\author{HGGAN\_test --- so sánh source của hai branch hiện tại}
+\date{20 tháng 8 năm 2026}
+
+\begin{document}
+\maketitle
+\vspace{-1.0em}
+
+\section*{Kết luận quan trọng nhất}
+
+Generator hiện tại của \mainbranch{} \emph{không phải} một kiến trúc thay thế hoàn toàn cho \dev. Nó chính là Generator DEV, từ text/style fusion đi qua bốn GBlock có điều kiện, rồi được gắn thêm một \emph{residual head} nhỏ ngay trước output:
+\[
+  \text{output MAIN}=\tanh\big(\text{base logits của DEV}+\text{style--frequency detail có biên độ bị chặn}\big).
+\]
+
+Toàn bộ phần trước residual này là giống nhau ở hai branch: text embedding, ba tầng style--content/allograph fusion, $8$ style token ($1$ global + $7$ local), kích thước token $32$, global-style projection riêng cho từng GBlock, decoder GBlock rộng $64$ kênh và ảnh đầu ra $64\times32L$. Cụ thể, code fusion và YAML cấu hình Generator giống hệt nhau giữa MAIN và DEV. Phần MAIN thêm vào chỉ nhắm đến texture và viền bút (pen-edge), \emph{không} trực tiếp đổi word geometry, bố cục ký tự hay thêm loss mới.
+
+Đây là một đánh đổi \emph{thử nghiệm} về quality/capacity: MAIN thêm khoảng $37{,}058$ tham số cho G (xấp xỉ $4.022$M so với $3.985$M) và mở thêm một nhánh activation ở độ phân giải cao. Nó có thể làm nét nhỏ tốt hơn, nhưng không tự động làm model ``mạnh hơn''. Nếu FID validation xấu hơn hoặc sample xuất hiện các nét ngắn thừa, DEV vẫn là baseline an toàn hơn. Residual có giới hạn giúp giảm rủi ro, chứ không thể bảo đảm tăng chất lượng.
+
+\section{Phạm vi, ký hiệu và cách đọc báo cáo}
+
+Báo cáo này chỉ so sánh source Generator đang active trong hai branch \dev{} và \mainbranch{}. Từ ``khác biệt'' bên dưới nghĩa là khác biệt ở source Generator; không bao gồm discriminator, data pipeline, checkpoint, optimizer state hay training schedule.
+
+\begin{itemize}[leftmargin=1.45em,itemsep=2pt]
+  \item \textbf{Generator DEV gốc:} decoder convolutional có điều kiện, theo hướng BigGAN, dành cho handwriting.
+  \item \textbf{Generator MAIN:} Generator DEV $+$ \texttt{StyleFrequencyRefinement} ngay trước \texttt{tanh} cuối.
+  \item \textbf{Style token:} $z\in\mathbb{R}^{B\times8\times32}$; $z_0$ là global style token rõ ràng, $z_{1:7}$ là local token.
+  \item \textbf{Text:} character id $y\in\{0,\ldots,79\}^{B\times L}$ cùng độ dài hợp lệ $y_{\mathrm{lens}}$; $L$ là độ dài sequence sau padding.
+  \item \textbf{Nguồn gốc bài báo:} bài báo được link để ghi nguồn \emph{ý tưởng} của module. Nó không có nghĩa là code đang dùng là bản sao từng dòng của bài báo. Cách ghép module, giới hạn biên độ, style descriptor và cách khởi tạo đều là adaptation riêng của project.
+\end{itemize}
+
+\subsection*{So sánh source trực tiếp}
+
+Diff thực tế rất gọn:
+
+\begin{center}
+\small
+\begin{tabularx}{\textwidth}{@{}p{0.19\textwidth}X p{0.23\textwidth}@{}}
+\toprule
+Vị trí & \dev{} & \mainbranch{} \\
+\midrule
+Import & Không có texture module. & Import \texttt{StyleFrequencyRefinement}. \\
+Khởi tạo & Chỉ tạo \texttt{output\_layer = BN $\rightarrow$ ReLU $\rightarrow$ SNConv}. & Giữ nguyên \texttt{output\_layer}, sau đó thêm \texttt{texture\_refinement(channels=64, style\_dim=32, output\_channels=1)}. \\
+Đường output & \texttt{tanh(output\_layer(h))}. & \texttt{tanh(output\_layer(h) + texture\_refinement(h, z))}. \\
+Phần dùng chung & \multicolumn{2}{l}{Cùng \srcfusion{}; cùng \srccfg{}; cùng GBlock schedule; không có G self-attention được bật (\texttt{G\_attn: '0'}).} \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+Code liên quan: \srcdevG{} dòng 192--257, \srcmainG{} dòng 193--268 và \srctexture{} dòng 1--156. Cấu hình khóa các dimension dùng chung nằm ở \srccfg{} dòng 150--182 và 236--241.
+
+\section{Phần Generator dùng chung: hai branch đã làm gì giống nhau}
+
+Cả hai Generator đều đi theo hướng conditional-residual của \paper{https://arxiv.org/abs/1809.11096}{BigGAN}: dùng spectral-normalized layer, conditional normalization trong residual upsampling block, và một conditional generator có đủ capacity. Code này được điều chỉnh cho handwriting: ký tự text tạo chuỗi seed strip theo chiều ngang, còn style được bơm cả vào character-level fusion lẫn từng GBlock.
+
+\begin{center}
+\resizebox{0.98\textwidth}{!}{%
+\begin{tikzpicture}[node distance=8mm and 8mm]
+  \node[stylebox, minimum width=30mm] (z) {$z\in\mathbb{R}^{B\times8\times32}$\\global $z_0$ + 7 local};
+  \node[contentbox, minimum width=27mm, right=13mm of z] (y) {character id $y$\\$B\times L$};
+  \node[contentbox, minimum width=28mm, right=of y] (emb) {embedding\\$B\times L\times120$};
+  \node[stylebox, minimum width=38mm, below=10mm of emb] (fusion) {style--content fusion dùng chung\\word self-attention + allograph routing};
+  \node[sharedbox, minimum width=34mm, right=12mm of fusion] (gate) {channel gate $\sigma(g)$\\khởi đầu $0.25$};
+  \node[sharedbox, minimum width=34mm, right=12mm of gate] (linear) {SN linear $120\rightarrow8192$\\mỗi ký tự};
+  \node[sharedbox, minimum width=35mm, below=10mm of linear] (seed) {reshape thành seed map\\$B\times512\times4\times4L$};
+  \node[sharedbox, minimum width=43mm, left=13mm of seed] (blocks) {bốn conditioned residual GBlock\\$512\rightarrow256\rightarrow128\rightarrow64\rightarrow64$};
+  \node[devbox, minimum width=33mm, left=13mm of blocks] (base) {BN $\rightarrow$ ReLU $\rightarrow$ SNConv\\base logits $B\times1\times64\times32L$};
+  \node[mainbox, minimum width=42mm, below=10mm of base] (detail) {chỉ MAIN:\\StyleFrequencyRefinement$(h,z)$};
+  \node[sharedbox, minimum width=33mm, right=15mm of base] (tanh) {$\tanh(\cdot)$ + eval mask\\ảnh sinh ra};
+
+  \draw[flow] (y) -- (emb);
+  \draw[flow] (emb.south) |- (fusion.north);
+  \draw[flow] (z.south) |- (fusion.west);
+  \draw[flow] (fusion) -- (gate);
+  \draw[flow] (gate) -- (linear);
+  \draw[flow] (linear.south) -- (seed.north);
+  \draw[flow] (seed.west) -- (blocks.east);
+  \draw[flow] (blocks) -- (base);
+  \draw[flow] (base) -- node[label,above]{đường DEV} (tanh);
+  \draw[flow] (z.west) |- node[label,pos=.25,left]{global $z_0$ vào BSSP} (blocks.west);
+  \draw[flow] (blocks.south) |- (detail.east);
+  \draw[flow] (z.south) |- (detail.west);
+  \draw[flow] (detail.east) -| node[label,pos=.22,right]{residual MAIN} (tanh.south);
+\end{tikzpicture}}
+\end{center}
+
+\subsection*{Tensor flow dùng chung, chi tiết}
+
+\begin{enumerate}[leftmargin=1.55em,itemsep=3pt]
+  \item \textbf{Global style vào mọi GBlock.} Chỉ $z_0$ đi vào Block-Specific Style Projection (BSSP). Bốn projection $32\rightarrow32\rightarrow32$ khác nhau tạo tín hiệu conditional-BN cho bốn decoder block. Local style không được đi tắt qua đường này mà phải đi qua fusion đã căn chỉnh với character.
+  \item \textbf{Trộn content--style.} Text embedding có shape $B\times L\times120$. Fusion module dùng chung xuất ra fused content cùng shape. Channelwise gate học được bắt đầu ở $0.25$, vì vậy ban đầu model vẫn giữ đường content gốc rất mạnh:
+  \[
+    y_{\mathrm{mixed}}=y_{\mathrm{content}}+\sigma(g)\big(y_{\mathrm{fused}}-y_{\mathrm{content}}\big).
+  \]
+  \item \textbf{Seed dạng strip.} Representation đã trộn được linear-expand từ $120$ lên $512\times4\times4=8192$ giá trị cho mỗi ký tự, rồi rearrange thành $B\times512\times4\times4L$. Mỗi character bắt đầu bằng một strip rộng bốn pixel.
+  \item \textbf{Decoder.} Bốn GBlock có channel schedule $512\rightarrow256\rightarrow128\rightarrow64\rightarrow64$, upsample factor $(2,1),(2,2),(2,2),(2,2)$. Kích thước trở thành height $4\rightarrow8\rightarrow16\rightarrow32\rightarrow64$ và width $4L\rightarrow4L\rightarrow8L\rightarrow16L\rightarrow32L$. Cấu hình hiện tại \texttt{G\_attn: '0'} nghĩa là cả hai branch đều không bật Generator self-attention.
+  \item \textbf{Image head dùng chung.} Batch normalization, ReLU và spectral-normalized convolution $3\times3$ cuối map $64$ feature channel về một grayscale logit channel. DEV đưa trực tiếp qua \texttt{tanh}; MAIN thêm residual được mô tả ở phần sau.
+\end{enumerate}
+
+\section{Thay đổi chỉ có ở MAIN 1 --- topology residual ở đầu cuối}
+
+\textbf{Thay đổi gì.} MAIN giữ nguyên toàn bộ decoder DEV rồi cộng thêm image-logit residual ở đúng cuối Generator. Nó \emph{không} thay content route, số GBlock, channel width, upsampling schedule, fusion hoặc output resolution.
+
+\textbf{Code.} Khởi tạo: \href{https://github.com/rquq/HGGAN_test/blob/main/networks/BigGAN_networks.py\#L195-L213}{MAIN dòng 195--213}; cộng residual khi forward: \href{https://github.com/rquq/HGGAN_test/blob/main/networks/BigGAN_networks.py\#L255-L259}{MAIN dòng 255--259}; đường output DEV: \href{https://github.com/rquq/HGGAN_test/blob/dev/networks/BigGAN_networks.py\#L247-L248}{DEV dòng 247--248}.
+
+\textbf{Bài báo liên quan.} Conditional residual decoder dùng chung thuộc hướng thiết kế của \paper{https://arxiv.org/abs/1809.11096}{Brock et al., BigGAN (2019)}. Việc gắn thêm frequency-focused output head là adaptation của project, không phải một layer BigGAN nguyên bản.
+
+\begin{center}
+\resizebox{0.88\textwidth}{!}{%
+\begin{tikzpicture}[node distance=11mm and 16mm]
+  \node[sharedbox, minimum width=33mm] (h) {feature GBlock cuối $h$\\$B\times64\times64\times32L$};
+  \node[devbox, minimum width=40mm, right=of h] (head) {image head dùng chung\\BN $\rightarrow$ ReLU $\rightarrow$ SNConv\\base logits $b$};
+  \node[devbox, minimum width=31mm, right=of head] (devout) {\dev{}\\$\tanh(b)$};
+  \node[mainbox, minimum width=41mm, below=12mm of head] (refine) {chỉ \mainbranch{}\\style--frequency residual $r(h,z)$};
+  \node[mainbox, minimum width=31mm, right=of refine] (mainout) {\mainbranch{}\\$\tanh(b+r)$};
+  \draw[flow] (h) -- (head);
+  \draw[flow] (head) -- (devout);
+  \draw[flow] (h.south) |- (refine.west);
+  \draw[flow] (head.south) -- ++(0,-0.8) -| (mainout.north);
+  \draw[flow] (refine) -- (mainout);
+\end{tikzpicture}}
+\end{center}
+
+\textbf{Vì sao đây là thay đổi bảo thủ.} $r$ được cộng vào logits và chỉ có một \texttt{tanh} cuối. MAIN không chồng thêm image nonlinearity thứ hai, cũng không overwrite base image. Vì thế đường trực tiếp từ DEV head đến ảnh vẫn còn nguyên. Tuy nhiên, additive residual vẫn có thể tạo nét giống bút nhưng không mong muốn nếu frequency content của nó học sai.
+
+\section{Thay đổi chỉ có ở MAIN 2 --- style-distribution descriptor và affine modulation có giới hạn}
+
+\textbf{Thay đổi gì.} Refinement head của MAIN đọc toàn bộ style token, thay vì chỉ global token. Nó tạo một descriptor $96$-D từ (i) global token, (ii) mean của bảy local token và (iii) standard deviation theo từng dimension của chúng:
+\[
+ d=\big[z_0\ ;\ \mu(z_{1:7})\ ;\ \sigma(z_{1:7})\big]\in\mathbb{R}^{96}.
+\]
+Descriptor $d$ được project thành scale và shift theo từng channel cho detail feature $64$ channel. Hai affine term thô đều bị giới hạn bởi \texttt{tanh} với biên độ $0.15$. Scale tiếp tục được RMS-normalize giữa các channel để style strength của writer không chỉ biến thành thay đổi tổng feature energy.
+
+\textbf{Code.} Descriptor: \href{https://github.com/rquq/HGGAN_test/blob/main/networks/texture_generator.py\#L100-L114}{texture\_generator.py dòng 100--114}; modulation và scale normalization: \href{https://github.com/rquq/HGGAN_test/blob/main/networks/texture_generator.py\#L116-L145}{dòng 116--145}.
+
+\textbf{Bài báo liên quan.} Ý tưởng gần nhất là mục tiêu ổn định của modulation/demodulation trong \paper{https://arxiv.org/abs/1912.04958}{Karras et al., StyleGAN2 (2020)}. Nhưng code hiện tại dùng \emph{feature} RMS normalization, không phải weight demodulation của StyleGAN2. Descriptor global--mean--standard-deviation là cách summary riêng của project cho các local slot có sẵn.
+
+\begin{center}
+\resizebox{0.95\textwidth}{!}{%
+\begin{tikzpicture}[node distance=8mm and 9mm]
+  \node[stylebox, minimum width=28mm] (global) {global token $z_0$\\$B\times32$};
+  \node[stylebox, minimum width=31mm, right=of global] (local) {local token $z_{1:7}$\\$B\times7\times32$};
+  \node[stylebox, minimum width=25mm, right=of local] (mean) {mean $\mu$\\$B\times32$};
+  \node[stylebox, minimum width=25mm, below=of mean] (std) {std $\sigma$\\$B\times32$};
+  \node[mainbox, minimum width=35mm, right=15mm of mean] (desc) {concatenate\\descriptor $d\in\mathbb{R}^{96}$};
+  \node[mainbox, minimum width=38mm, right=of desc] (affine) {linear $96\rightarrow128$\\scale + shift, mỗi loại $64$};
+  \node[mainbox, minimum width=47mm, below=10mm of affine] (mod) {$s=1+0.15\tanh(\cdot)$; RMS-normalize $s$\\$t=0.15\tanh(\cdot)$; áp dụng $x\odot s+t$};
+  \draw[flow] (local) -- (mean);
+  \draw[flow] (local.east) |- (std.west);
+  \draw[flow] (global.east) -- ++(0.5,0) |- (desc.west);
+  \draw[flow] (mean.east) -- (desc.west);
+  \draw[flow] (std.east) -| (desc.south);
+  \draw[flow] (desc) -- (affine);
+  \draw[flow] (affine.south) -- (mod.north);
+\end{tikzpicture}}
+\end{center}
+
+\textbf{Ý nghĩa.} Mean thể hiện local style đồng thuận, còn standard deviation biểu diễn mức đa dạng giữa local slot. Nhờ đó detail head có thể phân biệt writer có style local đồng đều với writer có nhiều stroke variant. Conditioning mới này chỉ nằm ở texture residual; allograph routing dùng chung vẫn là phần điều khiển character-level geometry chính.
+
+\section{Thay đổi chỉ có ở MAIN 3 --- nhánh texture depthwise có hướng và gated}
+
+\textbf{Thay đổi gì.} Từ final feature map $64$ channel, MAIN tính ba depthwise convolution candidate: ngang $(1\times7)$, dọc $(7\times1)$ và local compact $(3\times3)$. Một style-conditioned linear $96\rightarrow(3\times64)$ tạo softmax giữa ba candidate cho từng channel. Mixture được chọn sau đó đi qua SiLU và channel mixer $1\times1$.
+
+\textbf{Code.} Khởi tạo nhánh: \href{https://github.com/rquq/HGGAN_test/blob/main/networks/texture_generator.py\#L59-L84}{dòng 59--84}; softmax gate và mixture: \href{https://github.com/rquq/HGGAN_test/blob/main/networks/texture_generator.py\#L126-L140}{dòng 126--140}.
+
+\textbf{Bài báo liên quan.} Nhánh depthwise tách square kernel và orthogonal band kernel được lấy cảm hứng từ \paper{https://arxiv.org/abs/2303.16900}{Yu et al., InceptionNeXt (2023)}. Động cơ adaptive gated aggregation đến từ \paper{https://arxiv.org/abs/2211.03295}{Li et al., MogaNet (2022)}. MAIN dùng bản nhẹ hơn: ba nhánh, mixture theo từng channel, phù hợp feature handwriting $64\times32L$; nó không tái tạo nguyên block của hai paper này.
+
+\begin{center}
+\resizebox{0.96\textwidth}{!}{%
+\begin{tikzpicture}[node distance=8mm and 8mm]
+  \node[sharedbox, minimum width=32mm] (feat) {decoder feature $h$\\$B\times64\times64\times32L$};
+  \node[mainbox, minimum width=25mm, right=12mm of feat, yshift=12mm] (hor) {depthwise\\ngang $1\times7$};
+  \node[mainbox, minimum width=25mm, right=12mm of feat] (ver) {depthwise\\dọc $7\times1$};
+  \node[mainbox, minimum width=25mm, right=12mm of feat, yshift=-12mm] (loc) {depthwise\\local $3\times3$};
+  \node[stylebox, minimum width=29mm, below=17mm of feat] (desc2) {style descriptor $d$\\$B\times96$};
+  \node[mainbox, minimum width=34mm, right=of desc2] (gate2) {linear $96\rightarrow3\times64$\\softmax giữa nhánh};
+  \node[mainbox, minimum width=38mm, right=16mm of ver] (mix) {weighted sum theo channel\\SiLU $\rightarrow1\times1$ mix};
+  \draw[flow] (feat) -- (hor);
+  \draw[flow] (feat) -- (ver);
+  \draw[flow] (feat) -- (loc);
+  \draw[flow] (desc2) -- (gate2);
+  \draw[flow] (gate2.east) -| (mix.south);
+  \draw[flow] (hor.east) -- ++(7mm,0) |- (mix.north);
+  \draw[flow] (ver) -- (mix);
+  \draw[flow] (loc.east) -- ++(7mm,0) |- (mix.south);
+\end{tikzpicture}}
+\end{center}
+
+\textbf{Ý nghĩa.} Ba candidate là hypothesis về texture có hướng, không phải handwriting primitive được định nghĩa cứng. Nhánh ngang có thể nhấn mạnh baseline hoặc pen-edge liên tục; nhánh dọc có thể hỗ trợ cạnh ascender/descender; nhánh local có thể giữ độ cong compact. Softmax mixture tránh cộng mù cả ba nhánh. Dù vậy, các nhánh chạy ở final feature stage độ phân giải cao; nếu selection học không ổn định, nó vẫn có thể trông như micro-stroke thừa thay vì allograph thật.
+
+\section{Thay đổi chỉ có ở MAIN 4 --- Global Response Normalization (GRN)}
+
+\textbf{Thay đổi gì.} Sau channel mix, MAIN áp dụng GRN:
+\[
+ r_c=\lVert x_c\rVert_2\quad\text{trên chiều không gian},\qquad
+ \hat r_c=\frac{r_c}{\operatorname{mean}_c(r_c)+\epsilon},\qquad
+ \operatorname{GRN}(x)=x+\gamma(x\odot\hat r)+\beta.
+\]
+Ở đây $\gamma$ và $\beta$ là tham số học được $1\times64\times1\times1$ và được khởi tạo bằng zero; vì vậy GRN bắt đầu như identity transform.
+
+\textbf{Code.} Cài đặt GRN: \href{https://github.com/rquq/HGGAN_test/blob/main/networks/texture_generator.py\#L17-L34}{texture\_generator.py dòng 17--34}; identity initialization: \href{https://github.com/rquq/HGGAN_test/blob/main/networks/texture_generator.py\#L90-L98}{dòng 90--98}.
+
+\textbf{Bài báo liên quan.} Đây là Global Response Normalization của \paper{https://arxiv.org/abs/2301.00808}{Woo et al., ConvNeXt V2 (2023)}. Paper này dùng GRN để khuyến khích competition giữa các channel. MAIN chỉ đặt GRN trong texture residual, thay vì áp dụng lên toàn Generator.
+
+\begin{center}
+\resizebox{0.88\textwidth}{!}{%
+\begin{tikzpicture}[node distance=9mm and 10mm]
+  \node[mainbox, minimum width=35mm] (x) {detail feature đã mix $x$\\$B\times64\times H\times W$};
+  \node[mainbox, minimum width=33mm, right=of x] (norm) {spatial $\ell_2$ norm theo channel\\$r_c=\Vert x_c\Vert_2$};
+  \node[mainbox, minimum width=34mm, right=of norm] (rel) {relative response\\$\hat r_c=r_c/(\mathrm{mean}\ r+\epsilon)$};
+  \node[mainbox, minimum width=50mm, right=of rel] (out) {$x+\gamma(x\odot\hat r)+\beta$\\$\gamma,\beta=0$ lúc khởi tạo};
+  \draw[flow] (x) -- (norm);
+  \draw[flow] (norm) -- (rel);
+  \draw[flow] (rel) -- (out);
+  \draw[skipflow] (x.south) |- node[label,pos=.75,below]{identity residual} (out.south);
+\end{tikzpicture}}
+\end{center}
+
+\textbf{Ý nghĩa.} GRN không phải style encoder và cũng không phải spatial attention. Nó scale các channel tương đối với response trên toàn feature map, sau đó học xem nên dùng thông tin đó mạnh đến đâu. Vì đây là high-resolution feature map, phép reduce norm không phải chi phí lớn như full attention map; activation của các branch bao quanh mới là phần memory đáng kể hơn.
+
+\section{Thay đổi chỉ có ở MAIN 5 --- high-pass residual và detail gain bị chặn}
+
+\textbf{Thay đổi gì.} MAIN đổi feature đã modulate thành raw detail image một channel, trừ đi local average $3\times3$ có reflect padding, sau đó áp dụng gain học được nhưng bị chặn:
+\[
+ d_{\mathrm{HP}}=d_{\mathrm{raw}}-\operatorname{AvgPool}_{3\times3}\!\left(\operatorname{ReflectPad}(d_{\mathrm{raw}})\right),\qquad
+ r=0.15\,\sigma(a)\,d_{\mathrm{HP}}.
+\]
+Gain bắt đầu ở $0.03$ và luôn nhỏ hơn $0.15$. Điều này ép head mới đóng vai trò local-detail residual, không phải một generator thứ hai cho word shape low-frequency.
+
+\textbf{Code.} Detail projection và high-pass residual: \href{https://github.com/rquq/HGGAN_test/blob/main/networks/texture_generator.py\#L145-L153}{texture\_generator.py dòng 145--153}; giới hạn gain: \href{https://github.com/rquq/HGGAN_test/blob/main/networks/texture_generator.py\#L45-L57}{dòng 45--57}.
+
+\textbf{Bài báo liên quan.} Frequency-aware GAN khuyến khích tách high-frequency detail khỏi coarse image structure, ví dụ \paper{https://arxiv.org/abs/2207.07288}{WaveGAN (2022)} và \paper{https://arxiv.org/abs/2210.05461}{FreGAN (2022)}. Reflect-pad local-average subtraction và cap $0.15\sigma(a)$ của MAIN là safeguard riêng của project, không phải cài đặt copy từ hai paper đó.
+
+\begin{center}
+\resizebox{0.93\textwidth}{!}{%
+\begin{tikzpicture}[node distance=9mm and 11mm]
+  \node[mainbox, minimum width=33mm] (raw) {raw detail\\$d_{\mathrm{raw}}$};
+  \node[mainbox, minimum width=35mm, right=of raw] (pad) {reflect pad\\$+$ AvgPool $3\times3$};
+  \node[mainbox, minimum width=34mm, right=of pad] (low) {ước lượng local\\low-frequency $d_{\mathrm{LP}}$};
+  \node[mainbox, minimum width=36mm, below=11mm of low] (hp) {high-pass residual\\$d_{\mathrm{HP}}=d_{\mathrm{raw}}-d_{\mathrm{LP}}$};
+  \node[mainbox, minimum width=38mm, right=of hp] (gain) {gain có giới hạn\\$0.15\,\sigma(a)$\\khởi đầu $0.03$};
+  \node[sharedbox, minimum width=38mm, right=of gain] (sum) {cộng vào base logits\\rồi một \texttt{tanh}};
+  \draw[flow] (raw) -- (pad);
+  \draw[flow] (pad) -- (low);
+  \draw[flow] (low.south) -- (hp.north);
+  \draw[flow] (raw.south) |- (hp.west);
+  \draw[flow] (hp) -- (gain);
+  \draw[flow] (gain) -- (sum);
+\end{tikzpicture}}
+\end{center}
+
+\textbf{Ý nghĩa và failure mode.} Block này có chủ đích không thể trực tiếp sửa character skeleton lớn qua low-frequency band. Tuy nhiên, high-pass không đồng nghĩa ``lúc nào cũng đúng'': high-pass residual vẫn có thể synthesize nét ngắn, sắc và thừa. Cap vì vậy là một stability aid, không phải bảo đảm hết artifact. Cách đánh giá sạch nhất là log \texttt{detail\_gain} và sample với text/style pair cố định.
+
+\section{Sơ đồ Generator hoàn chỉnh}
+
+Sơ đồ sau là toàn bộ Generator đang active. Khối xám/xanh dương/xanh lá/tím là phần dùng chung cho DEV và MAIN. Khối cam chỉ có ở MAIN. Cấu hình hiện tại không có G self-attention ẩn nào.
+
+\begin{center}
+\resizebox{0.98\textwidth}{!}{%
+\begin{tikzpicture}[node distance=7mm and 7mm]
+  % Input and fusion
+  \node[stylebox, minimum width=27mm] (Z) {style encoder output\\$z:B\times8\times32$};
+  \node[contentbox, minimum width=27mm, right=of Z] (Y) {text id $y$\\$B\times L$};
+  \node[contentbox, minimum width=29mm, right=of Y] (E) {embedding\\$B\times L\times120$};
+  \node[stylebox, minimum width=34mm, below=of E] (F) {style--content fusion\\word attention + allograph};
+  \node[sharedbox, minimum width=36mm, right=of F] (M) {$y+\sigma(g)(F-y)$\\gate khởi đầu $0.25$};
+  \node[sharedbox, minimum width=34mm, right=of M] (L) {SN linear\\$120\rightarrow8192$ mỗi char};
+  \node[sharedbox, minimum width=40mm, right=of L] (S) {reshape / permute\\$B\times512\times4\times4L$};
+  \draw[flow] (Y) -- (E);
+  \draw[flow] (E.south) |- (F.north);
+  \draw[flow] (Z.south) |- (F.west);
+  \draw[flow] (F) -- (M);
+  \draw[flow] (M) -- (L);
+  \draw[flow] (L) -- (S);
+
+  % BSSP
+  \node[stylebox, minimum width=34mm, below=15mm of Z] (BSSP) {BSSP: chỉ $z_0$\\4 condition $32$-D được project};
+  \draw[flow] (Z.south) -- node[label,right]{chỉ global slot} (BSSP.north);
+
+  % Decoder
+  \node[sharedbox, minimum width=31mm, below=18mm of S] (G1) {GBlock 1 + cBN\\$512\rightarrow256$\\$4\times4L\rightarrow8\times4L$};
+  \node[sharedbox, minimum width=31mm, left=of G1] (G2) {GBlock 2 + cBN\\$256\rightarrow128$\\$8\times4L\rightarrow16\times8L$};
+  \node[sharedbox, minimum width=31mm, left=of G2] (G3) {GBlock 3 + cBN\\$128\rightarrow64$\\$16\times8L\rightarrow32\times16L$};
+  \node[sharedbox, minimum width=31mm, left=of G3] (G4) {GBlock 4 + cBN\\$64\rightarrow64$\\$32\times16L\rightarrow64\times32L$};
+  \node[devbox, minimum width=33mm, left=of G4] (H) {output head dùng chung\\BN $\rightarrow$ ReLU $\rightarrow$ SNConv\\base logits $b$};
+  \draw[flow] (S.south) -- (G1.north);
+  \draw[flow] (G1) -- (G2);
+  \draw[flow] (G2) -- (G3);
+  \draw[flow] (G3) -- (G4);
+  \draw[flow] (G4) -- (H);
+  \draw[flow] (BSSP.east) -| node[label,pos=.18,above]{một condition cho mỗi block} (G1.south);
+  \draw[tinyflow] (BSSP.east) -| (G2.south);
+  \draw[tinyflow] (BSSP.east) -| (G3.south);
+  \draw[tinyflow] (BSSP.east) -| (G4.south);
+
+  % Outputs
+  \node[devbox, minimum width=32mm, below=18mm of H] (Dout) {output \dev{}\\$\tanh(b)$};
+  \node[mainbox, minimum width=41mm, right=14mm of H] (R1) {oriented DW branch\\$1\times7,\ 7\times1,\ 3\times3$};
+  \node[mainbox, minimum width=39mm, right=of R1] (R2) {GRN + style affine bị chặn\\$d=[z_0;\mu;\sigma]$};
+  \node[mainbox, minimum width=42mm, right=of R2] (R3) {$1\times1$ detail $\rightarrow$ high-pass\\$r=0.15\sigma(a)d_{\mathrm{HP}}$};
+  \node[mainbox, minimum width=32mm, below=18mm of R3] (Mout) {output \mainbranch{}\\$\tanh(b+r)$};
+  \draw[flow] (H) -- (Dout);
+  \draw[flow] (H) -- (R1);
+  \draw[flow] (R1) -- (R2);
+  \draw[flow] (R2) -- (R3);
+  \draw[flow] (R3.south) -- (Mout.north);
+  \draw[flow] (Z.east) |- node[label,pos=.22,above]{cả $8$ style token} (R2.north);
+  \draw[flow] (H.south) |- (Mout.west);
+\end{tikzpicture}}
+\end{center}
+
+\section{Phần nào dùng chung và phần nào có thể tạo chênh lệch MAIN--DEV}
+
+\begin{center}
+\small
+\begin{tabularx}{\textwidth}{@{}p{0.28\textwidth}c c X@{}}
+\toprule
+Thành phần & \dev{} & \mainbranch{} & Ý nghĩa khi làm thí nghiệm \\
+\midrule
+Số lượng / dimension style token & $8\times32$ & $8\times32$ & Không phải G difference hiện tại. \\
+Style--content / allograph fusion & giống nhau & giống nhau & Không phải G difference; chênh FID không đến từ fusion branch-specific. \\
+Text seed và GBlock decoder & giống nhau & giống nhau & Cùng geometry path và conditional-BN capacity. \\
+G attention cấu hình & tắt & tắt & Cả hai không có G self-attention active dưới \texttt{G\_attn: '0'}. \\
+Image head & chỉ base logits & base logits + texture residual & Khác biệt kiến trúc active duy nhất. \\
+Local-style statistical conditioning & không dùng ở đầu cuối & mean/std descriptor trong residual head & Chỉ thêm thông tin distribution của writer vào fine-detail synthesis. \\
+Directional DW / GRN / high-pass & không có & có & Thêm high-resolution activation và thêm một đường có thể tạo artifact; base image vẫn giữ nguyên. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\subsection*{Cách đọc thực tế hai model}
+
+\begin{itemize}[leftmargin=1.45em,itemsep=3pt]
+  \item \textbf{DEV là clean ablation baseline.} Output của nó hoàn toàn đến từ text/style fusion hiện có và conditioned GBlock decoder. Nó ít moving part hơn và không có terminal branch có thể tự vẽ thêm nét sắc.
+  \item \textbf{MAIN là texture experiment có mục tiêu rõ.} Capacity mới duy nhất của nó là chọn và modulate directional high-frequency residual detail dựa trên distribution global/local style. Nó không trực tiếp tăng content alignment hay character geometry, ngoài ảnh hưởng gián tiếp qua gradient khi train chung.
+  \item \textbf{MAIN có score thấp hơn không phải điều nghịch lý.} MAIN thêm capacity ở đúng stage GAN dễ overfit artifact high-frequency. Ablation sạch là so sánh DEV, MAIN với \texttt{detail\_gain} bị ép bằng zero, và MAIN bình thường --- cùng checkpoint-selection policy và fixed validation seed.
+  \item \textbf{Không suy ra bảo đảm từ paper.} ConvNeXt V2, InceptionNeXt, MogaNet, StyleGAN2, WaveGAN và FreGAN được đánh giá trên data/model regime khác. Chúng biện minh cho các component nhỏ gọn, không chứng minh residual này chắc chắn hạ FID cho handwriting word của bạn.
+\end{itemize}
+
+\section{Tài liệu tham khảo và link trực tiếp}
+
+\begin{enumerate}[leftmargin=1.6em,itemsep=3pt]
+  \item Brock, A., Donahue, J., \& Simonyan, K. \paper{https://arxiv.org/abs/1809.11096}{Large Scale GAN Training for High Fidelity Natural Image Synthesis (BigGAN), 2019}. Nguồn hướng thiết kế conditional-GAN decoder dùng chung.
+  \item Karras, T. et al. \paper{https://arxiv.org/abs/1912.04958}{Analyzing and Improving the Image Quality of StyleGAN (StyleGAN2), 2020}. Bối cảnh ổn định của modulation/demodulation; feature RMS normalization của MAIN là adaptation, không phải weight demodulation của paper.
+  \item Woo, S. et al. \paper{https://arxiv.org/abs/2301.00808}{ConvNeXt V2: Co-designing and Scaling ConvNets with Masked Autoencoders, 2023}. Nguồn ý tưởng GRN.
+  \item Li, S. et al. \paper{https://arxiv.org/abs/2211.03295}{MogaNet: Multi-order Gated Aggregation Network, 2022}. Động cơ gated multi-branch aggregation.
+  \item Yu, W. et al. \paper{https://arxiv.org/abs/2303.16900}{InceptionNeXt: When Inception Meets ConvNeXt, 2023}. Động cơ parallel compact và orthogonal depthwise branch.
+  \item Yang, M. et al. \paper{https://arxiv.org/abs/2207.07288}{WaveGAN: Frequency-aware GAN for High-Fidelity Few-shot Image Generation, 2022}. Bối cảnh frequency-aware GAN.
+  \item Yang, M. et al. \paper{https://arxiv.org/abs/2210.05461}{FreGAN: Exploiting Frequency Components for Training GANs under Limited Data, 2022}. Bối cảnh generation có tách frequency.
+\end{enumerate}
+
+\vfill
+\begin{center}
+\footnotesize\color{gray!70!black}
+Báo cáo được tạo từ source hai branch active ngày 20 tháng 8 năm 2026. Code link trỏ tới file GitHub tương ứng; số dòng có thể thay đổi sau các lần edit tiếp theo.
+\end{center}
+
+\end{document}

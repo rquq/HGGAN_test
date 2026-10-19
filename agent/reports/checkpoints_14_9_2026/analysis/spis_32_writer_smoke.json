@@ -1,0 +1,31 @@
+{
+  "family": "spis",
+  "height": 32,
+  "kind": "writer",
+  "samples": 128,
+  "dataset": "/home/quq/machineLearning/HTG/iam/iam_train_32.hdf5",
+  "checkpoint": "/home/quq/machineLearning/HTG/chkpoints/SpiS-GAN/bestIAM.pth",
+  "stored_metadata": {
+    "KID": 0.07579803466796875,
+    "FID": 4.459543935554592,
+    "Epoch": 98
+  },
+  "checkpoint_sha256": "e5094b78691d7d07ad854b5fc0748e054d385dd52f48cbcfa9020294b42c6b60",
+  "source_is_white_paper": true,
+  "invert_polarity": false,
+  "device": "NVIDIA GeForce RTX 4060 Laptop GPU",
+  "dtype": "float32",
+  "batch_size": 16,
+  "split_note": "training corpus / same writer IDs; NOT held-out writer generalization",
+  "chars": 0,
+  "errors": 0,
+  "word_errors": 0,
+  "legacy_chars": 0,
+  "legacy_errors": 0,
+  "legacy_word_errors": 0,
+  "correct_writer": 128,
+  "seconds": 0.3212840740000047,
+  "gpu_peak_GiB": 0.06664085388183594,
+  "WIER": 0.0,
+  "WRR": 100.0
+}

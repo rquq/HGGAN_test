@@ -1,0 +1,82 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1340 570" role="img">
+<rect width="100%" height="100%" fill="white"/>
+<rect x="25" y="45" width="140" height="65" rx="5" fill="#f1f3f5" stroke="#263746" stroke-width="1.4"/>
+<text x="95.0" y="67.6" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">Reference x</text>
+<text x="95.0" y="87.4" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">valid width</text>
+<rect x="210" y="45" width="140" height="65" rx="5" fill="#e8f0f8" stroke="#263746" stroke-width="1.4"/>
+<text x="280.0" y="69.38095238095238" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="12.301587301587299" fill="#263746">Backbone B</text>
+<text x="280.0" y="85.61904761904762" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="12.301587301587299" fill="#263746">pretrained, frozen</text>
+<rect x="395" y="45" width="140" height="65" rx="5" fill="#e8f0f8" stroke="#263746" stroke-width="1.4"/>
+<text x="465.0" y="67.75714285714285" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="14.761904761904761" fill="#263746">Style encoder E</text>
+<text x="465.0" y="87.24285714285715" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="14.761904761904761" fill="#263746">learned in GAN</text>
+<rect x="585" y="40" width="150" height="65" rx="5" fill="#e6f3ee" stroke="#263746" stroke-width="1.4"/>
+<text x="660.0" y="62.6" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">Global code g</text>
+<text x="660.0" y="82.4" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">32-D</text>
+<rect x="585" y="150" width="150" height="65" rx="5" fill="#e6f3ee" stroke="#263746" stroke-width="1.4"/>
+<text x="660.0" y="172.6" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">7 local codes L</text>
+<text x="660.0" y="192.4" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">7 × 32-D</text>
+<rect x="805" y="40" width="180" height="65" rx="5" fill="#e6f3ee" stroke="#263746" stroke-width="1.4"/>
+<text x="895.0" y="62.6" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">Block-specific</text>
+<text x="895.0" y="82.4" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">style projections</text>
+<polyline points="165,77 210,77" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="210,77 202.0,73.0 202.0,81.0" fill="#263746"/>
+<polyline points="350,77 395,77" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="395,77 387.0,73.0 387.0,81.0" fill="#263746"/>
+<polyline points="535,77 585,77" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="585,77 577.0,73.0 577.0,81.0" fill="#263746"/>
+<polyline points="465,110 465,182 585,182" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="585,182 577.0,178.0 577.0,186.0" fill="#263746"/>
+<polyline points="735,72 805,72" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="805,72 797.0,68.0 797.0,76.0" fill="#263746"/>
+<rect x="25" y="300" width="140" height="65" rx="5" fill="#f1f3f5" stroke="#263746" stroke-width="1.4"/>
+<text x="95.0" y="322.6" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">Target text y</text>
+<text x="95.0" y="342.4" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">character IDs</text>
+<rect x="210" y="300" width="140" height="65" rx="5" fill="#e8f0f8" stroke="#263746" stroke-width="1.4"/>
+<text x="280.0" y="322.6" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">Embedding +</text>
+<text x="280.0" y="342.4" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">ContentContext</text>
+<rect x="395" y="300" width="140" height="65" rx="5" fill="#e8f0f8" stroke="#263746" stroke-width="1.4"/>
+<text x="465.0" y="322.6" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">Content-only</text>
+<text x="465.0" y="342.4" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">spatial seed</text>
+<rect x="585" y="300" width="140" height="65" rx="5" fill="#e8f0f8" stroke="#263746" stroke-width="1.4"/>
+<text x="655.0" y="322.6" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">GBlock 1</text>
+<text x="655.0" y="342.4" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">CBN(global)</text>
+<rect x="790" y="300" width="170" height="65" rx="5" fill="#e6f3ee" stroke="#263746" stroke-width="1.4"/>
+<text x="875.0" y="322.6" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">Spatial style</text>
+<text x="875.0" y="342.4" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">refinement</text>
+<rect x="1000" y="300" width="140" height="65" rx="5" fill="#e8f0f8" stroke="#263746" stroke-width="1.4"/>
+<text x="1070.0" y="322.6" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">GBlocks 2–4</text>
+<text x="1070.0" y="342.4" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">CBN(global)</text>
+<rect x="1180" y="300" width="140" height="65" rx="5" fill="#f1f3f5" stroke="#263746" stroke-width="1.4"/>
+<text x="1250.0" y="322.6" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">Image x̂</text>
+<text x="1250.0" y="342.4" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">H = 32 / 64</text>
+<polyline points="165,332 210,332" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="210,332 202.0,328.0 202.0,336.0" fill="#263746"/>
+<polyline points="350,332 395,332" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="395,332 387.0,328.0 387.0,336.0" fill="#263746"/>
+<polyline points="535,332 585,332" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="585,332 577.0,328.0 577.0,336.0" fill="#263746"/>
+<polyline points="725,332 790,332" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="790,332 782.0,328.0 782.0,336.0" fill="#263746"/>
+<polyline points="960,332 1000,332" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="1000,332 992.0,328.0 992.0,336.0" fill="#263746"/>
+<polyline points="1140,332 1180,332" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="1180,332 1172.0,328.0 1172.0,336.0" fill="#263746"/>
+<polyline points="855,105 855,250 655,250 655,300" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="655,300 659.0,292.0 651.0,292.0" fill="#263746"/>
+<polyline points="985,72 1070,72 1070,300" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="1070,300 1074.0,292.0 1066.0,292.0" fill="#263746"/>
+<polyline points="735,182 875,182 875,300" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="875,300 879.0,292.0 871.0,292.0" fill="#263746"/>
+<text x="805" y="174" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="13" fill="#263746">local K,V</text>
+<rect x="1180" y="445" width="140" height="70" rx="5" fill="#f9e9e5" stroke="#263746" stroke-width="1.4"/>
+<text x="1250.0" y="470.1" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">Global D</text>
+<text x="1250.0" y="489.9" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">StrokePatchD P</text>
+<rect x="790" y="445" width="350" height="70" rx="5" fill="#fff2d6" stroke="#263746" stroke-width="1.4"/>
+<text x="965.0" y="470.1" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">Frozen R, W+B; global re-encoder E</text>
+<text x="965.0" y="489.9" dominant-baseline="middle" text-anchor="middle" font-family="Arial,DejaVu Sans,sans-serif" font-size="15" fill="#263746">CTC / writer / context / latent losses</text>
+<polyline points="1250,365 1250,445" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="1250,445 1254.0,437.0 1246.0,437.0" fill="#263746"/>
+<polyline points="1180,345 1160,345 1160,480 1140,480" fill="none" stroke="#263746" stroke-width="1.6"/>
+<polygon points="1140,480 1148.0,484.0 1148.0,476.0" fill="#263746"/>
+<text x="25" y="550" text-anchor="start" font-family="Arial,DejaVu Sans,sans-serif" font-size="14" fill="#263746">Solid arrows: forward tensors. Loss endpoints are expanded in Figures 5–7. CBN: conditional batch normalization.</text>
+</svg>

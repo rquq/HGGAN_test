@@ -1,0 +1,1853 @@
+--- PAGE 1 ---
+SpiS-GAN: Spiral-Modulated Handwriting Synthesis with
+Star Operation
+Nguyen Duy Hieu a,b, Dang Hoai Nam a,b, Pham Hoang Giap a,b, Quang
+Huu Hieu c, Vo Nguyen Le Duy a,b,d,∗
+aUniversity of Information Technology, Ho Chi Minh City, Vietnam
+bVietnam National University, Ho Chi Minh City, Vietnam
+cAJ Technologies, Nagoya, Japan
+dRIKEN Center for Advanced Intelligence Project, Tokyo, Japan
+Abstract
+Training robust handwriting recognition (HTR) systems requires massive
+amounts of annotated data, which is often difficult to acquire. While syn-
+thetic handwriting generation offers a practical solution to expand train-
+ing sets, existing models struggle with several core issues. First, previous
+approaches, even MLP-based models fail to effectively trace cursive hand-
+writing due to fixed-grid spatial receptive field. Second, their CNN-relied
+discriminators usually lose structural details through aggressive downsam-
+pling, making broken connections difficult to detect. Third, existing archi-
+tectures are either limited to linear feature interactions or too expensive
+for high-resolution synthesis. Finally, existing approaches lack explicit edge
+constraints, often resulting in blurred stroke boundaries. To address these
+challenges, this study proposes a Spiral-Modulated Handwriting Synthe-
+sis framework based on Generative Adversarial Networks (SpiS-GAN). Our
+generator employs Star-Spiral Blocks combining proposed Modulated Ellip-
+tical SpiralFC with the star operation to capture spatial relationships and
+efficiently follow complex handwriting stroke trajectories, while a Spiral-
+Modulated discriminator is introduced for multi-domain flaws detection.
+Additionally, we introduce a Sobel-Regularized Edge Reconstruction Loss
+that provides edge guidance, ensuring every character remains clear and
+legible. Evaluations on the English and Vietnamese datasets demonstrate
+that SpiS-GAN significantly outperforms current state-of-the-art models.
+The generated images are highly authentic, accurately preserve the origi-
+nal writer’s style across languages, and successfully lower error rates when
+∗Corresponding author. E-mail: duyvnl@uit.edu.vn
+arXiv:2607.06949v1  [cs.CV]  8 Jul 2026
+
+--- PAGE 2 ---
+training downstream HTR systems.
+Keywords:Handwritten text synthesis, Generative adversarial networks,
+Star operation, Deformable convolution, One-shot learning, Vietnamese
+handwriting, Synthetic data, MLP
+1. Introduction
+Even though screens are everywhere, pen and paper are not going away
+anytime soon. From students taking exams to historians examining centuries-
+old documents, handwritten text remains a vital part of our daily lives.
+Beyond just being useful, a person’s handwriting is as unique as their fin-
+gerprint, carrying a personal touch that typed fonts simply cannot copy.
+Because we still rely so much on paper, we need software that can smoothly
+translate handwritten notes into digital text, a technology called Handwrit-
+ing Recognition (HTR). However, getting a computer to actually do this in
+the real world is a massive headache. A reliable HTR system has to decode
+messy handwriting, faded ink, blurry scans, and confusing grammar rules
+all at the same time [1, 2, 3, 4]. This problem is especially painful for low-
+resource languages. For these languages, nobody has spent the millions of
+hours or dollars needed to build the giant digital libraries required to teach
+an AI how to read them.
+Modern AI is incredibly smart, but it is also extremely reliant on mas-
+sive datasets. If you do not provide it with enough examples, it simply
+fails to learn. To get around this bottleneck, researchers have started using
+Handwriting Synthesis (HS), which basically means teaching a computer to
+generate fake, realistic handwriting to artificially grow the AI’s training data
+[5, 6]. A perfect HS system takes typed words and draws them so naturally
+that they look exactly like a specific human wrote them. But teaching a
+machine to simulate human nuances is incredibly difficult. The AI has to
+figure out how a specific person connects their letters, spaces their words,
+and changes their pen strokes, often by looking at just a few small sample
+images. This task goes from difficult to extreme when generating text in
+languages like Vietnamese. In Vietnamese, tiny accent marks and stacked
+tones completely change a word’s meaning. Getting a computer to correctly
+place these layered, complex marks while maintaining the natural, messy
+flow of human handwriting remains a huge challenge.
+While recent Generative Adversarial Networks (GANs) have improved
+synthesis realism, some core limitations still hinder their performance. First,
+previous modules attempt to expand receptive fields via criss-cross token
+2
+
+--- PAGE 3 ---
+mixing along rigid axes, but this ineffectively capture the fluid, looping
+movements inherent in handwriting. Second, most discriminators rely on
+CNNs that discard structural details through downsampling, while Transformer-
+based alternatives are costly. Third, conventional architectures cannot effec-
+tively capture long-range stroke relationships without excessively expanding
+the network. Finally, existing frequency-aware supervision is insufficient for
+high-frequency information such as sharp stroke boundaries, often resulting
+in over-smoothed outputs.
+To overcome aforementioned limitations, we introduce SpiS-GAN, a spiral-
+modulated, one-shot handwriting synthesis framework designed to produce
+realistic and writer-consistent handwritten text from a single reference. Our
+generator is built upon Star-Spiral Block (SSB) that combine Modulated
+Elliptical SpiralFC (MESpiralFC) with a pointwise Star product, enabling
+efficient spatial fusion and stroke trajectory modeling. Furthermore, we
+introduce a novel Sobel-Regularized Reconstruction Loss (SELoss) that en-
+forces directional edge constraints, ensuring faithful stroke reconstruction.
+Additionally, we propose an Spiral-Modulated Discriminator that efficiently
+detects errors without severe spatial reduction.
+Experiments on both English and Vietnamese handwriting datasets have
+verified the excellent performance of the proposed model. Its ability to
+augment low-resource training data positions it as a practical solution for
+enhancing HTR systems used in real-world expert applications. The main
+contributions of this paper are as follows:
+•We propose a novel Modulated Elliptical SpiralFC’s sampling with
+the star operation’s implicit high-dimensional expansion, enabling rich
+feature interactions in generator.
+•We introduce a novel edge-aware loss that ensures generated strokes
+remain clean and well-defined.
+•We integrate a modified SpiralMLP block into the discriminator, al-
+lowing to evaluate features through multiple parallel pathways.
+•Experiments on English and Vietnamese handwritten datasets demon-
+strate that SpiS-GAN significantly outperforms the state-of-the-art.
+Our code is available at:
+https://github.com/DAIR-Group/SpiS-GAN
+The remainder of this paper is organized as follows. Section 2 reviews re-
+lated studies on handwriting generation and style transfer. Section 3 details
+3
+
+--- PAGE 4 ---
+the proposed SpiS-GAN architecture and its objective functions. Section 4
+describes the experimental setup and analyzes both quantitative and qual-
+itative results. Finally, Section 5 concludes the paper and discusses future
+directions.
+2. Related W ork
+The field of handwriting text generation (HTG) includes a broad range of
+techniques designed to produce synthetic handwritten content that closely
+resembles human writing in both appearance and style. These methods
+generally fall into two main categories based on how they represent hand-
+writing: online approaches, which simulate the dynamic movement of the
+pen over time, and offline approaches, which treat handwriting as a static
+visual image. Each paradigm has its own strengths and limitations.
+2.1. Online Handwriting Generation
+Online HTG methods create handwriting by modeling the pen’s tra-
+jectory over time. These techniques typically use sequence-based models
+such as LSTMs [5], conditional variational recurrent networks [7], or tem-
+poral CNNs [8] to predict a sequence of pen coordinates based on the target
+text. The pioneering work by Graves [5] established this framework but did
+not include any mechanism for style conditioning. Later studies [7, 8, 9] ad-
+dressed this limitation by extracting style information from reference images
+and incorporating it into the sequence generation process.
+Generative Adversarial Networks (GANs) have also been applied to on-
+line handwriting generation. For instance, Ji et al. [10] introduced a dis-
+criminator to improve the realism of pen stroke trajectories. Despite these
+advances, online methods still face significant obstacles. First, capturing
+long-range dependencies in pen motion remains computationally demand-
+ing. Second, and perhaps more critically, online data requires temporal
+stroke recordings, which are costly to collect and simply do not exist for his-
+torical manuscripts or standard scanned document collections. As a result,
+many recent works, including ours, have shifted their focus to the offline
+generation setting, where data is more readily available and real-world ap-
+plications are more practical.
+2.2. Offline Handwriting Generation
+Generating handwriting offline means creating the final text as static
+pictures. In the early days, researchers had to manually isolate letter shapes
+and write strict programming rules to connect strokes, arrange layouts, and
+4
+
+--- PAGE 5 ---
+blend backgrounds [11, 12, 13, 14]. This manual work took a massive amount
+of time and completely broke down when the system encountered new let-
+ters or unfamiliar writing styles. Today, artificial intelligence has largely
+replaced those older manual systems, particularly through the use of Gen-
+erative Adversarial Networks (GANs) [15, 16, 17, 18]. For instance, Alonso
+and colleagues [15] built a system that turned text data into word images of
+a strict, fixed size. The ScrabbleGAN project [16] took this a step further by
+stitching small image patches together, allowing the AI to generate text of
+any length. Later studies [17, 18, 19] took similar paths, usually guiding the
+generation process using specific text encoding methods. Some alternative
+approaches [20, 21] bypass this entirely by directly applying a new handwrit-
+ing style over standard typed images. Furthermore, the way modern systems
+learn a writing style can differ greatly. Some analyze entire paragraphs [22],
+while others look closely at individual words or even a single reference exam-
+ple [18, 20]. Generally speaking, giving the AI more detailed style references
+leads to much higher quality results [21]. Even though these AI pictures look
+amazing, the majority of current methods still depend on standard Convo-
+lutional Neural Networks derived from BigGAN [23]. As discussed earlier,
+these networks operate with restricted receptive fields. Because they focus
+so intensely on tiny local details, they struggle to see the bigger picture.
+This prevents them from grasping the global structure of the text, often
+resulting in a style that does not look entirely natural. Recently, the fast
+development of diffusion models [24, 25, 26] has opened up fresh opportu-
+nities for creating handwritten text. However, some of the initial diffusion
+projects [27, 28] tied their generation process to fixed identity labels, mean-
+ing they simply cannot copy a brand new, unseen handwriting style. To fix
+this issue, models like DiffusionPen [25] and One-DM [29] pull visual clues
+directly from reference pictures and mix them with the desired text to guide
+the generation process. While these diffusion methods are incredibly flexi-
+ble, they require massive computing power and run very slowly. This makes
+them highly impractical for real time uses or for running on regular devices
+with limited processing strength.
+To overcome localized CNN constraints, recent literature explores hybrid
+architectures combining CNNs with Transformers to jointly model global
+and local dependencies [6, 30, 31]. However, self-attention incurs quadratic
+complexityO(N 2)[32], introducing significant computational overhead for
+GAN training. As a lighter alternative, MLP-based networks [33, 34] achieve
+competitive performance with far fewer parameters, motivating FW-GAN [35]
+to integrate MLPs into the generation process. Despite previous MLP-based
+efforts such as FW-GAN, these modules have yet to be explored in the dis-
+5
+
+--- PAGE 6 ---
+criminator, where CNN backbones still dominate, discarding small details
+due to their localized receptive fields. This gap motivates us to explore the
+combination of CNN and MLP modules in the discriminator, aiming to de-
+velop a handwriting framework that balances high-quality evaluation with
+computational efficiency.
+Furthermore, in FW-GAN [35], the authors achieved state-of-the-art one-
+shot handwriting synthesis using Wave-MLP [34]. While effective, Wave-
+MLP is limited to small local windows, and other MLP variants such as
+CycleMLP [36] and ASMLP [37] adopt criss-cross mixing along horizontal
+and vertical axes,both might be failing to model the curved and diagonal
+movements of handwritten images. But, the full receptive field might be
+inefficient for CV tasks [38]. This insight is given by AttentionViz [39],
+which revealed that transformer attention heads naturally exhibit spiral-like
+patterns. Building on this observation, SpiralMLP [38] demonstrates that
+MLPs can achieve competitive performance on vision tasks by adopting
+carefully designed spiral offsets with lightweight complexity. Continuous
+handwriting also follows a non-grid structure, where stroke trajectories do
+not conform to rigid axes, thereby demanding customized spatial modeling.
+Motivated by these insights, we aim to design a specialized shape that can
+better capture natural strokes while keeping reasonable complexity.
+CNNs [40, 41, 42, 43] and Transformers [32, 44] are impractical for high-
+resolution synthesis, limited by linear aggregation or heavy cost [45]. Fo-
+calNet [46], HorNet [47], and V AN [48] use element-wise multiplication for
+low-cost feature fusion but lack theoretical grounding [45]. Then, Rewrite
+the Stars [45] first showed the star operation implicitly expands features
+into a high-dimensional non-linear space without extra cost, and introduced
+StarNet as a lightweight yet powerful architecture. Moreover, the star op-
+eration has since been adopted in later works, such as RSPNet [49] for road
+surface perception, while CW-Measure-pose [50] and RTDetrCrack [51] uti-
+lize StarNet as their backbone for keypoint detection and crack detection,
+respectively, consistently achieving strong accuracy with minimal computa-
+tional cost. These vision tasks share a common challenge with handwriting
+synthesis: Capturing fine-grained details while maintaining modest compu-
+tation. Building on these motivations, we adopt this special operation in our
+generation process, offering a potential improvement in synthesis quality.
+Aside from the structural limits we just discussed, most current methods
+completely ignore information found in the frequency domain. A concept
+known as the F Principle [52] explains that when neural networks tend
+to learn low-frequency (smooth) components of the target function before
+capturing high-frequency (detailed) components during training. This phe-
+6
+
+--- PAGE 7 ---
+nomenon has been theoretically supported in diverse settings, including infi-
+nite data regimes [53], wide neural networks under the Neural Tangent Ker-
+nel (NTK) framework [54], and finite-sample scenarios [55, 56, 57, 58, 59, 60].
+Furthermore, E et al. [61] show that this behavior can naturally emerge from
+the integral formulation of network optimization. Inspired by these findings,
+recent works have incorporated frequency-domain constraints into genera-
+tive models. In handwriting synthesis, FW-GAN [35] adopts the Frequency
+Distribution Loss (FDL) [62] to match the spectral distributions of real and
+synthetic samples. This motivates us to integrate similar frequency-aware
+components into our pipeline to further enhance generation quality.
+Furthermore, handwriting synthesis shares common challenges with doc-
+ument enhancement, as both tasks involve generating text-laden images
+where high-frequency details are often ignored or lost. In document enhance-
+ment, regression-based methods such as DocEnTr [63] and DE-GAN [64]
+optimized for pixel-level losses tend to suffer from significant loss of high-
+frequency information, leading to distorted and blurred text edges [65]. To
+address this, DocDiff [65] demonstrates that explicit edge supervision can
+effectively sharpen text edges. In handwriting synthesis, however, existing
+approaches such as FW-GAN [35], despite incorporating a high-frequency
+discriminator, do not clearly improve edge sharpness or concentrate on edge
+supervision like DocDiff. Driven by these observations, we propose an edge-
+guided components, offering a potential direction for improving handwriting
+synthesis performance.
+Drawing from those, we introduce SpiS-GAN, a hierarchical generative
+framework designed for high-quality, one-shot handwriting synthesis. We re-
+place traditional convolutional blocks with Star-Spiral Blocks. These blocks
+incorporate our Modulated Elliptical SpiralFc to dynamically track ink flow
+along connected trajectories, and utilize the special element-wise multipli-
+cation to implicitly expand the model’s feature space. This combination al-
+lows for highly detailed, variable-length text generation while keeping com-
+putational costs acceptable. To strictly enforce shape integrity, we intro-
+duce a edge-aware loss, which penalizes shape distortions and prevents the
+model from producing blurred letter boundaries. Furthermore, we deploy
+a dual discriminator architecture where a standard discriminator enforces
+visual realism, while a dulated Discriminator jointly evaluates multi-domain
+features that capture broken connections and shape anomalies. We adopt
+the HiGAN [18] framework, augmented with a Frequency Distribution Loss
+(FDL) [62], as our practical baseline for its stable training behavior and
+compatibility with BigGAN-style generators. However, our proposed ad-
+versarial modifications are independent and can be easily integrated into
+7
+
+--- PAGE 8 ---
+alternative generative models. An overview of the proposed framework is
+illustrated in Figure 1.
+3. Proposed Approach
+3.1. Problem Formulation
+Our core objective in one-shot handwriting synthesis is to produce re-
+alistic text images using just a single reference sample. Letxrepresent a
+handwritten word image from a particular writerw, which inherently carries
+a unique calligraphic stylez. We want to generate new handwritten images
+that faithfully preserve this writer’s visual identity. We define a set of tex-
+tual queriesA={a k}Q
+k=1, whereQdenotes the total number of queries, and
+eacha k is a target word of arbitrary length selected from a general charac-
+ter vocabulary. More precisely, each query word is represented as a discrete
+character sequencea k = [a k,1, . . . , ak,Lk], withL k indicating the character
+length of thek-th word. To produce the final synthetic image ˆxk, we train
+a generatorGthat effectively combines the textual content with the ex-
+tracted style. The generator acts as a mapping function that projects the
+rigid character sequencea k and the dynamic style vectorzinto the visual
+domain:
+ˆxk =G(a k,z).(1)
+The style vectorzcan be obtained in two ways. It can either be randomly
+sampled from a standard normal distributionN(0,I), enabling diverse style
+variations, or it can be directly extracted from the reference imagexusing
+a style encoderE, such thatz=E(x). This dual approach offers flexibility:
+sampling allows us to generate novel stylistic variations during inference,
+while extraction ensures that the generator can reproduce the exact hand-
+writing style of the target writer. By supporting both modes, our framework
+accommodates a wide range of use cases, from creative style exploration to
+precise style replication.
+3.2. Overall Architecture
+Our model features a hierarchical, style-conditioned generator composed
+of Star-Spiral Blocks (SSB), which combine the StarNet-style self-multiplication
+and Modulated Elliptical SpiralFC (MESpiralFC) to effectively model shape,
+spatial, and style variations in flowing handwriting, supporting variable-
+length text generation. The generator is conditioned on character-level con-
+tent embeddings and writer-specific style features, enabling personalized
+synthesis. To improve realism, we employ a dual-discriminator architecture
+8
+
+--- PAGE 9 ---
+Figure 1: Overview of the SpiS-GAN architecture. The input text is converted to one-hot
+and combined via element-wise multiplication with a style feature, either sampled from a
+Gaussian or encoded from a reference image. The style encoder splits the encoded style
+into segments that are progressively injected into the generator, which upsamples and
+refines features to synthesize handwritten text. At inference, only the style encoder and
+generator are needed.
+consisting of a standard discriminator and a novel discriminator adopting a
+MLP-based design to identify geometric anomalies, that are not fully cap-
+tured by spatial analysis. The framework also includes a recognizer for
+content supervision, a style encoder for extracting writer-specific character-
+istics, and a writer identifier to maintain style consistency during training.
+All components are jointly optimized in a unified min-max framework with
+adversarial objectives and auxiliary losses, including Frequency Distribution
+Loss (FDL) for global alignment and Sobel-Regularized Edge Reconstruction
+Loss (SELoss) for local frequency refinement, ensuring accurate handwriting
+synthesis consistent with the target writing style.
+3.2.1. Modulated Elliptical SpiralFC
+We build upon SpiralMLP [38], whose SpiralFC (Fully-Connected) layer
+is designed as a deformable convolution-style layer with predefined spiral
+offsets, achieving low computation. Given a feature mapX∈R H×W×C in
+with input channel dimensionC in, Spiral FC produces an output withC out
+channels.
+Spiral FC i,j,:(X) =
+CinX
+c=0
+Xi+ϕi(c),j+ϕj (c),cW spiral
+c,: +b spiral,(2)
+9
+
+--- PAGE 10 ---
+Figure 2: (a)–(b) Grid-based; (c) Original SpiralFC; (d) Elliptical SpiralFC (ours).
+whereW spiral ∈R Cin×Cout andb spiral ∈R Cout are the trainable matrix and
+bias, Spiral FC i,j,:(·)denotes the output at position(i, j,:), andϕ i(c)and
+ϕj(c)are the offset functions along theHandWaxes, respectively, with
+cdenoting the channel index (0≤c < C in). Since each output location
+samples only one spatial position from each input channel, Spiral FC requires
+onlyC in sampled values. The original Spiral FC defines the offsets as
+ϕi(c) =A(c) cos ( c×2π
+T ),(3)
+ϕj(c) =A(c) sin ( c×2π
+T ),(4)
+whereTis the constant period controlling the spiral rotation, andA(c)is
+the amplitude function (see Eq. 6 in [38]). Although efficient, this circular
+shape(Figure 2c) is not well suited to handwriting because it samples equally
+in all directions, ignores the natural left-to-right writing flow, and uses a
+fixed sampling radius across network stages. In contrast, existing criss-cross
+approaches (Figure 2a–b) restrict sampling to horizontal and vertical axes,
+failing to capture diagonal and curved movements.
+To address these limitations, we propose the Modulated Elliptical Spi-
+ralFC, a variant of Spiral FC that applies a channel-wise modulation to its
+trajectory and replaces the circular path with an elliptical shape (Figure 2d).
+We split the channels intokgroups following SpiralMLP [38], but set the
+width of each group toW=C in/k. Unlike the original SpiralFC, where
+the global amplitudeA(c)and global channel indexcdefine a single spiral,
+our design applies the same scaling functionR(i)independently within each
+group, where the local indexiresets from0toW−1. This yields multiple
+identical elliptical loops instead of just one. The offsets are defined as:
+ϕi(c) =R(i)R y sin (i×2π
+T ),(5)
+ϕj(c) =R(i)R x cos (i×2π
+T ),(6)
+10
+
+--- PAGE 11 ---
+Figure 3: Overview of the SpiS-GAN hierarchical generator featuring Star-Spiral Blocks
+whereTfollows the original formulation, andR x, Ry control the horizontal
+and vertical extents. SettingR x > R y stretches the pattern horizontally,
+thereby creating elliptical patterns to better match the natural writing di-
+rection of human handwriting. Moreover, the modulation functionR(i)
+follows a triangular pattern:
+R(i) =
+
+
+
+i
+W/2 ,0≤i≤W/2,
+, W−i
+W/2 , W/2< i≤W.
+(7)
+This expands and contracts the sampling scope within each partition, allow-
+ing each loop to capture features at varying distances from the center. Since
+Rx andR y are defined relative toC in, the sampling extent automatically
+adapts across network stages, removing the fixed constraint of SpiralFC
+while preserving linear computational complexity [38].
+3.2.2. Hierarchical Generator and the Star-Spiral Blocks
+Our handwriting synthesis framework employs a hierarchical, style-conditioned
+generator that takes as input both a latent style vectorz∈R d and a char-
+acter sequencey∈ {0,1} n×L, wherenis the vocabulary size andLis the
+sequence length. During training, we randomly drawzfrom a Gaussian
+prior distributionN(0,1). The style vector is divided into several segments.
+The first segment is combined with the embedded character sequence via
+element-wise multiplication, after which it is projected and reshaped to cre-
+ate the initial latent feature mapF 0 ∈R C0×H0×W0, whereC 0 denotes the
+starting number of channels andH 0, W0 represent the spatial dimensions of
+11
+
+--- PAGE 12 ---
+Figure 4: Detailed architecture of Star-Spiral Block
+the feature map. The remaining segments are progressively fed into the Spi-
+ralGblocks, which serve as replacements for the standard BigGAN blocks
+in our generator, through Conditional Batch Normalization (CBN). This
+mechanism allows each stage to adjust its feature representations according
+to the desired writing style. Each SpiralGblock consists of two Star-Spiral
+Blocks separated by an upsampling layer. Through this process of grad-
+ual upsampling and iterative feature refinement, the generator ultimately
+produces handwriting images that accurately preserve both the given text
+content and the intended calligraphic style.
+Handwriting generation requires modeling tightly coupled interactions
+between character structure, stroke trajectories, and writing style. To cap-
+ture such complex dependencies efficiently, we adopt the Star self-multiplication
+[45]. For a feature vectorx∈R d+1 at each spatial location (withddenot-
+ing the input channel dimension) and learned weightsw 1, w2 ∈R d+1, the
+operation is defined as (see Eq. (1) in [45]):
+wT
+1 x∗w T
+2 x=
+ d+1X
+i=1
+wi
+1xi
+!
+∗
+
+
+d+1X
+j=1
+wj
+2xj
+
+ (8)
+=
+d+1X
+i=1
+d+1X
+j=1
+wi
+1wj
+2xixj,(9)
+whereiandjindex the channel dimension. This expands into (d+1)(d+2)
+2
+pairwise interaction terms (see Eq. (4) in [45]). When stackinglsuch layers,
+the interaction complexity grows exponentially with depth (see Eq. (10) in
+12
+
+--- PAGE 13 ---
+Figure 5: Architecture of the original StarBlock from StarNet [45].
+[45]):
+Ol =W T
+l,1Ol−1 ∗W T
+l,2Ol−1,(10)
+whereO l is the output feature map at layerl,O l−1 is the output from
+the previous layer, andW l,1, Wl,2 are the corresponding weight matrices.
+The core of StarNet lies in its star operation mechanism, which dynamically
+aggregates features from multiple branches through element-wise multiplica-
+tion, enabling efficient fusion and low-dimensional computation. Unlike the
+serial structure of traditional CNNs, this operation implicitly maps features
+into a high-dimensional non-linear space without increasing channel width,
+preserving efficiency while enabling rich higher-order feature modeling.
+We build the Star-Spiral Block (SSB) (Figure 4) upon the original Star-
+Block design (Figure 5). Although StarBlock was originally introduced as a
+proof-of-concept architecture, its effectiveness as a lightweight backbone has
+been validated by recent methods in diverse tasks (detailed in Section 2.2),
+motivating our adoption of it as the foundation for handwriting generation.
+We adapt it through three key modifications: First, we replace the standard
+7×7depthwise convolutions at both ends of the block with split filters (1×7
+and7×1), referred to as cross-depthwise convolution in Figure 4, decom-
+posing spatial processing into horizontal and vertical components to better
+capture stroke directions while reducing parameters. Second, we redesign
+the two original parallel FC branches: one is enhanced with the MESpiralFC
+(Section 3.2.1), which captures rich spatial context to produceX spiral, and
+a Spectral Gating module that applies a real FFT, scales frequency compo-
+13
+
+--- PAGE 14 ---
+Figure 6: Illustration of the Dual Discriminator Architecture.
+nents with learnable complex weights, and transforms back to the spatial
+domain to produceX spectral, enhancing informative frequency components.
+The other branch remains a pointwise convolution to preserve structural
+layout, producingX spatial. Following the original paper and our own ex-
+periments, we apply an activationσto only one branch before element-wise
+multiplication, acting as a gating mechanism:
+X fused =σ(X spiral +X spectral)∗X spatial.(11)
+This operation enables SSB to learn complementary spatial, spectral, and
+structural dependencies, resulting in more consistent style preservation across
+generated samples while preserving channel efficiency. The first novel block
+operates on low-resolution features to capture global structure, while the
+second refines the upsampled features for detailed handwriting generation.
+By jointly modeling global context and local style, the generator produces
+coherent, high-quality handwriting that faithfully maintaining both the in-
+put text and the writer’s style.
+3.2.3. Dual Discriminator Architecture
+To strengthen adversarial supervision, we employ a dual-discriminator
+framework consisting of a conventional spatial discriminatorDand the pro-
+posed discriminator, as illustrated in Figure 6.
+Standard Spatial Discriminator.The spatial discriminatorDfunctions
+as a traditional adversarial network that processes handwriting images di-
+rectly in the spatial domain. Its architecture is composed of a series of
+convolutional blocks, each made up of a convolution layer followed by spec-
+tral normalization, batch normalization, and a ReLU activation function.
+14
+
+--- PAGE 15 ---
+Figure 7: Detailed architecture of SP-MLP Block.
+As the network goes deeper, the spatial resolution gradually decreases while
+the number of feature channels increases, enabling the model to extract fea-
+tures at multiple levels, from fine stroke textures and individual character
+shapes to broader structural patterns. The final feature map is then con-
+densed through global average pooling and passed through a linear layer to
+produce the realism scoreD(x), which indicates how authentic the input
+handwriting appears.
+Spiral-Modulated Discriminator.Conventional CNN-based discrimina-
+tors suffer from localized receptive fields and aggressive downsampling, which
+together discard fine-grained details and cause locally consistent strokes to
+appear globally broken or disconnected. To address this, we replace the stan-
+dard convolutional block in the discriminator with our proposed SPDBlock,
+which applies a customized SpiralMLP (SP-MLP Block) before spatial pool-
+ing (see Figure 7). Our approach employs a refined feature extraction strat-
+egy that captures sufficient spatial context without requiring full receptive
+field coverage.
+We decompose feature evaluation into three pathways, each producing
+a feature map of sizeR H×W×C out (withC out as defined in Section 3.2.1).
+A spatial linear layer producesX spatial (similar to Self-Spiral FC [38]) to
+detect pixel-level anomalies. MESpiralFC generatesX spiral (a variant of
+Cross-Spiral FC) to model stroke integrity; interruptions along its curved
+motion reveal flaws missed by grid-based modules. Spectral Gating [66]
+producesX spectral via 2D FFT to identify frequency anomalies, prevent-
+ing the generator from masking blurriness with artificial high-frequency
+noise. In the original SpiralMLP [38], Spiral Mixing consists of Self-Spiral
+FC, Cross-Spiral FC, and a Merge Head that fuses the two branches via
+SoftMax-weighted summation. To extend this design to our three-pathway
+architecture, we redesign the Merge Head of SpiralMLP (Eq. 7-8 in [38])
+as detailed in Figure 7. In the baseline, features from parallel Spiral FC
+15
+
+--- PAGE 16 ---
+branches (X self, Xcross ∈R H×W×C out) are fused using a mixing weight ma-
+trixa∈R 2×Cout derived from global average pooling and SoftMax:
+a=σ(W merge ×[ 1
+HW
+HWX
+i=0
+F(X self +X cross)i,:]),(12)
+whereFflattens spatial dimensions, andW merge is a learnable projec-
+tion matrix that maps the pooled context to the mixing weight space.
+Here,ais the mixing weight matrix from the SoftMax-based Merge Head,
+whose componentsa 1,: anda 2,: correspond to the two branchesX self and
+Xcross, respectively. To extend this design to our three-pathway architec-
+ture, we replaceX self withX spatial,X cross withX spiral, and addX spectral as
+a third branch. We extend the two-way mixing to three independent gates
+a1, a2, a3 ∈[0,1] Cout. The gate context is computed from the same two
+branches as the baseline, excluding the added one to prevent frequency bias.
+Each gate scales its corresponding branch via element-wise multiplication.
+At a specific spatial position(i, j), the fused representation is:
+X fused
+i,j,: =
+
+a1,: ⊙X spiral
+i,j,: +a 2,: ⊙X spatial
+i,j,: +a 3,: ⊙X spectral
+i,j,:
+
+.(13)
+Across the entire feature map, the gates are broadcast to influence all spatial
+positions. This independent gating enables pixel-level defects to be modeled
+in parallel, providing a more comprehensive evaluation signal. The gated
+combination is then passed through a linear projection and subsequently
+processed through the standard convolutional backbone, yielding a realism
+score that assesses both global stroke consistency and fine-scale textural
+realism in the generated cursive samples (see Figure 7).
+3.2.4. Recognizer
+The recognition component, denoted asR, is responsible for extracting
+the textual sequenceydirectly from the provided handwritten images. This
+network is optimized exclusively utilizing authentic handwritten datasets
+equipped with manual annotations, intentionally excluding any artificially
+generated samples from its training phase. Throughout the synthesis stage,
+Rfunctions as an independent verification mechanism, evaluating the output
+of the generatorGto enforce strict character precision. Consequently, this
+architecture ensures that the synthesized script not only preserves visual
+coherence but also aligns flawlessly with the designated target string.
+16
+
+--- PAGE 17 ---
+3.2.5. Style Encoder and Writer Identifier
+The style encoding moduleEcaptures visual aesthetics from images
+of written words and compresses them into a latent vectorsof constant
+dimensions, serving as a conditional input for the generatorG. Simultane-
+ously, the writer identification componentWdetermines the specific author
+of the provided script, delivering direct stylistic supervision throughout the
+optimization phase. These two components operate under a unified pri-
+mary goal, which involves isolating features associated with penmanship
+style while completely ignoring the underlying text. This mutual objective
+justifies the implementation of a common base architecture, utilizing the
+exact same framework presented in [35]. This shared foundation evaluates
+incoming visual data via layered convolutional operations integrated with
+residual pathways. By utilizing a unified feature extraction process, the
+framework significantly lowers computational demands while enabling both
+operations to leverage identical visual understandings.
+Following this shared foundational network, every component branches
+into an independent prediction layer. Specifically, the encoding module
+applies a variational strategy to map the statistical distribution of hand-
+writing aesthetics, whereas the identification module conducts a categorical
+classification to recognize individual authors. Furthermore, both systems
+incorporate specialized mechanisms capable of processing input sequences
+of irregular lengths. By adopting a joint learning strategy, this structural
+design exploits the synergy between style derivation and author classifi-
+cation. These two complementary objectives actively support one another,
+ultimately yielding highly comprehensive and resilient visual representations
+for the entire system.
+3.3. Objective Functions
+Before the optimization phase, our architecture necessitates a collection
+of data offering multiple layers of supervision. This required information
+includes visual samples of penmanship (X), their corresponding textual an-
+notations (Y), and the specific author categories (W). Even though these
+labeled instances act as the foundational elements for optimization, our gen-
+erative pipeline is required to extrapolate beyond this limited scope. This
+extrapolation is especially critical when the system needs to render entirely
+new sequences or words that out-of-vocabulary (OOV). To resolve this chal-
+lenge, we extract textual sequences from a significantly larger linguistic col-
+lection. This strategy permits the architecture to process random strings
+of characters while learning, which is achieved by selecting the target string
+˜ydirectly from an expansive text corpusC. The comprehensive learning
+17
+
+--- PAGE 18 ---
+methodology, encompassing structural decisions and the exact formulation
+of error functions, is visually outlined in Figure 1 and discussed in detail in
+the following paragraphs.
+3.3.1. Adversarial Loss
+Our framework implements a classic Generative Adversarial Network
+architecture. In this arrangement, the discrimination moduleDis trained to
+distinguish authentic penmanship specimens from artificial images created
+by the generative componentG. This competitive dynamic forcesGto
+synthesize script that exhibits a significantly higher degree of visual realism.
+To ensure a steady optimization process and facilitate robust learning, we
+incorporate the popular hinge loss mathematical structure [67], which is
+expressed mathematically as follows:
+Ladv =E x∼X [max(0,1−D(x))] +E ˜y∼C, z[max(0,1 +D(G(˜y, z)))].(14)
+In this context, the stylistic vectorzis acquired through one of two meth-
+ods. The first method involves sampling from a standard normal distribution
+N(0,1). The second method requires processing a target reference picturex
+using the encoding network, resulting inz=E(x). Readers should observe
+that this competitive penalty serves solely to elevate the aesthetic quality of
+the artificial outputs. This specific metric completely ignores the accuracy
+of the textual sequence and the precise replication of the author aesthetics.
+Those particular requirements are handled by distinct optimization func-
+tions integrated elsewhere in our design.
+3.3.2. Text Recognition Loss
+To ensure the synthetic script faithfully retains the desired character
+sequence, we integrate a pre-trained recognition networkRto guide the
+generative modelG. Although the adversarial objective promotes visual
+authenticity, it fails to guarantee that the artificial images contain accu-
+rate linguistic information. The identification moduleRbridges this gap by
+directly aligning the visual features of the generated image with the speci-
+fied textual targets. In its initial phase, this network undergoes supervised
+learning using authentic handwritten specimensx∈Xpaired with their
+corresponding transcriptionsy∈Y. We utilize the Connectionist Tempo-
+ral Classification (CTC) framework [68] to manage unsegmented sequence
+learning. This relationship is mathematically defined as follows:
+LD
+R =E x,y [LCTC(R(x), y)],(15)
+18
+
+--- PAGE 19 ---
+In this expression,R(x)represents the series of estimated character proba-
+bilities for a given picturex, whileysignifies the ground-truth transcript.
+AfterRreaches complete convergence, its weights are permanently frozen.
+From that moment, it acts as a perceptual guide to preserve textual fidelity
+within the creations produced by the generator. During practical execution,
+when given a randomly chosen string˜y∈ Cand a style vectorz, the net-
+workGlearns to fabricate a visual representationG(˜y, z). The optimization
+requires that whenRanalyzes this new picture, it successfully decodes the
+original string˜y. This requirement introduces the generator-side recognition
+loss:
+LG
+R =E ˜y,z[LCTC(R(G(˜y, z)),˜y)].(16)
+The resulting error signal is propagated backward through the layers of
+G, continuously improving its capacity to construct syntactically accurate
+penmanship. Ultimately, this methodological choice guarantees that the
+artificial creations are visually convincing while simultaneously carrying the
+exact requested textual information.
+3.3.3. Writer Identification Loss
+While the visual characteristics of penmanship exhibit significant diver-
+sity, they tend to remain remarkably stable for any specific author. This
+inherent stability enables our framework to utilize author identity as an ef-
+fective proxy for explicit style conditioning. Because detailed annotations
+for fine-grained stylistic elements (such as stroke thickness, inclination, or
+curve geometry) are unavailable, we introduce a writer classification module
+Wto capture these latent stylistic patterns. This classifier undergoes train-
+ing to recognize the author from authentic handwritten specimensx∈X
+by leveraging their associated identity labelsw∈W. This optimization is
+achieved via a conventional cross-entropy loss formulation:
+LD
+W =E x,w [−logp(w|W(x))],(17)
+This objective compelsWto isolate features that effectively differentiate
+between authors, thereby implicitly encoding the fundamental style infor-
+mation.
+Following its convergence, the parameters ofWare permanently frozen,
+allowing it to function as an evaluation mechanism that guides the genera-
+torGin preserving stylistic uniformity. When provided with a target image
+x, our system initially derives its style representationz=E(x)before syn-
+thesizing a novel imageG(˜y, z)containing a randomly selected text string
+˜y∈ C. The framework subsequently mandates that this artificial sample be
+19
+
+--- PAGE 20 ---
+categorized byWas originating from the exact same author as the target
+reference:
+LG
+W =E x,w,˜y[−logp(w|W(G(˜y, E(x))))].(18)
+This regulatory process guarantees that the generative model faithfully
+adheres to the stylistic identity captured from the reference input, even while
+rendering completely novel sequences of text. It is important to acknowledge
+that the identification networkWis exclusively optimized on the primary
+training distribution and might struggle to generalize to individuals outside
+this dataset (for example, unseen authors present within the testing phase).
+3.3.4. Style Reconstruction Loss
+To ensure the generative module adequately incorporates the target
+stylistic attributes throughout the synthesis phase, we implement a struc-
+tural penalty modeled after [69]. This constraint enforces a strict alignment
+between the original style representation and the features extracted from the
+synthesized output. Establishing this relationship is essential for developing
+a bidirectional mapping that links the latent stylistic dimensions with the
+final visual characteristics of the penned text. Specifically, when provided
+with a stylistic variablez∼ N(0,1)alongside a random textual string˜y∈ C,
+the generative networkGconstructs a corresponding visual representation
+G(˜y, z). Subsequently, this artificial image is processed by the style encoder
+E, with the strict requirement that the newly extracted style vector must
+closely approximate the initial input:
+Lstyle =E ˜y,z[∥z−E(G(˜y, z))∥ 1].(19)
+By incorporating this self-consistency objective, the architecture is forced
+to actively and meaningfully exploit the stylistic variablezthroughout the
+generative process. Furthermore, this approach promotes visual variance
+within the synthesized results and effectively prevents the generative net-
+work from collapsing into a limited spectrum of writing styles.
+3.3.5. KL-Divergence Loss
+To facilitate the random extraction of styles during the evaluation phase,
+we constrain the optimized stylistic latent space to adhere to a predeter-
+mined prior distribution. This objective is achieved by applying a Kullback-
+Leibler (KL) divergence constraint, which penalizes the discrepancy between
+the distribution of the extracted style representations and a standard normal
+distribution. Specifically, for any authentic handwritten specimenx∈X, we
+20
+
+--- PAGE 21 ---
+calculate the KL-divergence metric comparing the derived posterior proba-
+bilityE(x)against the baseline priorN(0,1):
+Lkl =E x [DKL(E(x)∥ N(0,1))].(20)
+The inclusion of this regularization metric forces the latent domain to
+maintain continuity and smoothness, thereby ensuring it remains highly
+sampleable throughout the testing procedure. This mathematical penalty
+serves as a fundamental element within variational architectures and has
+consistently demonstrated its efficacy across various style transfer method-
+ologies [70, 71].
+3.3.6. Frequency Distribution Loss
+Conventional reconstruction penalties (such asℓ 1 or standard perceptual
+metrics) operate under the assumption that the reference and generated im-
+ages are perfectly aligned in physical space. This prerequisite completely
+breaks down in the context of handwriting synthesis. In this specific do-
+main, stylistic characteristics (including stroke morphology, overall incli-
+nation, and curve geometry) manifest independently of their exact spatial
+coordinates. Furthermore, discrepancies in the underlying textual content
+introduce additional alignment complexities that standard losses cannot re-
+solve. To overcome this structural limitation, we incorporate the Frequency
+Distribution Loss (FDL) [62]. Following the methodological approach estab-
+lished by the FW-GAN architecture [35], this metric is evaluated directly on
+high-level feature representations. The fundamental concept involves inter-
+preting the visual data as a collection of semantic elements, evaluating their
+overall statistical distributions while completely disregarding strict spatial
+coordinates. We derive these robust feature sets using a predetermined
+network operatorΦ, which specifically corresponds to thel-th layer of the
+shared feature extraction backbone previously detailed in Section 3.2.5. This
+relationship is defined mathematically as:
+A={a 1, a2, . . . , aN }= Φ l(x), B={b 1, b2, . . . , bN }= Φ l(G(y, E(x))),
+(21)
+In this context,xdenotes the authentic reference picture, whileG(y, E(x))
+represents the corresponding reconstruction synthesized using the target
+contentyand the extracted styleE(x). Subsequently, we execute a Dis-
+crete Fourier Transform (DFT) across the spatial dimensions to separate
+every feature map into its respective amplitude (A) and phase (P) variables.
+These transformed frequency distributions are then evaluated against each
+21
+
+--- PAGE 22 ---
+Figure 8: Visualization of Sobel edge magnitude maps.
+other utilizing the Sliced Wasserstein Distance (SWD) metric:
+LFDL = SW(A(A),A(B)) +λ·SW(P(A),P(B)).(22)
+Within this mathematical framework,SW(·,·)stands for the Sliced Wasser-
+stein Distance computed between two observed empirical distributions, whereas
+the coefficientλserves to calibrate the relative importance of the amplitude
+and phase variables.
+3.3.7. Sobel-Regularized Edge Reconstruction Loss
+While FDL effectively handles spatial misalignment by comparing global
+spectral distributions, it does not focus on local high-frequency details such
+as stroke boundaries. This lack of explicit edge supervision can result in
+blurred character edges, as no direct constraint preserves sharp transitions
+at contours. In document enhancement, DocDiff [65] addresses this lim-
+itation by employing a Laplacian kernel as a high-pass filter to extract
+high-frequency residuals along text edges, leveraging the observation that
+high-frequency information is primarily concentrated at edges. we introduce
+a Sobel-Regularized Edge Reconstruction Loss. Unlike the isotropic filter
+used in paper, our directional Sobel operator better suits offline handwrit-
+ing images and improves performance, as verified by our experiments. We
+further useL 1 overL 2 to promote sparse gradients and sharper boundaries.
+Given an imageI, we define its edge magnitude map using the Sobel
+operator:
+M∇(I) =
+q
+(Gx ∗ ¯I) 2 + (Gy ∗ ¯I) 2,(23)
+where ¯Iis the grayscale version,∗denotes 2D spatial convolution, and
+Gx, Gy are the horizontal and vertical Sobel kernels. This operator extracts
+22
+
+--- PAGE 23 ---
+gradient information along both spatial axes, highlighting regions of sharp
+intensity changes that correspond to stroke boundaries (Figure 8 visualizes
+the resulting edge maps). Unlike DocDiff’s residual-level supervision, which
+is designed to limit computational overhead in their diffusion model, our
+Sobel loss operates directly on edge maps, offering more explicit and inter-
+pretable guidance for stroke boundary preservation. We apply this loss to
+the reconstructionˆx=G(z, y)against the ground-truthx:
+Ledge =E x,y,z [∥M∇(x)−M ∇(ˆx)∥1].(24)
+where where∥ · ∥ 1 is theL 1 norm and the expectationE x,y,z is taken over
+the joint distribution of real images, content labels, and style vectors. Since
+Sobel is a fixed linear transform with no trainable parameters,L edge is fully
+differentiable, backpropagates directly to the generator. We integrate the
+new loss with other objectives (Sec. 3.3.9). Our loss directly supervises edge
+sharpness, preserving the fine structural details essential for handwriting
+legibility and style consistency. Additionally, FDL handles global spectral
+matching, while ours acts as a directional spatial regularizer that enforces
+stroke fidelity, complementing distribution-based supervision with explicit
+geometric constraints.
+3.3.8. Spiral-Modulated Adversarial Loss
+While the standard adversarial loss encourages global visual realism,
+handwriting synthesis also depends on fine-grained structural attributes such
+as stroke continuity, character integrity, and curved stroke trajectories. To
+explicitly enforce realism in these structural details, we leverage the Spiral-
+Modulated DiscriminatorD SP described in 3.2.3, which processes input fea-
+tures through three parallel pathways: spatial (X spatial), spiral (X spiral), and
+spectral (X spectral). The discriminator adaptively fuses these representations
+via independent gating mechanisms, enabling it to capture both local stroke
+patterns and global structural coherence. Given an input imagex, the fused
+representation is computed as the gated combination of these three feature
+streams, allowingD SP to focus on the most informative structural cues for
+each input.
+The Spiral-Modulated adversarial loss adopts the same hinge loss for-
+mulation as the standard adversarial loss:
+LSP =E x∼X [max(0,1−D SP (x))] +E ˜y∼C, z[max(0,1 +D SP (G(˜y, z)))].
+(25)
+whereD SP (x)denotes the realism score produced by the spiral-modulated
+discriminator for a real imagex, andD SP (G(˜y, z))is the score for a gener-
+ated imageG(˜y, z).
+23
+
+--- PAGE 24 ---
+For generator training,L SP encourages the generator to produce im-
+ages with structurally coherent strokes and sharp character edges. In our
+dual-discriminator framework,L adv provides global structural supervision
+through the standard spatial discriminator, whileL SP complements it with
+targeted supervision on structural integrity, ensuring handwriting outputs
+are both visually realistic and structurally intact.
+3.3.9. Overall Objectives
+We optimize our architecture utilizing a min-max adversarial paradigm,
+which harmonizes the competing goals of the generative and discriminative
+networks while incorporating supplementary supervisory tasks. The com-
+prehensive optimization sequence is detailed in the subsequent paragraphs.
+Discriminators and Auxiliary Modules..Throughout the maximiza-
+tion stage, we individually refine the parameters of the conventional discrim-
+inatorD, the specialized MLP-based DiscriminatorD SP , the recognition
+moduleR, and the author classification networkW. The specific optimiza-
+tion targets for these independent components are formulated as follows:
+LD =−L adv,L DSP =−L SP ,L R =L D
+R ,L W =L D
+W ,(26)
+Generator and Style Encoder..Conversely, during the minimization
+phase, the generative componentGand the encoding moduleEundergo
+simultaneous parameter updates aimed at reducing the following aggregated
+penalty:
+LG,E =L adv+LSP +λRLG
+R+λW LG
+W +λstyleLstyle+λklLkl+λF DLLF DL+λedgeLedge.
+(27)
+Within this equation, everyλvariable acts as a scaling coefficient designed
+to calibrate the relative influence of its specific error metric. Working in
+unison, these individual components regulate distinct dimensions of the ar-
+tificial penmanship process, encompassing aesthetic authenticity, character
+readability, strict stylistic adherence, and the structural normalization of
+the latent domain.
+4. Experiments
+We thoroughly investigate the capabilities of our newly introduced SpiS-
+GAN architecture by conducting an extensive series of experimental trials
+aimed at measuring both the visual fidelity of the synthesized outputs and
+their practical utility in applied scenarios. This segment initially outlines
+24
+
+--- PAGE 25 ---
+our testing methodology alongside specific technical deployment parameters.
+Subsequently, it presents a detailed performance comparison against leading
+state-of-the-art methodologies, systematic ablation analyses, and rigorous
+cross-language adaptability evaluations. Furthermore, we explore the pos-
+itive impact of our artificial data on subsequent downstream handwriting
+recognition systems and critically assess the computational efficiency of the
+framework upon deployment.
+4.1. Design of Evaluation Procedure
+Evaluating progress in generating handwritten text has historically been
+difficult due to the absence of a standardized testing framework. Because
+previous studies relied on widely differing evaluation techniques, it is nearly
+impossible to make direct comparisons or draw concrete conclusions across
+the literature. To resolve this inconsistency, our research rigorously imple-
+ments the structured, reproducible evaluation methodology introduced by
+the FW-GAN model [35], which was explicitly engineered to address the
+unique requirements of handwriting synthesis.
+Although this testing framework is adaptable and functions effectively
+across various data collections, we explain its mechanics using the IAM
+dataset, given its overwhelming popularity in related academic research.
+This specific dataset comprises roughly 62,857 images of handwritten En-
+glish words, collected from 500 distinct individuals. We disregard the orig-
+inal dataset partition (which divides authors into training, validation, and
+testing segments). Instead, we adopt the optimized split that has become
+standard practice in contemporary studies like HWT [6] and V ATr [30]. This
+configuration allocates 339 authors specifically for system training, holding
+back the remaining 161 individuals exclusively for testing purposes. To
+rigorously assess the generative capabilities of our model, we establish five
+highly controlled evaluation scenarios that test its ability to generalize both
+linguistically and stylistically:
+•T est Set Replication:Within this specific trial, the system rebuilds
+the entire test set by generating every single target word precisely as it
+exists in the actual test data. For every artificial image produced, the
+model extracts the required style from reference pictures written by
+the exact same author containing that specific word. This allows us to
+strictly measure the network’s capacity to flawlessly recreate both the
+required content and the unique stylistic quirks of the original writer.
+•IV-S (In-V ocabulary , Seen Style):The model generates words it
+25
+
+--- PAGE 26 ---
+encountered during training, applying handwriting styles from authors
+it also studied during training.
+•IV-U (In-V ocabulary , Unseen Style):The model generates fa-
+miliar words, but must render them using the handwriting styles of
+entirely unfamiliar authors.
+•OOV-S (Out-of-V ocabulary , Seen Style):The model must render
+completely new words that it never saw during training, utilizing the
+familiar handwriting styles of known authors.
+•OOV-U (Out-of-V ocabulary , Unseen Style):The model faces
+the ultimate challenge: rendering entirely new words using the hand-
+writing styles of completely unfamiliar authors, forcing the network to
+generalize across both dimensions simultaneously.
+To construct these final four testing categories, we compile two distinct
+word lists: one comprising vocabulary items found within the training data,
+and a second containing entirely new words pulled from an independent En-
+glish text corpus. During each specific testing scenario, the model synthe-
+sizes approximately 25,000 artificial word pictures. We subsequently com-
+pare these generated outputs against authentic handwriting samples utiliz-
+ing strict numerical metrics.
+To ensure an unbiased measurement of output quality, we deploy a com-
+bination of perceptual and style-focused evaluation metrics. Primarily, we
+document theFréchet Inception Distance(FID) and theKernel Inception
+Distance(KID). These two metrics are the standard tools utilized through-
+out generative research to quantify the mathematical similarity between the
+distributions of authentic and artificial image sets [17, 18, 72, 73, 30, 74,
+29, 35]. Both of these techniques rely on high-level feature sets extracted
+from a pre-trained InceptionV3 architecture. Specifically, FID computes
+the Fréchet distance comparing two multivariate Gaussian models applied
+to the feature data, whereas KID calculates the squared maximum mean
+discrepancy utilizing a polynomial kernel mapping. It is well known that
+these metrics possess inherent flaws when evaluating handwriting, primarily
+because the underlying Inception network was trained on standard pho-
+tographs (ImageNet), creating a significant domain mismatch when analyz-
+ing text. Despite this flaw, we report FID and KID to maintain consistency
+with historical literature. To compensate for these perceptual limitations
+and directly counteract the domain shift problem, we integrate the recently
+developedHandwriting Distance(HWD) metric [75]. In contrast to FID
+26
+
+--- PAGE 27 ---
+and KID, the HWD metric utilizes a VGG16 network explicitly trained on
+a massive collection of handwritten text, calculating direct Euclidean dis-
+tances between the authentic and generated data. This yields a measurement
+that is significantly more sensitive to stylistic nuances and perfectly aligned
+with the handwriting domain, serving as a critical counterpart to the tra-
+ditional metrics. For maximum clarity, we evaluate all these metrics using
+two distinct approaches: first, by calculating them per individual writer and
+averaging the final results, and second, by evaluating them globally across
+the complete test collection.
+4.2. Implementation Details
+We construct the SpiS-GAN architecture utilizing the PyTorch library 1
+and execute all computational experiments on a single NVIDIA A100 graph-
+ical processing unit. For network optimization, we employ the Adam algo-
+rithm [76], establishing an initial learning rate of0.0002alongside momen-
+tum parameters configured to(β 1, β2) = (0.5,0.999). Once the training
+process reaches the 35 th epoch, we implement a linear decay schedule to
+systematically reduce the learning rate over time.
+Regarding the mathematical loss weighting, we assign static numerical
+values to three particular components:λ KL = 0.0001dedicated to the KL
+divergence,λ FDL = 1managing the frequency distribution penalty, and
+λedge = 1controlling the sobel-edge reconstruction loss. We intentionally
+decline to assign fixed values for all remaining auxiliary loss coefficients.
+Instead, our architecture automatically calibrates these specific weights dy-
+namically throughout the training phase utilizing a specialized gradient bal-
+ancing algorithm. This strategic approach guarantees that no individual
+optimization target ever disproportionately dominates the learning process.
+4.3. Benchmarking Against State-of-the-Art Methods
+To evaluate the efficacy of our introduced architecture, we perform com-
+prehensive evaluations against multiple prominent methodologies specialized
+in style-conditioned handwritten text generation. The selected baseline ar-
+chitectures encompass the foundational GANWriting [17], the transformer-
+based framework HWT [6], V ATr [30], and the subsequent developments
+HiGAN [18] alongside HiGAN+ [72]. Furthermore, we benchmark against
+cutting-edge diffusion-based networks, notably DiffusionPen [74] and One-
+DM [29], in addition to the preceding GAN-based pinnacle FWGAN [35].
+1https://pytorch.org/
+27
+
+--- PAGE 28 ---
+This comprehensive selection allows us to contextualize our contributions
+across both the adversarial and diffusion generative landscapes.
+Aligning with historical literature, contemporary networks utilize vary-
+ing structural setups that yield final images with vertical resolutions of either
+32 or 64 pixels. To facilitate an equitable analysis, we test our system across
+both dimensional standards. The 32-pixel iteration strictly adheres to the
+structural blueprint detailed previously. Conversely, the 64-pixel adaptation
+integrates a supplementary SpiralGBlock module at the terminal end of the
+generator to effectively expand the spatial resolution from 32 to 64 pixels.
+As a result, every generated picture is strictly normalized to match one of
+these specific vertical dimensions. Within the 32-pixel configuration, indi-
+vidual characters receive an allocation of 16 pixels. For the 64-pixel format,
+this character allocation increases to 32 pixels. To properly handle textual
+sequences of varying lengths, we systematically pad any images falling be-
+low the 128-pixel width threshold. Meanwhile, pictures exceeding 128 pixels
+in the smaller format, or 256 pixels in the larger format, undergo a resiz-
+ing operation to achieve exact target dimensions of32×128or64×256
+respectively.
+To guarantee a strict and impartial testing environment, we faithfully ex-
+ecute the methodological protocol formulated by FWGAN. Regarding base-
+line frameworks that provide accessible pretrained parameters optimized on
+matching data partitions (such as HWT and V ATr), we directly utilize their
+official distributions. For architectures lacking accessible pretrained models
+(including HiGAN and HiGAN+), we fully retrain them from the ground up
+utilizing identical dataset divisions to ensure absolute parity. This careful
+strategy guarantees highly consistent testing conditions, effectively eliminat-
+ing any variations stemming from distinct data preparation or optimization
+routines. For a specific group of baselines, encompassing GANWriting eval-
+uated on English and Vietnamese datasets, alongside DiffusionPen tested
+on VietNamese, we directly cite the performance metrics documented by
+FWGAN [35]. We present rigorous numerical comparisons utilizing three
+recognized indicators: Fréchet Inception Distance (FID), Kernel Inception
+Distance (KID), and Handwriting Distance (HWD). Throughout every con-
+figured testing scenario, our introduced SpiS-GAN architecture consistently
+surpasses all existing methods concerning both the FID and KID scores,
+clearly demonstrating enhanced visual authenticity and strict stylistic co-
+herence.
+28
+
+--- PAGE 29 ---
+4.4. Quantitative Evaluation
+Table 1 offers a detailed side-by-side comparison of handwriting synthesis
+quality across multiple state-of-the-art methods, using FID and KID metrics
+at two different resolutions. Our model establishes a new state-of-the-art in
+both 32-pixel and 64-pixel height settings, achieving the lowest scores on
+both evaluation metrics in each category.
+At the 32-pixel resolution, our model attains top performance with a FID
+of 4.37 and KID of 0.06, demonstrating the strongest resemblance to genuine
+handwriting among all evaluated approaches. By contrast, HiGAN records
+a considerably higher FID of 15.017, highlighting a substantial performance
+gap. Transformer-based models such as HWT (FID: 14.115, KID: 0.51) and
+V ATr (FID: 13.277, KID: 0.45) outperform HiGAN but still fall noticeably
+behind our results. Impressively, our FID is less than half that of FWGAN
+(6.73), the second-best model, and our KID is similarly reduced by over
+50%.
+For the 64-pixel setting, our model preserves this advantage with a FID
+of 4.58 and KID of 0.08, comfortably surpassing all competing methods at
+this higher resolution. Among the baselines, One-DM [29] achieves a FID
+of 15.59 and KID of 0.75, while HiGAN+ [72] attains a FID of 10.17 and
+KID of 0.45, making it the strongest competitor in this category. Yet even
+HiGAN+, the top-performing baseline at 64 pixels, records a FID more than
+double ours. Across both resolutions, our method consistently produces FID
+scores below half and KID scores substantially lower than those of the next
+best models, confirming its reliable and superior ability to generate high-
+quality handwriting regardless of image resolution.
+Table 2 presents FID scores across four test scenarios specifically de-
+signed to evaluate both vocabulary generalization and style robustness. Our
+model achieves the lowest FID scores in all four conditions at both resolu-
+tions, reflecting strong and consistent performance.
+For 32-pixel images, in the IV-S setting, our method surpasses FW-
+GAN (25.01), the nearest competitor, by 2.12 points, and outperforms Hi-
+GAN (35.02) by more than 12 points. In the IV-U scenario, which assesses
+style generalization to unseen writers using familiar vocabulary, our model
+scores 26.33, exceeding FWGAN (27.94) by 1.61 points and V ATr (28.14)
+by 1.81 points, while also achieving over 12-point improvements over Hi-
+GAN (39.12). In the OOV-S setting, where novel words are generated in
+familiar styles, our approach leads FWGAN by 2.14 points and V ATr by
+3.61 points. Most notably, in the most challenging OOV-U setting—where
+both words and styles are entirely unseen—our model achieves 26.76, sur-
+passing FWGAN (27.17) by 0.41 points, V ATr (29.51) by 2.75 points, HWT
+29
+
+--- PAGE 30 ---
+(29.68) by 2.92 points, and HiGAN (40.35) by an impressive 13.59 points.
+Although FWGAN remains competitive in certain OOV scenarios, no single
+baseline—whether GAN-based or transformer-based—maintains consistent
+superiority across all settings. In contrast, our method maintains stable
+and low FID scores across every condition, demonstrating its resilience to
+domain shifts and its ability to generate high-fidelity handwriting from fa-
+miliar contexts to the most challenging OOV-U case.
+For 64-pixel images, our model continues to produce strong results across
+all scenarios. In the IV-S setting, we achieve 31.27, outperforming HiGAN+
+(32.15), One-DM (35.18), and earlier approaches like DiffusionPen (42.26)
+and GanWriting (45.49). In IV-U, our model attains 28.52, the top score,
+narrowly surpassing HiGAN+ (33.07) and One-DM (32.95), with substantial
+margins over DiffusionPen (42.16) and GanWriting (48.58). For OOV-S, we
+record 32.22, leading all competitors including HiGAN+ (37.48), One-DM
+(35.55), DiffusionPen (39.07), and GanWriting (42.64). In the challenging
+OOV-U case, our method scores 29.40, surpassing HiGAN+ (31.55) and
+One-DM (32.92), while also comfortably outperforming earlier generation
+methods. At 64-pixel resolution, our model consistently maintains low FID
+scores, confirming its stable generalization capabilities.
+These findings underscore the strength of our proposed model in tack-
+ling real-world handwriting generation challenges, where both the textual
+content and the writer’s style can vary significantly. The capacity to gen-
+eralize under such diverse conditions is essential for practical deployment,
+and our results demonstrate that our model provides a robust and adaptable
+solution for style-driven handwritten text generation.
+4.5. Enhancing HTR Performance via Synthetic Data
+To rigorously evaluate the practical utility of our proposed generative
+framework, we analyze its influence on the accuracy of downstream Hand-
+written Text Recognition (HTR) systems, particularly within environments
+constrained by limited authentic data. Ultimately, the primary objective of
+artificial penmanship generation extends beyond merely producing aestheti-
+cally convincing pictures; it must also actively support subsequent recog-
+nition algorithms by supplying highly informative supplemental training
+datasets.
+To accurately simulate a low-resource scenario, we initially establish a
+baseline recognition model optimized on a restricted collection of merely
+5,000 previously unseen authentic handwriting specimens extracted from
+the IAM database. Throughout this specific evaluation, we implement a
+Transformer-based optical character recognition architecture modeled after
+30
+
+--- PAGE 31 ---
+Table 1: Quantitative comparison of handwriting synthesis quality (FID and KID) on the
+IAM test set. Lower is better. Results marked with * are taken directly from FWGAN [35].
+Method FID KID
+32-pixel height
+HiGAN [18] 15.017 0.91
+HWT [6] 14.115 0.51
+V ATr [30] 13.277 0.45
+FWGAN [35] 6.730 0.22
+Ours-32 4.37 0.06
+64-pixel height
+GanWriting* [17] 31.20 1.50
+DiffusionPen [74] 28.92 1.58
+One-DM [29] 15.59 0.75
+HiGAN+ [72] 10.17 0.45
+Ours-64 4.58 0.08
+Table 2: FID scores isolating vocabulary (In/Out) and style (Seen/Unseen) generalization
+on IAM (25,000 samples per setting). Results marked with * are taken directly from
+FWGAN [35].
+Method IV-S IV-U OOV-S OOV-U
+32-pixel height
+HiGAN [18] 35.02 39.12 33.14 40.35
+HWT [6] 26.94 29.16 26.47 29.68
+V ATr [30] 26.23 28.14 27.02 29.51
+FWGAN [35] 25.01 27.94 25.55 27.17
+Ours-32 22.89 26.33 23.41 26.76
+64-pixel height
+GanWriting* [17] 45.49 48.58 42.64 43.92
+DiffusionPen [74] 42.26 42.16 39.07 39.47
+HiGAN+ [72] 32.15 33.07 37.48 31.55
+One-DM [29] 35.18 32.95 35.55 32.92
+Ours-64 31.27 28.52 32.22 29.40
+the established TrOCR methodology [77]. Subsequently, we drastically ex-
+pand this foundational dataset by incorporating 25,000 artificial images gen-
+31
+
+--- PAGE 32 ---
+erated by every competing framework alongside our own. These generated
+pictures utilize a randomized lexicon directly derived from the initial au-
+thentic sample pool. This newly expanded corpus (comprising exactly 5,000
+real and 25,000 artificial images) is then deployed to completely retrain the
+recognition network. By maintaining a strictly constant set of authentic
+images and exclusively altering the origin of the synthetic augmentation,
+we can objectively isolate and quantify the specific performance improve-
+ments provided by each individual generation technique. We meticulously
+measure the final recognition accuracy utilizing three universally recognized
+evaluation metrics:
+•Character Error Rate (CER):This metric calculates the specific
+proportion of character-level inaccuracies, encompassing erroneous sub-
+stitutions, unwanted insertions, and missing deletions, directly com-
+pared against the total character count present within the ground-
+truth annotations.
+•W ord Error Rate (WER):This value tracks the total percentage
+of improperly transcribed words, providing a macro-level perspective
+regarding the overall recognition quality.
+•Normalized Edit Distance (NED):This calculation evaluates the
+standardized mathematical distance separating the predicted output
+from the target sequence, wherein a reduced numerical value signifies
+a significantly higher degree of transcription accuracy.
+As shown in Table 3, every synthetic augmentation strategy leads to
+noticeable performance gains over the baseline trained exclusively on 5,000
+real images, confirming that synthetic handwriting effectively makes up for
+limited real data.
+For 32-pixel height images, our method achieves the lowest error rates
+among all competing approaches across all three metrics, with a CER of
+10.03, NED of 9.99, and WER of 27.71. Compared to the strongest baseline
+competitor FWGAN (CER 10.18, NED 10.19, WER 28.38), our method
+delivers reductions of 0.15 CER points, 0.20 NED points, and 0.67 WER
+points. V ATr attains CER 10.52, NED 10.32, and WER 29.15, while HWT
+records CER 10.75, NED 10.70, and WER 29.31. HiGAN [18] logs CER
+10.98, NED 10.51, and WER 30.02. These gains are consistent across both
+character- and word-level metrics, suggesting that our generated samples
+boost fine-grained character recognition while also strengthening word-level
+prediction.
+32
+
+--- PAGE 33 ---
+For 64-pixel height images, our method shows even more substantial im-
+provements, achieving CER 9.01, NED 8.83, and WER 26.02—the lowest
+error rates in this resolution category. The nearest competitor, HiGAN+,
+reaches CER 9.45, NED 9.58, and WER 27.33, which corresponds to im-
+provements of 0.44 CER points, 0.75 NED points, and 1.31 WER points for
+our method. Other methods demonstrate varying degrees of effectiveness.
+One-DM [29] records CER 10.76, NED 10.65, and WER 30.26, while Diffu-
+sionPen shows CER 11.86, NED 11.52, and WER 31.81. Notably, GanWrit-
+ing [17] yields the weakest results with CER 17.62, NED 16.73, and WER
+44.38, indicating that its synthetic samples may introduce noise instead of
+helpful training information. The significant WER reductions achieved by
+our method at both resolutions suggest that our model generates more se-
+mantically coherent handwriting, enabling the HTR model to better capture
+complete word structures rather than just individual characters.
+This consistent performance across multiple metrics and both resolutions
+reinforces that our synthesis approach produces data that is both visually
+convincing and practically valuable for training robust recognition systems.
+The superior HTR performance, combined with the lower FID and KID
+scores reported earlier, provides strong evidence that our method generates
+high-quality synthetic handwriting well-suited for data augmentation and
+low-resource applications.
+4.6. Ablation Study
+To evaluate the individual contributions of each component in our SpiS-
+GAN framework, we conduct a series of controlled experiments on the IAM
+dataset. We begin with a baseline configuration (A) that employs a Big-
+GAN generator along with the Frequency Distribution Loss (FDL). We then
+progressively incorporate the Star-Spiral Blocks into the generator, followed
+by the Spiral-Modulated Discriminator, and finally the Sobel-Regularized
+Edge Loss. We assess image quality using Fréchet Inception Distance (FID)
+and measure recognition performance using Character Error Rate (CER),
+Normalized Edit Distance (NED), and Word Error Rate (WER).
+Table 4 reports the quantitative outcomes. The baseline (A) achieves
+an FID of 11.37, a CER of 11.20, an NED of 10.99, and a WER of 30.08.
+Adding the Star-Spiral Blocks (B) reduces the FID to 5.91 and improves the
+CER to 10.98. This indicates a substantial boost in overall image quality
+and basic text structure. Incorporating the Spiral-Modulated Discriminator
+(C) further lowers the FID to 4.61 and the CER to 10.26. This confirms
+that evaluating full-resolution pen strokes helps prevent structural degra-
+dation in character shapes. Finally, the addition of the Sobel-Regularized
+33
+
+--- PAGE 34 ---
+Table 3: HTR performance on IAM using 5,000 real images augmented with 25,000 syn-
+thetic images. Lower is better. Results marked with * are taken directly from FW-
+GAN [35].
+Method CER NED WER
+32-pixel height
+5000 real images 12.25 11.95 32.81
+HiGAN [18] 10.98 10.51 30.02
+HWT [6] 10.75 10.70 29.31
+V ATr [30] 10.52 10.32 29.15
+FWGAN [35] 10.18 10.19 28.38
+Ours-32 10.03 9.99 27.71
+64-pixel height
+5000 real images 10.81 10.66 30.31
+GanWriting* [17] 17.62 16.73 44.38
+DiffusionPen [74] 11.86 11.52 31.81
+One-DM [29] 10.76 10.65 30.26
+HiGAN+ [72] 9.45 9.58 27.33
+Ours-64 9.01 8.83 26.02
+Edge Loss (D) yields our complete model (Ours-32), which achieves the best
+performance across all metrics: an FID of 4.37, a CER of 10.18, an NED of
+9.99, and a WER of 27.71.
+Visual inspection of the samples in Figure 9 supports these quantitative
+findings. The baseline (A) struggles to produce solid ink, resulting in faint,
+broken, and poorly formed strokes (highlighted by red boxes on ’Y’, ’a’, ’f’,
+’z’, and ’g’). With the Star-Spiral Blocks (B), the text becomes noticeably
+sharper, and basic shape errors are corrected (green boxes on ’a’, ’f’, ’g’).
+However, the overall writing style still lacks the proper ink thickness and
+natural cursive flow (red boxes remain on ’Y’, ’r’, and ’z’). Introducing
+the Spiral-Modulated Discriminator (C) resolves these stylistic and contrast
+issues, successfully correcting ink weight and stroke flow for characters like
+’Y’ and ’r’ (green boxes). Nonetheless, minor shape imperfections persist
+on complex connected letters (red box on ’z’). Finally, applying the SELoss
+(D) produces crisp stroke boundaries, completely eliminating residual blur
+and errors on intricate characters such as the ’z’ (green box), achieving a
+near-perfect match with the target style.
+34
+
+--- PAGE 35 ---
+Table 4: Ablation study on IAM. We track generative fidelity (FID) and recognition
+performance (CER, NED, WER).
+Model FID CER NED WER
+Baseline (BigGAN) + FDL (A) 11.37 11.20 10.99 30.08
+(A) + Star-Spiral Blocks (Gen) (B) 5.91 10.98 10.51 28.54
+(B) + Spiral-Modulated Discriminator (C) 4.61 10.26 10.11 28.23
+(C) + Sobel-Regularized Edge Reconstruction Loss (D)4.37 10.18 9.99 27.71
+Figure 9: Visual progression of the ablation study. Red boxes indicate faint/blurred edges;
+green boxes highlight successful structural and stylistic correction. Models A through D
+align with Table 4.
+4.7. Cross-Language Generalization: Vietnamese Handwriting
+To assess the ability of SpiS-GAN to generalize across different writing
+systems and its robustness in handling diverse scripts, we carry out addi-
+tional experiments on Vietnamese following the same experimental setup de-
+scribed in 4.2. For this evaluation, we use the HANDS-VNOnDB dataset [1],
+which contains 7,296 handwritten lines with over 480,000 strokes and more
+than 380,000 characters. Following the official data split, we train the model
+on handwriting from 106 writers and test it on 34 previously unseen writers.
+Table 5 shows that SpiS-GAN consistently achieves the best results
+among all evaluated models at both 32-pixel and 64-pixel resolutions. At
+32-pixel height, our method records the lowest FID (3.67) and KID (0.14),
+significantly outperforming strong baselines such as FWGAN (FID: 5.72,
+KID: 0.29), HWT (FID: 9.15, KID: 0.69), and HiGAN (FID: 11.36, KID:
+0.69). At 64-pixel height, our model also exceeds recent high-resolution ap-
+proaches like HiGAN+ and DiffusionPen, setting a new state-of-the-art with
+35
+
+--- PAGE 36 ---
+Table 5: Performance on the HANDS-VNOnDB dataset (FID and KID). Lower is better.
+Results marked with * are taken directly from FWGAN [35].
+Method FID KID
+32-pixel height
+V ATr [30] 23.85 2.70
+HiGAN [18] 11.36 0.69
+HWT [6] 9.15 0.69
+FWGAN [35] 5.72 0.29
+Ours-32 3.67 0.14
+64-pixel height
+GanWriting* [17] 31.20 1.50
+DiffusionPen* [74] 21.25 2.41
+HiGAN+ [72] 7.05 0.40
+Ours-64 4.35 0.20
+a FID of 4.35 and KID of 0.20. Compared to the best baseline at 64 pixels,
+HiGAN+ (FID: 7.05, KID: 0.40), SpiS-GAN lowers FID by 2.70 points and
+cuts KID in half (from 0.40 to 0.20).
+These consistent gains at both resolutions indicate that our model pro-
+duces handwriting that appears more realistic and better matches the true
+data distribution. Vietnamese handwriting presents unique difficulties not
+found in English, such as the frequent use of diacritical marks, compound
+vowels, and tone markers, all of which add extra spatial and stylistic com-
+plexity. Despite these added challenges, SpiS-GAN successfully captures
+fine-grained structural and stylistic details, generating handwriting that is
+visually convincing and stylistically consistent across different writers. The
+fact that our model performs so well on a language that is structurally very
+different from English highlights the robustness of our approach and con-
+firms its ability to generalize high-quality handwriting synthesis well beyond
+the language it was trained on.
+4.8. Writer-Level Evaluation
+While global metrics like FID and KID measure overall similarity be-
+tween real and generated handwriting distributions, they may not always
+capture writer-specific stylistic nuances. To gain a more detailed perspec-
+tive, we perform a writer-level evaluation using FID, KID, and the Hand-
+writing Distance (HWD) metric. For both the IAM and HANDS-VNOnDB
+36
+
+--- PAGE 37 ---
+Table 6: Writer-level FID, KID, and HWD on the IAM dataset. Lower indicates better
+writer identity preservation. Results marked with * are taken directly from FWGAN [35].
+Method FID KID HWD
+32-pixel height
+HiGAN [18] 15.02 0.90 0.78
+HWT [6] 14.12 0.50 0.90
+V ATr [30] 13.28 0.45 0.73
+FWGAN [35] 6.73 0.22 0.57
+Ours-32 4.37 0.06 0.51
+64-pixel height
+GANwriting* [17] 31.20 1.49 0.79
+DiffusionPen [74] 28.90 1.58 0.52
+One-DM [29] 15.60 0.75 0.53
+HiGAN+ [72] 10.17 0.44 0.33
+Ours-64 4.58 0.08 0.31
+datasets, we group real and generated samples by writer, compute each
+metric individually for every writer, and then average the results across all
+writers. This approach ensures that our evaluations focus on writer-specific
+consistency rather than being dominated by aggregate cross-writer statistics.
+Table 6 presents the writer-level results on the IAM dataset. Our model
+(SpiS-GAN) achieves the lowest FID and KID scores at both resolutions:
+4.37 / 0.06 (32px) and 4.58 / 0.08 (64px) — substantially better than
+the strongest competing baselines, FWGAN (FID: 6.73, KID: 0.22) and
+HiGAN+ (FID: 10.17, KID: 0.44). On the more challenging Vietnamese
+dataset HANDS-VNOnDB (Table 7), SpiS-GAN again surpasses all base-
+lines with FID/KID scores of 3.67 / 0.14 (32px) and 4.37 / 0.19 (64px),
+reducing FID by nearly 63% relative to HWT and by roughly 39% relative
+to HiGAN+. These consistent improvements confirm that our model pro-
+duces globally realistic handwriting distributions across different languages
+and resolutions.
+However, as previously noted in subsection 4.1, both FID and KID de-
+pend on an Inception network pre-trained on ImageNet, which creates a
+domain gap when applied to handwriting. To overcome this limitation, we
+employ the Handwriting Distance (HWD), a metric specifically designed
+to assess fine-grained stylistic consistency between real and generated hand-
+writing. HWD uses a VGG16 network trained on a large handwriting corpus,
+37
+
+--- PAGE 38 ---
+Table 7: Writer-level FID, KID, and HWD on the HANDS-VNOnDB dataset. Results
+marked with * are taken directly from FWGAN [35].
+Method FID KID HWD
+32-pixel height
+V ATr [30] 23.88 2.72 1.45
+HiGAN [18] 11.26 0.79 0.73
+HWT [6] 9.85 0.72 0.62
+FWGAN [35] 5.61 0.30 0.43
+Ours-32 3.67 0.14 0.37
+64-pixel height
+GANwriting* [17] 20.29 0.79 0.32
+DiffusionPen* [74] 21.25 2.41 0.32
+HiGAN+ [72] 7.15 0.41 0.20
+Ours-64 4.37 0.19 0.20
+enabling the feature embeddings to capture subtle handwriting characteris-
+tics.
+When evaluated with this more handwriting-aware metric, SpiS-GAN
+continues to outperform all competing approaches. On the IAM dataset, it
+achieves HWD values of 0.51 (32px) and 0.31 (64px), compared to HiGAN+
+(0.33) and One-DM (0.53) at 64 pixels. On HANDS-VNOnDB, SpiS-GAN
+reaches 0.37 (32px) and 0.20 (64px), outperforming HWT (0.62) and match-
+ing HiGAN+ (0.20). These findings confirm that even when assessed using
+a domain-specific, writer-sensitive metric, our model not only produces per-
+ceptually realistic handwriting (low FID/KID) but also excels at preserving
+stylistic coherence and writer identity (low HWD).
+4.9. Model Size and Deployment Efficiency
+To evaluate the practicality of SpiS-GAN for real-world deployment, we
+measure its memory footprint and compare it against other handwriting
+synthesis models, as summarized in Table 8. Our framework requires a total
+of 54.50 MB (Generator: 47.91 MB, Encoder: 6.59 MB).
+This places our model considerably below transformer-based architec-
+tures such as HWT (131.3 MB) and V ATr (155.72 MB). It is marginally
+larger than FWGAN (52.96 MB), primarily due to the incorporation of our
+novel Star-Spiral Blocks in the generator. However, this slight increase is an
+intentional design choice. As discussed in Section 3.2.2, the star operation
+38
+
+--- PAGE 39 ---
+Table 8: Model size comparison (Megabytes) focusing on Generator (Gen) and Encoder
+(Enc) modules.
+Method Gen (MB) Enc (MB) T otal (MB)
+HWT [6] 80.7 50.6 131.3
+V ATr [30] 113.11 42.61 155.72
+HiGAN [18] 38.6 20.5 59.1
+HiGAN+ [72]15.06.721.7
+FWGAN [35] 46.376.5952.96
+Ours47.916.5954.50
+offers an implicit expansion of feature space into higher dimensions without
+increasing the computational cost of the channel dimension. This enables
+our 47.91 MB generator to capture highly intricate handwriting styles that
+would typically demand a substantially larger network.
+While HiGAN+ (21.7 MB) still holds the title of the most compact
+model, our framework delivers a substantial leap in visual quality (as evi-
+denced by our FID/KID results) and downstream HTR performance. This
+demonstrates that our model achieves a highly favorable trade-off, remain-
+ing sufficiently lightweight for memory-constrained devices while attaining
+state-of-the-art handwriting generation capabilities.
+4.10. Visual Comparison
+Metrics such as FID, KID, and HWD provide a solid quantitative as-
+sessment of overall quality, but they cannot fully capture the subtle nuances
+of human handwriting—such as connected strokes, natural slants, and con-
+sistent letter spacing. To better demonstrate how effectively our SpiS-GAN
+model preserves these fine details, we present a side-by-side visual compar-
+ison against state-of-the-art baselines.
+We evaluate the models in two distinct settings: first, by generating
+entirely new text in a given style (generation quality); and second, by re-
+constructing the exact same text to assess how faithfully they replicate the
+original ink (reconstruction fidelity). The following examples highlight the
+key visual differences between our approach and existing methods.
+4.10.1. Generation Quality
+Figures 10 and 11 offer a visual comparison of handwriting produced
+by our model against recent baselines, including HWT [6], V ATr [30], Hi-
+GAN [18], HiGAN+ [72], DiffusionPen [74], One-DM [29], and FW-GAN [35].
+39
+
+--- PAGE 40 ---
+Figure 10: Qualitative comparison of handwriting generated from the IAM dataset across
+models, using identical style and content inputs. Each row corresponds to a different
+model, with red boxes highlighting failure cases (e.g., blurry or incorrect characters).
+Figure 11: Qualitative comparison of handwriting generated from the HANDS-VNOnDB
+dataset across models, using identical style and content inputs. Each row corresponds
+to a different model, with red boxes highlighting failure cases (e.g., blurry or incorrect
+characters).
+We exclude GANWriting [17] due to the lack of a compatible checkpoint.
+One-DM and DiffusionPen are evaluated only on IAM (English), while the
+remaining models are tested on both IAM and HANDS-VNOnDB (Viet-
+namese). Red boxes indicate artifacts produced by the baselines. In con-
+trast, our framework (*Ours) consistently generates legible, stylistically ac-
+curate, and artifact-free text across both languages.
+On the IAM dataset, existing approaches show clear weaknesses in shape
+40
+
+--- PAGE 41 ---
+stability and character fidelity. HWT frequently drops strokes (e.g., the
+disconnected “I”), while V ATr severely distorts complex letter forms (e.g.,
+deformed “g” and “k”). HiGAN produces malformed uppercase letters and
+introduces noise at word endings. HiGAN+ creates unnatural spacing be-
+tween letters, breaking the cursive flow and producing disjointed charac-
+ters. One-DM exhibits severe spelling errors, completely scrambling the
+characters in words like “Imagination” and “compassionate”. DiffusionPen
+preserves the overall style but suffers from noticeable ink bleeding, turning
+sharp loops into blurred smudges. Even FW-GAN, the previous state-of-
+the-art, displays localized flaws, such as distorted letters (“is”, “A”, “e”) and
+a missing stroke in the “r” of “vulnerable”. Our model addresses these lim-
+itations effectively. By applying strict structural constraints, it maintains
+accurate stroke thickness and consistent natural slant, resulting in sharper
+handwriting.
+The HANDS-VNOnDB dataset introduces extra complexity through its
+composite characters and stacked diacritical marks. HWT and V ATr fail to
+render essential features like the crossed “d” and produce fragmented out-
+puts. HiGAN and HiGAN+ maintain better stroke continuity but frequently
+misplace or omit diacritics, including circumflexes and tildes. FW-GAN
+achieves notable improvement but still distorts certain loops (e.g., “s”) and
+generates malformed tildes. Moreover, FW-GAN struggles to replicate the
+exact stroke thickness of the reference, often producing overly heavy text.
+With the MLP-augmented Discriminator and our proposed loss functions,
+our model seamlessly overcomes these issues. It accurately places all dia-
+critics and faithfully reproduces the reference ink density and continuous
+flow.
+4.10.2. Reconstruction Quality
+Figure 12 illustrates the reconstruction performance, where models are
+required to reproduce the target text in the reference style. Earlier baselines
+such as HWT and V ATr produce faint, fragmented strokes. HiGAN and Hi-
+GAN+ struggle with inter-letter spacing, often breaking continuous words
+into disconnected pieces (visible in “jea lousies” and “under deve loped”).
+One-DM fails to preserve semantic content, generating random characters
+instead of the target spelling. DiffusionPen shows severe ink smudging, blur-
+ring thick strokes in words like “brought” and “feature”. Although FW-GAN
+performs competitively, it struggles with extreme stylistic variations, failing
+to match the heavy marker ink in “brought” or the ultra-thin strokes in “im-
+patiently”. In contrast, our model captures this full range with remarkable
+precision. Through the integration of two novel blocks in the generator and
+41
+
+--- PAGE 42 ---
+Figure 12: Qualitative reconstruction results. Each row corresponds to a different model,
+conditioned on the same ground-truth style (top row) and target text (bottom row). The
+goal is to reproduce the target content while preserving the handwriting style.
+our proposed loss functions, it faithfully reproduces everything from faint
+pencil lines to bold ink strokes, without fragmentation, hallucinations, or
+smudging, demonstrating superior fine-grained calligraphic control.
+5. Conclusion
+In this paper, we introduce SpiS-GAN, a novel GAN-based model de-
+signed for one-shot handwriting synthesis, which tackles the problem of pro-
+ducing realistic handwritten text that maintains stylistic consistency from
+only one reference example. By combining Modulated Elliptical SpiralFC
+(MESpiralFC) with the star operation within our Star-Spiral Blocks (SSB),
+the generator overcomes the limitations of conventional grid-based archi-
+tectures and enables implicit high-dimensional feature expansion to enable
+rich feature aggregation. A Spiral-Modulated discriminator, paired with a
+Sobel-Regularized Edge Reconstruction Loss (SELoss), effectively preserves
+minimal details and prevents the loss of fine edge details through explicit
+edge supervision. Extensive experiments on English and Vietnamese bench-
+marks confirm that SpiS-GAN consistently surpasses state-of-the-art meth-
+ods, producing highly authentic, style-preserving outputs while significantly
+boosting downstream handwriting recognition performance. To the best
+of our knowledge, this work is probably the first to utilize the application
+of the StarNet-style multiplication to offline handwriting synthesis for effi-
+cient complex feature interactions, together with the introduction of MLP-
+augmented modules in the discriminator. Our framework advances the field
+42
+
+--- PAGE 43 ---
+of handwriting synthesis while offering a robust solution for HTR data aug-
+mentation and personalized text generation.
+Acknowledgements
+This research was supported by The VNUHCM-University of Informa-
+tion Technology’s Scientific Research Support Fund.
+References
+[1] H. T. Nguyen, C. T. Nguyen, P. T. Bao, M. Nakagawa, A database of
+unconstrained vietnamese online handwriting and recognition exper-
+iments by recurrent neural networks, Pattern Recognition 78 (2018)
+291–306.doi:https://doi.org/10.1016/j.patcog.2018.01.013.
+URLhttps://www.sciencedirect.com/science/article/pii/
+S0031320318300141
+[2] F. Kleber, S. Fiel, M. Diem, R. Sablatnig, CVL-DataBase: An Off-Line
+Database for Writer Retrieval, Writer Identification and Word Spotting,
+in: ICDAR, 2013.
+[3] I. Pratikakis, K. Zagori, P. Kaddas, B. Gatos, Icfhr 2018 competition
+on handwritten document image binarization (h-dibco 2018), in: 2018
+16th International Conference on Frontiers in Handwriting Recognition
+(ICFHR), 2018, pp. 489–493.doi:10.1109/ICFHR-2018.2018.00091.
+[4] R. D. Lins, Nabuco - two decades of document processing in latin amer-
+ica, J. Univers. Comput. Sci. 17 (2011) 151–161.
+URLhttps://api.semanticscholar.org/CorpusID:2896293
+[5] A. Graves, Generating Sequences with Recurrent Neural Networks,
+arXiv preprint arXiv:1308.0850 (2013).
+[6] A. K. Bhunia, S. Khan, H. Cholakkal, R. M. Anwer, F. S. Khan,
+M. Shah, Handwriting Transformers, in: ICCV, 2021.
+[7] E. Aksan, F. Pece, O. Hilliges, DeepWriting: Making digital ink editable
+via deep generative modeling, in: CHI, ACM, 2018.
+[8] E. Aksan, O. Hilliges, STCN: Stochastic Temporal Convolutional Net-
+works, in: ICLR, 2018.
+43
+
+--- PAGE 44 ---
+[9] A. Kotani, S. Tellex, J. Tompkin, Generating Handwriting via Decou-
+pled Style Descriptors, in: ECCV, 2020.
+[10] B. Ji, T. Chen, Generative Adversarial Network for Handwritten Text,
+arXiv preprint arXiv:1907.11845 (2019).
+[11] J. Wang, C. Wu, Y.-Q. Xu, H.-Y. Shum, Combining Shape and Physical
+Models for On-line Cursive Handwriting Synthesis, IJDAR 7 (4) (2005)
+219–227.
+[12] Z. Lin, L. Wan, Style-preserving english handwriting synthesis, Pattern
+Recognit. 40 (7) (2007) 2097–2109.
+[13] A. O. Thomas, A. Rusu, V. Govindaraju, Synthetic Handwritten
+CAPTCHAs, Pattern Recognit. 42 (12) (2009) 3365–3373.
+[14] T. Haines, O. Mac Aodha, G. Brostow, My Text in Your Handwriting,
+ACM Trans. Graphics 35 (3) (2016).
+[15] E. Alonso, B. Moysset, R. Messina, Adversarial Generation of Hand-
+written Text Images Conditioned on Sequences, in: ICDAR, IEEE
+Computer Society, 2019.
+[16] S. Fogel, H. A verbuch-Elor, S. Cohen, S. Mazor, R. Litman, Scrabble-
+GAN: Semi-Supervised Varying Length Handwritten Text Generation,
+in: CVPR, 2020.
+[17] L. Kang, P. Riba, Y. Wang, M. Rusi˜ nol, A. Fornés, M. Villegas, GAN-
+writing: Content-Conditioned Generation of Styled Handwritten Word
+Images, in: ECCV, 2020.
+[18] J. Gan, W. Wang, HiGAN: Handwriting Imitation Conditioned on
+Arbitrary-Length Texts and Disentangled Styles, in: AAAI, 2021.
+[19] A. Mattick, M. Mayr, M. Seuret, A. Maier, V. Christlein, SmartPatch:
+Improving Handwritten Word Imitation with Patch Discriminators, in:
+ICDAR, 2021.
+[20] C. Luo, Y. Zhu, L. Jin, Z. Li, D. Peng, SLOGAN: Handwriting Style
+Synthesis for Arbitrary-Length and Out-of-Vocabulary Text, IEEE
+Trans. Neural Netw. Learn. Syst. (2022).
+[21] P. Krishnan, R. Kovvuri, G. Pang, B. Vassilev, T. Hassner, TextStyle-
+Brush: Transfer of Text Aesthetics from a Single Example, arXiv e-
+prints (2021) arXiv–2106.
+44
+
+--- PAGE 45 ---
+[22] B. Davis, C. Tensmeyer, B. Price, C. Wigington, B. Morse, R. Jain,
+Text and Style Conditioned GAN for Generation of Offline Handwriting
+Lines, in: BMVC, 2020.
+[23] A. Brock, J. Donahue, K. Simonyan, Large Scale GAN Training for
+High Fidelity Natural Image Synthesis, in: ICLR, 2019.
+[24] P. Dhariwal, A. Nichol, Diffusion models beat gans on image synthesis,
+in: Proceedings of the 35th International Conference on Neural In-
+formation Processing Systems, NIPS ’21, Curran Associates Inc., Red
+Hook, NY, USA, 2021.
+[25] Z. Wang, H. Zheng, P. He, W. Chen, M. Zhou, Diffusion-gan: Training
+gans with diffusion (2022).arXiv:2206.02262.
+[26] Y. Xu, Y. Zhao, Z. Xiao, T. Hou, Ufogen: You forward once large scale
+text-to-image generation via diffusion gans (2023).arXiv:2311.09257.
+[27] K. Nikolaidou, G. Retsinas, V. Christlein, M. Seuret, G. Sfikas, E. B.
+Smith, H. Mokayed, M. Liwicki, WordStylist: Styled Verbatim Hand-
+written Text Generation with Latent Diffusion Models, in: ICDAR,
+2023.
+[28] Y. Zhu, Z. Li, T. Wang, M. He, C. Yao, Conditional text image gener-
+ation with diffusion models, in: Proceedings of the IEEE/CVF Confer-
+ence on Computer Vision and Pattern Recognition (CVPR), 2023, pp.
+14235–14245.
+[29] G. Dai, Y. Zhang, Q. Ke, Q. Guo, S. Huang, One-shot diffusion mim-
+icker for handwritten text generation, in: European Conference on
+Computer Vision, 2024.
+[30] V. Pippi, S. Cascianelli, R. Cucchiara, Handwritten Text Generation
+from Visual Archetypes, in: CVPR, 2023.
+[31] D. Kass, E. Vats, AttentionHTR: Handwritten Text Recognition
+Based on Attention Encoder-Decoder Networks, arXiv preprint
+arXiv:2201.09390 (2022).
+[32] A. Vaswani, N. Shazeer, N. Parmar, J. Uszkoreit, L. Jones, A. N.
+Gomez, L. Kaiser, I. Polosukhin, Attention is all you need, in: NeurIPS,
+2017.
+45
+
+--- PAGE 46 ---
+[33] L. Melas-Kyriazi, Do you even need attention? a stack of feed-forward
+layers does surprisingly well on imagenet (2021).arXiv:2105.02723.
+[34] Y. Tang, K. Han, J. Guo, C. Xu, Y. Li, C. Xu, Y. Wang, An image patch
+is a wave: Phase-aware vision mlp, in: 2022 IEEE/CVF Conference on
+Computer Vision and Pattern Recognition (CVPR), IEEE, 2022, p.
+10925–10934.doi:10.1109/cvpr52688.2022.01066.
+URLhttp://dx.doi.org/10.1109/CVPR52688.2022.01066
+[35] H. Tong Dang Khoa, D. Hoai Nam, V. Nguyen Le Duy, Fw-gan:
+Frequency-driven handwriting synthesis with wave-modulated mlp
+generator, Expert Systems with Applications 299 (2026) 130175.
+doi:https://doi.org/10.1016/j.eswa.2025.130175.
+URLhttps://www.sciencedirect.com/science/article/pii/
+S095741742503790X
+[36] S. Chen, E. Xie, C. Ge, R. Chen, D. Liang, P. Luo, Cyclemlp: A mlp-
+like architecture for dense visual predictions, IEEE Transactions on
+Pattern Analysis and Machine Intelligence 45 (12) (2023) 14284–14300.
+[37] D. Lian, Z. Yu, X. Sun, S. Gao, As-mlp: An axial shifted mlp architec-
+ture for vision, arXiv preprint arXiv:2107.08391 (2021).
+[38] H. Mu, B. U. Tayyab, N. Chua, Spiralmlp: A lightweight vision mlp
+architecture, in: 2025 IEEE/CVF Winter Conference on Applications
+of Computer Vision (W ACV), IEEE, 2025, pp. 8627–8637.
+[39] C. Yeh, Y. Chen, A. Wu, C. Chen, F. Viégas, M. Wattenberg, At-
+tentionviz: A global view of transformer attention (2023).arXiv:
+2305.03210.
+URLhttps://arxiv.org/abs/2305.03210
+[40] G. Hinton, A. Krizhevsky, I. Sutskever, Imagenet classification with
+deep convolutional neural networks, Advances in Neural Information
+Processing Systems (2012) 1097–1105doi:10.1145/3065386.
+[41] K. He, X. Zhang, S. Ren, J. Sun, Deep Residual Learning for Image
+Recognition, in: CVPR, 2016.
+[42] K. Simonyan, A. Zisserman, Very deep convolutional networks for large-
+scale image recognition, in: ICLR, 2015.
+46
+
+--- PAGE 47 ---
+[43] Z. Liu, H. Mao, C.-Y. Wu, C. Feichtenhofer, T. Darrell, S. Xie, A
+convnet for the 2020s, in: Proceedings of the IEEE/CVF conference on
+computer vision and pattern recognition, 2022, pp. 11976–11986.
+[44] A. Dosovitskiy, L. Beyer, A. Kolesnikov, D. Weissenborn, X. Zhai,
+T. Unterthiner, M. Dehghani, M. Minderer, G. Heigold, S. Gelly, et al.,
+An Image is Worth 16x16 Words: Transformers for Image Recognition
+at Scale, in: ICLR, 2021.
+[45] X. Ma, X. Dai, Y. Bai, Y. Wang, Y. Fu, Rewrite the stars, in: Proceed-
+ings of the IEEE/CVF Conference on Computer Vision and Pattern
+Recognition, 2024.
+[46] J. Yang, C. Li, X. Dai, J. Gao, Focal modulation networks, in: Advances
+in Neural Information Processing Systems (NeurIPS), 2022.
+[47] Y. Rao, W. Zhao, Y. Tang, J. Zhou, S.-N. Lim, J. Lu, Hornet: Efficient
+high-order spatial interactions with recursive gated convolutions, in:
+Advances in Neural Information Processing Systems (NeurIPS), 2022.
+[48] M.-H. Guo, C.-Z. Lu, Z.-N. Liu, M.-M. Cheng, S.-M. Hu, Visual atten-
+tion network, Computational visual media 9 (4) (2023) 733–752.
+[49] Y. Long, Z. Deng, B. Hao, G. Liu, K. Sun, S. Zhao, Rspnet: Towards
+universal lightweight road surface perception network, Expert Systems
+with Applications (2026) 132831.
+[50] J. Xu, Y. Hu, Z. Gou, Y. Lu, D. Cui, Automated non-invasive method
+for measuring chicken comb and wattle using multi-camera system and
+cw-measure-pose, Expert Systems with Applications (2025) 129420.
+[51] M. Yu, W. Chen, J. Hou, A lightweight network for concrete crack
+detection in complex environments based on cloud-edge collaboration,
+Expert Systems with Applications (2025) 130204.
+[52] Z.-Q. J. X. Zhi-Qin John Xu, Y. Z. Yaoyu Zhang, T. L. Tao Luo, Y. X.
+Yanyang Xiao, Z. M. Zheng Ma, Frequency principle: Fourier analysis
+sheds light on deep neural networks, Communications in Computational
+Physics 28 (5) (2020) 1746–1767.doi:10.4208/cicp.oa-2020-0085.
+URLhttp://dx.doi.org/10.4208/cicp.OA-2020-0085
+[53] T. Luo, Z. Ma, Z.-Q. J. Xu, Y. Zhang, Theory of the frequency princi-
+ple for general deep neural networks, arXiv preprint arXiv:1906.09235
+(2019).
+47
+
+--- PAGE 48 ---
+[54] A. Jacot, F. Gabriel, C. Hongler, Neural tangent kernel: Convergence
+and generalization in neural networks, in: Advances in neural informa-
+tion processing systems, 2018, pp. 8571–8580.
+[55] T. Luo, Z. Ma, Z.-Q. J. Xu, Y. Zhang, On the exact computation
+of linear frequency principle dynamics and its generalization, SIAM
+Journal on Mathematics of Data Science 4 (4) (2022) 1272–1292.doi:
+10.1137/21m1444400.
+URLhttp://dx.doi.org/10.1137/21m1444400
+[56] Y. Zhang, Z.-Q. J. Xu, T. Luo, Z. Ma, Explicitizing an implicit bias
+of the frequency principle in two-layer neural networks (2019).arXiv:
+1905.10264.
+[57] B. Bordelon, A. Canatar, C. Pehlevan, Spectrum dependent learning
+curves in kernel regression and wide neural networks (2020).arXiv:
+2002.02561.
+[58] Y. Cao, Z. Fang, Y. Wu, D.-X. Zhou, Q. Gu, Towards understanding the
+spectral bias of deep learning, arXiv preprint arXiv:1912.01198 (2019).
+[59] R. Basri, D. Jacobs, Y. Kasten, S. Kritchman, The convergence rate
+of neural networks for learned functions of different frequencies (2019).
+arXiv:1906.00425.
+[60] G. Yang, H. Salman, A fine-grained spectral perspective on neural net-
+works, arXiv preprint arXiv:1907.10599 (2019).
+[61] W. E, C. Ma, L. Wu, Machine learning from a continuous viewpoint,
+arXiv preprint arXiv:1912.12777 (2019).
+[62] Z. Ni, J. Wu, Z. Wang, W. Yang, H. Wang, L. Ma, Misalignment-
+robust frequency distribution loss for image transformation, in: 2024
+IEEE/CVF Conference on Computer Vision and Pattern Recognition
+(CVPR), IEEE, 2024, p. 2910–2919.doi:10.1109/cvpr52733.2024.
+00281.
+URLhttp://dx.doi.org/10.1109/CVPR52733.2024.00281
+[63] M. A. Souibgui, S. Biswas, S. K. Jemni, Y. Kessentini, A. Fornés,
+J. Lladós, U. Pal, Docentr: An end-to-end document image enhance-
+ment transformer, in: 2022 26th International Conference on Pattern
+Recognition (ICPR), IEEE, 2022, pp. 1699–1705.
+48
+
+--- PAGE 49 ---
+[64] M. A. Souibgui, Y. Kessentini, De-gan: A conditional generative ad-
+versarial network for document enhancement, IEEE Transactions on
+Pattern Analysis and Machine Intelligence 44 (3) (2020) 1180–1191.
+[65] Z. Yang, B. Liu, Y. Xxiong, L. Yi, G. Wu, X. Tang, Z. Liu, J. Zhou,
+X. Zhang, Docdiff: Document enhancement via residual diffusion mod-
+els, in: Proceedings of the 31st ACM International Conference on Mul-
+timedia, 2023, pp. 2795–2806.
+[66] Y. Rao, W. Zhao, Z. Zhu, J. Lu, J. Zhou, Global filter networks for
+image classification, Advances in neural information processing systems
+34 (2021) 980–993.
+[67] J. H. Lim, J. C. Ye, Geometric GAN, arXiv preprint arXiv:1705.02894
+(2017).
+[68] A. Graves, S. Fernández, F. Gomez, J. Schmidhuber, Connectionist
+temporal classification: labelling unsegmented sequence data with re-
+current neural networks, in: Proceedings of the 23rd International
+Conference on Machine Learning, ICML ’06, Association for Com-
+puting Machinery, New York, NY, USA, 2006, p. 369–376.doi:
+10.1145/1143844.1143891.
+URLhttps://doi.org/10.1145/1143844.1143891
+[69] X. Chen, Y. Duan, R. Houthooft, J. Schulman, I. Sutskever, P. Abbeel,
+Infogan: Interpretable representation learning by information maximiz-
+ing generative adversarial nets (2016).arXiv:1606.03657.
+[70] J.-Y. Zhu, R. Zhang, D. Pathak, T. Darrell, A. A. Efros, O. Wang,
+E. Shechtman, Toward multimodal image-to-image translation (2017).
+arXiv:1711.11586.
+[71] H.-Y. Lee, H.-Y. Tseng, J.-B. Huang, M. Singh, M.-H. Yang, Di-
+verse Image-to-Image Translation via Disentangled Representations,
+Springer International Publishing, 2018, p. 36–52.doi:10.1007/
+978-3-030-01246-5_3.
+URLhttp://dx.doi.org/10.1007/978-3-030-01246-5_3
+[72] J. Gan, W. Wang, J. Leng, X. Gao, HiGAN+: Handwriting Imitation
+GAN with Disentangled Representations, ACM Trans. Graphics 42 (1)
+(2022) 1–17.
+49
+
+--- PAGE 50 ---
+[73] A. K. Bhunia, A. Das, A. K. Bhunia, P. S. R. Kishore, P. P. Roy,
+Handwriting Recognition in Low-Resource Scripts Using Adversarial
+Learning, in: CVPR, IEEE, 2019.
+[74] K. Nikolaidou, G. Retsinas, G. Sfikas, M. Liwicki, Diffusionpen: To-
+wards controlling the style of handwritten text generation, arXiv
+preprint arXiv:2409.06065 (2024).
+[75] V. Pippi, F. Quattrini, S. Cascianelli, R. Cucchiara, HWD: A Novel
+Evaluation Score for Styled Handwritten Text Generation, in: BMVC,
+2023.
+[76] D. P. Kingma, J. Ba, Adam: A method for stochastic optimization, in:
+ICLR, 2015.
+[77] M. Li, T. Lv, J. Chen, L. Cui, Y. Lu, D. Florencio, C. Zhang, Z. Li,
+F. Wei, Trocr: Transformer-based optical character recognition with
+pre-trained models, Proceedings of the AAAI Conference on Artificial
+Intelligence 37 (11) (2023) 13094–13102.doi:10.1609/aaai.v37i11.
+26538.
+URLhttp://dx.doi.org/10.1609/aaai.v37i11.26538
+50
