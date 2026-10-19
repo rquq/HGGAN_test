@@ -388,7 +388,7 @@ class StyleEncoder(nn.Module):
         # forward-time replacement silently left new parameters unoptimised.
         self.proj_layers = nn.ModuleList([
             nn.Conv2d(backbone_channels[index], in_dim, kernel_size=1)
-            for index in self.feature_indices
+            for index in self.feature_indices if self.num_local_queries
         ])
         for layer in self.proj_layers:
             nn.init.normal_(layer.weight, 0.0, 0.02)
@@ -404,20 +404,20 @@ class StyleEncoder(nn.Module):
             # the old N(0, 0.02) per-component scale in expectation.
             nn.init.orthogonal_(style_query_init[0])
             style_query_init.mul_(0.02 * (in_dim ** 0.5))
-        self.style_queries = nn.Parameter(style_query_init)
+        self.style_queries = nn.Parameter(style_query_init) if query_count else None
         # Slot queries are learned after orthogonal initialization.
 
         self.style_cross_attn = nn.MultiheadAttention(
             embed_dim=in_dim, num_heads=self.attention_heads,
             dropout=self.cross_attn_dropout, batch_first=True, bias=False,
-        )
+        ) if query_count else None
         # Affine-free norms add no checkpoint state. They prevent the frozen
         # backbone's very different feature scales from dominating attention.
         self.style_key_norm = nn.LayerNorm(in_dim, elementwise_affine=False)
         self.style_query_norm = nn.LayerNorm(in_dim, elementwise_affine=False)
         # Local values describe visual deviations only. No affine offset or
         # output normalization can manufacture evidence from a uniform map.
-        self.local_projection = nn.Linear(in_dim, style_dim, bias=False)
+        self.local_projection = nn.Linear(in_dim, style_dim, bias=False) if query_count else None
         self.content_probe = nn.Linear(style_dim, n_class)
 
         if init != 'none':
@@ -510,7 +510,7 @@ class StyleEncoder(nn.Module):
                 f'but the backbone returned {len(all_feats)} maps.'
             )
         selected_all_feats = [all_feats[index] for index in self.feature_indices]
-        if len(self.proj_layers) != len(selected_all_feats):
+        if self.num_local_queries and len(self.proj_layers) != len(selected_all_feats):
             raise RuntimeError(
                 f'StyleEncoder expected {len(self.proj_layers)} backbone feature maps, '
                 f'but received {len(selected_all_feats)}. Set EncModel.feature_scales '

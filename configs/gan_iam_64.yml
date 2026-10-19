@@ -103,8 +103,13 @@ valid:
   validate_hwd: true
   validate_cmmd: false
   validate_cmmd_every_n_epochs: 4
-  validate_cer: false
-  validate_wer: false
+  validate_cer: true
+  validate_wer: true
+  ocr_eval_every_n_epochs: 1
+  ocr_eval_batch_size: 2
+  ocr_eval_samples_per_cell: 64
+  ocr_eval_reference_pairs: 32
+  ocr_eval_disjoint_writer_splits: true
   validate_is_gen: false
   validate_is_org: false
   validate_psnr: false
@@ -150,6 +155,7 @@ test:
 
 # network configuration
 GenModel:
+  use_local_style: true
   G_ch: 64
   style_dim: 32
   fusion_nhead: 4

@@ -455,6 +455,9 @@ class BaseModel(object):
             ckpt[key] = val
 
         ckpt['checkpoint_format_version'] = 2
+        ckpt['ocr_metric_version'] = 'literal-transcripts-v1'
+        if hasattr(self, 'ocr_eval_metadata'):
+            ckpt['ocr_eval_metadata'] = self.ocr_eval_metadata
         ckpt['config_snapshot'] = self._checkpoint_safe_config(self.opt)
         ckpt['Epoch'] = epoch_done
         if iter_count is not None:
@@ -1167,6 +1170,7 @@ class AdversarialModel(BaseModel):
         # KID subset selection and a few validation helpers use process-global
         # RNGs. Isolate them so metric toggles/frequency cannot change training.
         training_rng_state = self.capture_process_rng_state()
+        mode_flags = {m: m.training for model in list(self.models.values()) + list(self.models_ema.values()) for m in model.modules()}
         eval_seed = int(getattr(
             self.opt.valid, 'eval_seed', getattr(self.opt, 'seed', 123456)
         ))
@@ -1256,7 +1260,6 @@ class AdversarialModel(BaseModel):
                 validate_is_enabled,
             ))
             keep_style_images = any((
-                validate_cer_enabled, validate_wer_enabled,
                 validate_psnr_enabled, validate_mssim_enabled,
                 validate_wier_enabled,
             ))
@@ -1379,14 +1382,9 @@ class AdversarialModel(BaseModel):
                 )
 
             if validate_cer_enabled or validate_wer_enabled:
-                cer, wer = self.validate_ocr(
-                    get_cached_generator(),
-                    n_iters=len(eval_dloader) * n_rand_repeat,
-                )
-                if validate_cer_enabled:
-                    res['cer'] = cer
-                if validate_wer_enabled:
-                    res['wer'] = wer
+                ocr_scores = self.validate_transfer_ocr(kwargs.get('current_epoch'))
+                for key, enabled in [('cer',validate_cer_enabled), ('wer',validate_wer_enabled)]:
+                    if enabled and key in ocr_scores: res[key] = ocr_scores[key]
 
             if getattr(self.opt.valid, 'validate_hwd', False):
                 hwd_batch_size = int(getattr(
@@ -1475,9 +1473,78 @@ class AdversarialModel(BaseModel):
             if use_ema:
                 self.models.G = active_G
                 self.models.E = active_E
+            for module, flag in mode_flags.items():
+                module.training = flag
             self.restore_process_rng_state(training_rng_state)
 
         return res
+
+    def validate_transfer_ocr(self, epoch=None):
+        """Small independent CER/WER; never substitute the training teacher."""
+        import gc
+        from metric.ocr_eval import IndependentOCR, WordCorpus, transfer_manifest, evaluate_transfer
+        from lib import path_config
+        every = int(getattr(self.opt.valid, 'ocr_eval_every_n_epochs', 1))
+        if every < 0: raise ValueError('ocr_eval_every_n_epochs must be nonnegative')
+        completed = getattr(self, '_ocr_done_this_session', False)
+        if completed and (every == 0 or (epoch is not None and int(epoch) % every)):
+            return {}
+        if getattr(self, '_ocr_unavailable', False): return {}
+        # Reuse allocator blocks, but require room for the independent FP32
+        # recognizer plus activations. CPU fallback runs once per session.
+        device = self.device
+        if device.type == 'cuda':
+            free, _ = torch.cuda.mem_get_info(device)
+            reusable = torch.cuda.memory_reserved(device) - torch.cuda.memory_allocated(device)
+            if free + reusable < 768 * 2**20: device = torch.device('cpu')
+        if device.type == 'cpu' and completed: return {}
+        try:
+            evaluator = IndependentOCR(device)
+        except torch.cuda.OutOfMemoryError:
+            self._ocr_unavailable = True
+            self.print('Independent OCR could not fit on CUDA; use the standalone evaluator after training. CER/WER remain empty.')
+            gc.collect()
+            return {}
+        except (OSError, ImportError) as error:
+            self._ocr_unavailable = True
+            self.print('Independent OCR disabled (weights/dependencies unavailable). '
+                       'Prepare once: python tools/evaluate_ocr.py --prepare-ocr-only --download-ocr. '
+                       f'No teacher fallback. Details: {error}')
+            return {}
+        try:
+            dataset = self.opt.dataset
+            valid_dataset = self.opt.valid.dset_name
+            root = path_config.data_roots[dataset.split('_')[0]]
+            valid_root = path_config.data_roots[valid_dataset.split('_')[0]]
+            train = WordCorpus(os.path.join(root, path_config.data_paths[dataset][self.opt.training.dset_split]),
+                               getattr(self.opt, 'dataset_source_polarity', 'white'))
+            test = WordCorpus(os.path.join(valid_root, path_config.data_paths[valid_dataset][self.opt.valid.dset_split]),
+                              getattr(self.opt, 'dataset_source_polarity', 'white'))
+            if train.height != self.opt.img_height or test.height != self.opt.img_height:
+                raise ValueError('OCR corpus image height does not match the model configuration')
+            output = os.path.join(self.log_root, 'ocr_eval')
+            manifest = transfer_manifest(train, test, self.lexicon, self.label_converter,
+                        os.path.join(output, 'manifest.json'),
+                        int(getattr(self.opt.valid, 'ocr_eval_samples_per_cell', 64)),
+                        int(getattr(self.opt.valid, 'ocr_eval_reference_pairs', 32)),
+                        int(self.opt.training.max_word_len), int(getattr(self.opt.valid,'eval_seed',self.opt.seed)),
+                        bool(getattr(self.opt.valid,'ocr_eval_disjoint_writer_splits',False)))
+            result = evaluate_transfer(self.models.G, self.models.E, self.models.B, self.label_converter,
+                        train, test, manifest, evaluator, os.path.join(output, f'epoch_{epoch if epoch is not None else "eval"}'),
+                        int(getattr(self.opt.valid, 'ocr_eval_batch_size', 2)))
+            self._ocr_done_this_session = True
+            self.ocr_eval_metadata = {k:v for k,v in result.items() if k != 'metrics'}
+            self.print(f'Independent OCR: CER={result["metrics"]["cer"]:.4f} WER={result["metrics"]["wer"]:.4f}; '
+                       f'{result["samples"]} transfer cases, {result["seconds"]:.1f}s, device={device}. '
+                       f'Real calibration CER={result["real_metrics"]["cer"]:.4f} WER={result["real_metrics"]["wer"]:.4f}')
+            return result['metrics']
+        except torch.cuda.OutOfMemoryError:
+            self._ocr_unavailable = True
+            self.print('Independent OCR skipped after a CUDA memory limit; run the bounded standalone evaluator after training.')
+            return {}
+        finally:
+            del evaluator
+            gc.collect()
 
     def validate_ocr(self, dloader, n_iters):
         self.set_mode('eval')
@@ -1503,8 +1570,8 @@ class AdversarialModel(BaseModel):
                 word_preds = []
                 for logit, img_len in zip(logits, img_lens.cpu().numpy()):
                     label = ctc_greedy_decoder(logit[:img_len // ctc_len_scale])
-                    word_preds.append(self.label_converter.decode(label))
-                word_reals = self.label_converter.decode(batch['lbs'], batch['lb_lens'])
+                    word_preds.append(self.label_converter.decode_labels(label))
+                word_reals = self.label_converter.decode_labels(batch['lbs'], batch['lb_lens'])
                 for word_pred, word_real in zip(word_preds, word_reals):
                     char_tran = levenshtein(word_pred, word_real)
                     char_trans += char_tran
@@ -1745,6 +1812,8 @@ class GlobalLocalAdversarialModel(AdversarialModel):
         generator = Generator(**opt.GenModel).to(device)
         style_backbone = StyleBackbone(**opt.StyBackbone, img_height=getattr(opt, 'img_height', 64)).to(device)
         style_encoder = StyleEncoder(**opt.EncModel).to(device)
+        if generator.use_local_style != (style_encoder.num_local_queries > 0):
+            raise ValueError('GenModel.use_local_style must match whether EncModel has local queries')
         # All random-style paths must use the encoder's effective token count,
         # including configurations that specify only num_local_queries.
         opt.EncModel.num_style_tokens = style_encoder.num_style_tokens
@@ -3003,9 +3072,9 @@ class RecognizeModel(BaseModel):
                 word_preds = []
                 for logit, img_len in zip(logits, batch['style_img_lens'].cpu().numpy()):
                     label = ctc_greedy_decoder(logit[:img_len // ctc_len_scale])
-                    word_preds.append(self.label_converter.decode(label))
+                    word_preds.append(self.label_converter.decode_labels(label))
 
-                word_reals = self.label_converter.decode(batch['lbs'], batch['lb_lens'])
+                word_reals = self.label_converter.decode_labels(batch['lbs'], batch['lb_lens'])
 
                 for word_pred, word_real in zip(word_preds, word_reals):
                     char_tran = levenshtein(word_pred, word_real)
