@@ -86,6 +86,8 @@ training:
   lambda_ctc_style_final: 0.20
   ctc_style_decay_start_epoch: 8
   ctc_style_decay_end_epoch: 28
+  # Keep the 8-token baseline's global-loss scale when changing local slots.
+  style_loss_normalization_tokens: 8
   lambda_info: 1.0
   lambda_wid: 0.5
   lambda_recn: 10.0
@@ -119,8 +121,13 @@ valid:
   validate_hwd: true
   validate_cmmd: false
   validate_cmmd_every_n_epochs: 4
-  validate_cer: false
-  validate_wer: false
+  validate_cer: true
+  validate_wer: true
+  ocr_eval_every_n_epochs: 0
+  ocr_eval_batch_size: 1
+  ocr_eval_samples_per_cell: 8
+  ocr_eval_reference_pairs: 4
+  ocr_eval_disjoint_writer_splits: true
   validate_is_gen: true
   validate_is_org: true
   validate_psnr: false
@@ -163,6 +170,7 @@ test:
 
 # network configuration
 GenModel:
+  use_local_style: false
   G_ch: 64
   style_dim: 32
   fusion_nhead: 4
@@ -245,7 +253,8 @@ StyBackbone:
 EncModel:
   style_dim: 32
   in_dim: 256
-  num_style_tokens: 8
+  num_style_tokens: 1
+  num_local_queries: 0
   backbone_channels: [64, 128, 256]
   n_class: 81
   content_grl: 1.0

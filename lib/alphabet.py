@@ -86,6 +86,21 @@ class strLabelConverter(object):
 
         return labels, lengths
 
+    def decode_labels(self, labels, lengths=None):
+        """Map literal transcript IDs to text; never apply CTC repetition collapse."""
+        if torch.is_tensor(labels):
+            labels = labels.detach().cpu().tolist()
+        if torch.is_tensor(lengths):
+            lengths = lengths.detach().cpu().tolist()
+        if not labels or not isinstance(labels[0], (list, tuple)):
+            limit = len(labels) if lengths is None else int(lengths[0] if isinstance(lengths, (list, tuple)) else lengths)
+            return ''.join(self.alphabet[int(i)] for i in labels[:limit] if int(i) != 0)
+        if lengths is None:
+            lengths = [len(row) for row in labels]
+        if len(labels) != len(lengths):
+            raise ValueError('one transcript length is required per label row')
+        return [self.decode_labels(row, int(n)) for row, n in zip(labels, lengths)]
+
     def decode(self, t, length=None, raw=False):
         """Decode encoded texts back into strs.
         Args:
