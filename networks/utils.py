@@ -241,6 +241,25 @@ def set_requires_grad(nets, requires_grad=False):
                 param.requires_grad = requires_grad
 
 
+def center_style_prior(styles: torch.Tensor) -> torch.Tensor:
+    """Center local style-prior tokens while leaving the global token intact."""
+    if not isinstance(styles, torch.Tensor):
+        raise TypeError('styles must be a torch.Tensor')
+    if styles.ndim != 3 or styles.size(1) < 1:
+        raise ValueError(
+            'styles must have shape (B, N, D) with token count N >= 1'
+        )
+    if type(styles) is not torch.Tensor:
+        styles = styles.as_subclass(torch.Tensor)
+    if styles.size(1) == 1:
+        return styles
+
+    global_style = styles[:, :1]
+    local_style = styles[:, 1:]
+    centered_local_style = local_style - local_style.mean(dim=1, keepdim=True)
+    return torch.cat((global_style, centered_local_style), dim=1)
+
+
 def _rare_lexicon_sampler(lexicon):
     """Return corpus words weighted toward genuinely rare alphabet symbols.
 
@@ -426,7 +445,7 @@ def adaptive_crop_count(valid_width, patch_size=32, min_crops=4, max_crops=8):
 def sample_stroke_patches(
     images, image_lens, min_crops=4, max_crops=8, fill_value=-1.0,
 ):
-    """Return half-height square stroke crops with per-word counts.
+    """Return half-height square crop batches with per-word counts.
 
     Crop positions are stratified across valid horizontal starts and alternate
     upper/lower bands. No character boxes, ink thresholds, or labels are used.

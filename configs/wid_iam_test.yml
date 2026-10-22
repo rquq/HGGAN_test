@@ -1,55 +1,67 @@
-device: 'cuda:0'
+# Runtime
+device: cuda:0
 multi_gpu: false
 gpus: [0]
-model: 'identifier_model'
-dataset: 'iam_word'
-dataset_source_polarity: white
 seed: 123456
+model: identifier_model
+
+# Dataset geometry and source convention
+dataset: iam_word
+dataset_source_polarity: white
 img_height: 64
 finetune: false
 
-
 training:
-  dset_name: 'iam_word'
-  dset_split: 'test'
+  # Data and initialization
+  dset_name: iam_word
+  dset_split: test
+  resume: null
+  pretrained_backbone: ./pretrained/wid_iam_train64.pth
+  frozen_backbone: true
+
+  # Batches and data loading
+  batch_size: 32
+  sort_input: true
+
+  # Optimizers and update cadence
+  lr: 0.001
+
+  # Epoch schedule
   epochs: 200
-  lr_policy: 'linear'
+  lr_policy: linear
   start_decay_epoch: 120
   n_epochs_decay: 80
-  batch_size: 32
-  # optimization:
-  lr: 1.0e-3
-  # sampling and saving
-  print_iter_val: 20
-  start_save_epoch_val: 20
-  save_epoch_val: 4
-  ckpt_dir: 'ckpts'
+
+  # Text sampling
   n_class: 81
-  sort_input: true
-  resume: ~
-  pretrained_backbone: './pretrained/wid_iam_train64.pth'
+
+  # Augmentation and regularization
   random_clip: true
   process_style: true
-  frozen_backbone: true
-  # Atomic export used only when validate_wier is enabled.
-  export_writer_teacher: "./pretrained/wid_iam_test64.pth"
 
+  # Logging, evaluation, saving and exports
+  print_iter_val: 20
+  save_epoch_val: 4
+  start_save_epoch_val: 20
+  ckpt_dir: ckpts
+  export_writer_teacher: ./pretrained/wid_iam_test64.pth
 
 valid:
-  dset_split: 'test'
-  batch_size: 256
+  # Dataset and metric switches
+  dset_split: test
 
+  # Feature extraction and sampling
+  batch_size: 256
 
 StyBackbone:
   resolution: 16
   max_dim: 256
   in_channel: 1
-  init: 'N02'
+  init: N02
   dropout: 0.2
-  norm: 'bn'
-
+  norm: bn
 
 WidModel:
   n_writer: 161
   in_dim: 256
-  init: 'none'
+  init: none

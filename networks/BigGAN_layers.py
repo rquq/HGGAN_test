@@ -108,6 +108,28 @@ class SNConv2d(nn.Conv2d, SN):
                         self.padding, self.dilation, self.groups)
 
 
+class SNDepthwiseConv2d(nn.Conv2d):
+    """Kernel-matrix SN for independent one-filter depthwise groups.
+
+    The grouped kernel matrix is block diagonal: its largest singular value
+    is the largest filter L2 norm, not the norm of a dense stack of filters.
+    Like ordinary convolution SN, this is not the full spatial operator norm.
+    """
+
+    def __init__(self, channels, kernel_size, padding=0, bias=True, eps=1e-12):
+        super().__init__(channels, channels, kernel_size, padding=padding,
+                         groups=channels, bias=bias)
+        self.eps = eps
+
+    def W_(self):
+        norm = self.weight.flatten(1).norm(dim=1).amax().clamp_min(self.eps)
+        return self.weight / norm
+
+    def forward(self, x):
+        return F.conv2d(x, self.W_(), self.bias, self.stride,
+                        self.padding, self.dilation, self.groups)
+
+
 # Linear layer with spectral norm
 class SNLinear(nn.Linear, SN):
     def __init__(self, in_features, out_features,  bias=True,

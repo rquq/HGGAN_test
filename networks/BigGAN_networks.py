@@ -7,7 +7,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from . import BigGAN_layers as layers
-from .fusion import StyleContentAttentionFusion
+from .fusion import ContentContext, SpatialStyleRefinement
 from networks.utils import init_weights, _len2mask
 
 # Architectures for G
@@ -72,9 +72,10 @@ class Generator(nn.Module):
                  G_activation=nn.ReLU(inplace=False),
                  BN_eps=1e-5, SN_eps=1e-12, G_fp16=False,
                  init='ortho', G_param='SN', norm_style='bn', bn_linear='embed', input_nc=3,
-                 embed_pad_idx=0, embed_max_norm=1.0, fusion_gate_init=0.25,
-                 local_projection_residual_init=0.1,
-                 reference_residual_init=0.15):
+                 embed_pad_idx=0, embed_max_norm=1.0,
+                 fusion_nhead=4, fusion_attn_dim=128, fusion_ffn_dim=None,
+                 fusion_residual_init=0.25, use_reference_memory=True,
+                 reference_memory_dim=128, reference_memory_height=4):
         super(Generator, self).__init__()
         dim_z = style_dim
         self.style_dim = style_dim
@@ -152,19 +153,18 @@ class Generator(nn.Module):
 
         self.filter_linear = self.which_linear(self.embed_dim,
                                         self.arch['in_channels'][0] * (self.bottom_width * self.bottom_height))
-        self.style_content_mix = StyleContentAttentionFusion(
-            self.embed_dim, self.style_dim,
-            local_projection_residual_init=local_projection_residual_init,
-            reference_residual_init=reference_residual_init,
+        self.content_context = ContentContext(
+            self.embed_dim, nhead=fusion_nhead,
+            attn_dim=fusion_attn_dim, ffn_dim=fusion_ffn_dim,
+            residual_init=fusion_residual_init,
         )
-        if not 0.0 < fusion_gate_init < 1.0:
-            raise ValueError('fusion_gate_init must be strictly between 0 and 1')
-        # A channel-wise, non-zero gate gives fusion gradients from the first
-        # update while retaining the reliable unfused content path.
-        gate_logit = torch.logit(torch.tensor(float(fusion_gate_init)))
-        self.fusion_gate_logits = nn.Parameter(
-            torch.full((self.embed_dim,), gate_logit.item())
-        )
+        self.use_reference_memory = bool(use_reference_memory)
+        self.spatial_style = SpatialStyleRefinement(
+            self.arch['out_channels'][0], memory_dim=reference_memory_dim,
+            memory_height=reference_memory_height,
+            nhead=fusion_nhead, attn_dim=fusion_attn_dim,
+            residual_init=fusion_residual_init,
+        ) if self.use_reference_memory else None
 
         self.bssp = BlockSpecificStyleProjection(style_dim=self.style_dim, num_blocks=len(self.arch['in_channels']), style_chunk_size=self.z_chunk_size, which_linear=self.which_linear)
 
@@ -204,27 +204,29 @@ class Generator(nn.Module):
             init_weights(self, self.init)
         # General initialization touches fusion Linear weights; restore its
         # identity-like nonzero residual handoffs afterwards.
-        self.style_content_mix.reset_stability_parameters()
+        self.content_context.reset_stability_parameters()
+        if self.spatial_style is not None:
+            self.spatial_style.reset_stability_parameters()
 
-    def forward(self, z, y, y_lens):
+    def forward(self, z, y, y_lens, reference_memory=None, memory_valid_mask=None):
         # Distribution is a reusable sampler container, not an activation
         # type. Strip its Tensor subclass at the model boundary so its custom
         # .to() method cannot propagate through G and downstream networks.
         if type(z) is not torch.Tensor:
             z = z.as_subclass(torch.Tensor)
+        if z.ndim != 3 or z.size(1) != 1 or z.size(2) != self.style_dim:
+            raise ValueError('DEV G expects exactly one global style token per image')
+        if self.spatial_style is None and (reference_memory is not None or memory_valid_mask is not None):
+            raise ValueError('Reference memory was passed to a generator with retrieval disabled')
 
-        # Only the explicit global token may bypass character-level fusion.
-        # Local tokens must travel through the aligned fusion path.
+        # Global style conditions every GBlock. Reference evidence is retrieved
+        # only after the first block has formed an early spatial representation.
         ys = self.bssp(z[:, 0])
 
         content = self.text_embedding(y).float().to(y.device)
-        fused_content = self.style_content_mix(
-            content, z, y_lens=y_lens
-        )
+        y_mixed = self.content_context(content, y_lens=y_lens)
         token_positions = torch.arange(y.size(1), device=y.device).unsqueeze(0)
         valid_tokens = (token_positions < y_lens.unsqueeze(1)).unsqueeze(-1)
-        fusion_gate = torch.sigmoid(self.fusion_gate_logits).view(1, 1, -1)
-        y_mixed = content + fusion_gate * (fused_content - content)
         y_mixed = y_mixed * valid_tokens.to(y_mixed.dtype)
         h = self.filter_linear(y_mixed) * valid_tokens.to(y_mixed.dtype)
 
@@ -254,6 +256,11 @@ class Generator(nn.Module):
                         h, y=ys[index], x_lens=stage_input_lens,
                         out_x_lens=stage_output_lens,
                     )
+            if index == 0 and self.spatial_style is not None:
+                h = self.spatial_style(
+                    h, reference_memory, memory_valid_mask,
+                    x_lens=stage_output_lens,
+                )
             # Conditional normalization and convolutions can populate padded
             # columns. Clear them after each stage so those activations cannot
             # feed back across the valid word boundary in a later convolution.
@@ -289,8 +296,13 @@ class Generator(nn.Module):
 
         return output
 
+    @property
+    def fusion_scales(self):
+        scales = self.content_context.residual_scales.flatten()
+        return torch.cat((scales, self.spatial_style.reference_scale)) if self.spatial_style is not None else scales
+
     def fusion_strength(self):
-        return torch.sigmoid(self.fusion_gate_logits).mean()
+        return self.fusion_scales.mean()
 
     def _info_attention(self):
         attn_index = -1
@@ -505,17 +517,16 @@ class Discriminator(nn.Module):
 class StrokePatchBlock(nn.Module):
     """Anisotropic residual block specialized for handwriting strokes."""
 
-    def __init__(self, in_channels, out_channels, which_conv, activation):
+    def __init__(self, in_channels, out_channels, which_conv, activation,
+                 which_depthwise):
         super().__init__()
         self.activation = activation
         self.conv_in = which_conv(in_channels, out_channels)
-        self.horizontal = which_conv(
-            out_channels, out_channels, kernel_size=(1, 5),
-            padding=(0, 2), groups=out_channels,
+        self.horizontal = which_depthwise(
+            out_channels, kernel_size=(1, 5), padding=(0, 2),
         )
-        self.vertical = which_conv(
-            out_channels, out_channels, kernel_size=(5, 1),
-            padding=(2, 0), groups=out_channels,
+        self.vertical = which_depthwise(
+            out_channels, kernel_size=(5, 1), padding=(2, 0),
         )
         self.fuse = which_conv(
             out_channels, out_channels, kernel_size=1, padding=0
@@ -569,10 +580,15 @@ class PatchDiscriminator(nn.Module):
                 num_itrs=num_D_SV_itrs,
                 eps=SN_eps,
             )
+            which_depthwise = functools.partial(
+                layers.SNDepthwiseConv2d, eps=SN_eps
+            )
         else:
             which_conv = functools.partial(
                 nn.Conv2d, kernel_size=3, padding=1
             )
+            def which_depthwise(channels, **conv_kwargs):
+                return nn.Conv2d(channels, channels, groups=channels, **conv_kwargs)
 
         self.stem = which_conv(input_nc, D_ch)
         blocks = []
@@ -581,7 +597,8 @@ class PatchDiscriminator(nn.Module):
             out_channels = min(D_ch * (2 ** (index + 1)), D_max_ch)
             blocks.append(
                 StrokePatchBlock(
-                    in_channels, out_channels, which_conv, self.activation
+                    in_channels, out_channels, which_conv, self.activation,
+                    which_depthwise,
                 )
             )
             in_channels = out_channels
@@ -597,5 +614,4 @@ class PatchDiscriminator(nn.Module):
         for block in self.blocks:
             h = block(h)
         h = self.activation(h)
-        output = self.logits(h)
-        return output
+        return self.logits(h)

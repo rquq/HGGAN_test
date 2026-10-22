@@ -1,37 +1,26 @@
-device: 'cuda:0'
+# Runtime
+device: cuda:0
 multi_gpu: false
 gpus: [0]
-model: 'gl_adversarial_model'
-dataset: 'iam_word'
-dataset_source_polarity: white
 seed: 123456
+model: gl_adversarial_model
+
+# Dataset geometry and source convention
+dataset: iam_word
+dataset_source_polarity: white
 img_height: 64
 char_width: 32
-# IAM-64 training data contains 339 writer identities.
 expected_train_writers: 339
 expected_width_multiple: 32
 
-
-inference:
-  ckpt: './pretrained/best_fid.pth'
-  mode: 'text'
-  guided: true
-  deploy_dst: './pretrained/deploy.pth'
-
-
 training:
-  dset_split: 'trnval'
-  # Cumulative scratch schedule: preserve useful adversarial updates through
-  # the refinement phase, then keep a non-trivial floor for stable GAN polishing.
-  # Keep these values unchanged across Kaggle resumes.
-  # Two critic batches share one generator update; this longer schedule
-  # preserves a comparable cumulative G learning budget.
-  epochs: 84
-  lr_policy: 'linear'
-  # Keep G at full rate for 36 epochs (18 G updates/loader-length) before decay.
-  start_decay_epoch: 36
-  n_epochs_decay: 48
-  min_lr_ratio: 0.15
+  # Data and initialization
+  dset_split: trnval
+  pretrained_ckpt: ''
+  pretrained_w: ./pretrained/wid_iam_train64.pth
+  pretrained_r: ./pretrained/ocr_iam_train64.pth
+
+  # Batches and data loading
   batch_size: 2
   eval_batch_size: 12
   num_workers: 4
@@ -39,114 +28,133 @@ training:
   sample_num_workers: 0
   persistent_workers: true
   prefetch_factor: 3
-  sample_nrow: 4
-  # optimization:
-  # G update frequency follows num_critic_train, matching the full training configs.
-  lr: 2.0e-4
-  d_lr: 2.0e-4
-  patch_d_lr: 2.0e-4
+  sort_input: true
+
+  # Optimizers and update cadence
+  lr: 0.0002
+  d_lr: 0.0002
+  patch_d_lr: 0.0002
   adam_b1: 0.5
   adam_b2: 0.999
-  # sampling and saving
-  sample_iter_val: 500
-  print_iter_val: 20
-  start_save_epoch_val: 0
-  eval_epoch_val: 1
-  save_epoch_val: 1
-  # val_iter: 6500
-  sample_dir: 'imgs'
-  ckpt_dir: 'ckpts'
-  lexicon: './data/english_words.txt'
+  num_critic_train: 2
+  grad_clip: 5.0
+
+  # Epoch schedule
+  epochs: 84
+  lr_policy: linear
+  start_decay_epoch: 36
+  n_epochs_decay: 48
+  min_lr_ratio: 0.15
+
+  # Exponential moving averages
+  update_ema: true
+  ema_beta: 0.9998
+
+  # Text sampling
+  lexicon: ./data/english_words.txt
   max_word_len: 20
   n_class: 81
   capitalize_ratio: 0.5
-  blank_ratio: 0.
+  blank_ratio: 0.0
   rare_word_ratio: 0.15
-  sort_input: true
-  num_critic_train: 2
-  # Slightly elevated patch adversarial pressure to sharpen cursive ligatures and reduce KID
+
+  # Patch adversarial objective
   lambda_patch_adv: 0.45
   min_patch_crops: 4
   max_patch_crops: 8
-  # Keep character-centered crops close enough to the intended allograph while
-  # retaining small translation tolerance for real handwriting alignment.
-  # Mild word-safe DiffAug is applied to both real and fake global-D inputs.
-  d_diffaug: true
-  d_aug_translate: 4
-  d_aug_width_scale: 0.05
-  vae_mode: true
-  # Keep random samples text-correct.  Style-transfer receives a lighter,
-  # earlier-decaying OCR constraint so valid allographs and ligatures are not
-  # forced into the recognizer's most canonical glyph shapes.
+
+  # OCR objectives and schedules
   lambda_ctc_rand: 1.0
   lambda_ctc_rand_final: 0.4
   ctc_rand_decay_start_epoch: 10
   ctc_rand_decay_end_epoch: 20
   lambda_ctc_style: 0.5
-  lambda_ctc_style_final: 0.20
+  lambda_ctc_style_final: 0.2
   ctc_style_decay_start_epoch: 8
   ctc_style_decay_end_epoch: 28
-  lambda_info: 1.0
-  lambda_wid: 0.5
+
+  # Reconstruction and style objectives
+  vae_mode: true
   lambda_recn: 10.0
   lambda_recn_final: 2.5
   recn_decay_start_epoch: 24
   recn_decay_end_epoch: 42
+  lambda_wid: 0.5
+  lambda_info: 1.0
   lambda_style_cycle: 1.0
   lambda_content_adv: 0.02
   lambda_kl: 0.1
-  # Use bounded reference-feature matching.
   lambda_ctx: 0.1
-  grad_clip: 5.0
-  # Halve R1 per critic step and apply it half as often: same average R1
-  # regularization per generator update, with less repeated second-order work.
+  style_loss_normalization_tokens: 8
+
+  # Augmentation and regularization
+  d_diffaug: true
+  d_aug_translate: 4
+  d_aug_width_scale: 0.05
   r1_interval: 32
   lambda_r1: 0.01
-  update_ema: true
-  ema_beta: 0.9998
-  pretrained_w: './pretrained/wid_iam_train64.pth'
-  pretrained_r: './pretrained/ocr_iam_train64.pth'
-  pretrained_ckpt: ''
 
+  # Logging, evaluation, saving and exports
+  print_iter_val: 20
+  sample_iter_val: 500
+  sample_nrow: 4
+  eval_epoch_val: 1
+  save_epoch_val: 1
+  start_save_epoch_val: 0
+  sample_dir: imgs
+  ckpt_dir: ckpts
 
 valid:
-  dset_name: 'iam_word'
-  dset_split: 'test'
-  # Keep validation randomness reproducible without perturbing training.
+  # Dataset and metric switches
+  dset_name: iam_word
+  dset_split: test
   eval_seed: 123456
   validate_fid: true
   validate_kid: true
   validate_hwd: true
   validate_cmmd: false
-  validate_cmmd_every_n_epochs: 4
-  validate_cer: false
-  validate_wer: false
+  validate_cer: true
+  validate_wer: true
   validate_is_gen: true
   validate_is_org: true
   validate_psnr: false
   validate_mssim: false
   validate_wier: false
-  metric_cache_dtype: 'float32'
-  use_rand_corpus: false
-  n_rand_repeat: 10
+
+  # Independent OCR evaluation
+  ocr_eval_every_n_epochs: 0
+  ocr_eval_batch_size: 1
+  ocr_eval_samples_per_cell: 8
+  ocr_eval_reference_pairs: 4
+  ocr_eval_disjoint_writer_splits: true
+
+  # Feature extraction and sampling
   batch_size: 8
   hwd_batch_size: 32
+  metric_cache_dtype: float32
+  use_rand_corpus: false
+  n_rand_repeat: 10
   dims: 2048
+  validate_cmmd_every_n_epochs: 4
+
+  # KID estimator
   mmd_degree: 3
-  mmd_gamma: ~
-  mmd_coef0: 1.
+  mmd_gamma: null
+  mmd_coef0: 1.0
   mmd_subsets: 50
   mmd_subset_size: 1000
   mmd_var: true
-  pretrained_test_w: './pretrained/wid_iam_test64.pth'
+
+  # Optional writer evaluation and CTC decoder
+  pretrained_test_w: ./pretrained/wid_iam_test64.pth
   test_wid_model:
     n_writer: 161
     in_dim: 256
-    pool: 'attentive_stats'
+    pool: attentive_stats
     attention_dim: 128
-    init: 'none'
+    init: none
   ctcdecode:
-    model_path: ~ #'./data/english_word_3gram.binary'
+    model_path: null
     blank_id: 0
     alpha: 1
     beta: 3
@@ -155,43 +163,71 @@ valid:
     cutoff_top_n: 32
     num_processes: 8
 
+StyBackbone:
+  resolution: 16
+  max_dim: 256
+  in_channel: 1
+  init: N02
+  dropout: 0.0
+  norm: bn
 
-test:
-  interp_num: 7
-  nrow: 8
-
-
-# network configuration
-GenModel:
-  G_ch: 64
+EncModel:
+  # Global latent
   style_dim: 32
-  fusion_gate_init: 0.25
-  local_projection_residual_init: 0.1
-  reference_residual_init: 0.15
+  in_dim: 256
+  num_style_tokens: 1
+  n_class: 81
+  content_grl: 1.0
+
+  # Reference memory: original-image features plus learned high-frequency features
+  use_high_frequency: true
+  memory_feature_index: 1
+  memory_dim: 128
+  memory_height: 4
+  memory_max_width: 32
+
+  # Contextual-loss feature maps and initialization
+  backbone_channels: [64, 128, 256]
+  init: none
+
+GenModel:
+  # Global conditioning and reference retrieval
+  style_dim: 32
+  use_reference_memory: true
+  reference_memory_dim: 128
+  reference_memory_height: 4
+  fusion_nhead: 4
+  fusion_attn_dim: 128
+  fusion_ffn_dim: 360
+  fusion_residual_init: 0.25
+
+  # Content geometry and convolutional generator
+  G_ch: 64
+  embed_dim: 120
+  embed_pad_idx: 0
+  embed_max_norm: 1.0
+  n_class: 81
   bottom_width: 4
   bottom_height: 4
   resolution: 64
   G_kernel_size: 3
   G_attn: '0'
-  n_class: 81
-  embed_dim: 120
-  embed_pad_idx: 0
-  embed_max_norm: 1.0
+  input_nc: 1
+
+  # Normalization and initialization
+  norm_style: bn
+  bn_linear: SN
+  G_param: SN
   num_G_SVs: 1
   num_G_SV_itrs: 1
   cross_replica: false
   mybn: false
-  BN_eps: 1.e-05
-  SN_eps: 1.e-08
-  init: 'N02'
-  G_param: 'SN'
-  norm_style: 'bn'
-  bn_linear: 'SN'
-  input_nc: 1
-
+  BN_eps: 1.0e-05
+  SN_eps: 1.0e-08
+  init: N02
 
 DiscModel:
-  pooling_gain: 32.0  # Shared valid-area readout scale at every image height.
+  pooling_gain: 32.0
   D_ch: 64
   D_wide: true
   resolution: 64
@@ -200,64 +236,48 @@ DiscModel:
   width_heads: 4
   num_D_SVs: 1
   num_D_SV_itrs: 1
-  SN_eps: 1.e-08
+  SN_eps: 1.0e-08
   output_dim: 1
-  init: 'N02'
-  D_param: 'SN'
+  init: N02
+  D_param: SN
   input_nc: 1
 
-
 PatchDiscModel:
-  D_ch: 32
+  D_ch: 64
   D_max_ch: 192
   D_layers: 3
   num_D_SVs: 1
   num_D_SV_itrs: 1
-  SN_eps: 1.e-08
+  SN_eps: 1.0e-08
   output_dim: 1
-  init: 'N02'
-  D_param: 'SN'
+  init: N02
+  D_param: SN
   input_nc: 1
 
 OcrModel:
   resolution: 16
   max_dim: 256
   in_channel: 1
-  norm: 'bn'
-  init: 'none'
-  dropout: 0.
-  # ctc config
+  norm: bn
+  init: none
+  dropout: 0.0
   n_class: 81
   rnn_depth: 2
   bidirectional: true
 
-
-StyBackbone:
-  resolution: 16
-  max_dim: 256
-  in_channel: 1
-  init: 'N02'
-  dropout: 0.0
-  norm: 'bn'
-
-
-EncModel:
-  style_dim: 32
-  in_dim: 256
-  num_style_tokens: 8
-  backbone_channels: [64, 128, 256]
-  n_class: 81
-  content_grl: 1.0
-  local_attention_residual_init: 0.25
-  local_evidence_gate_init: 0.75
-  local_evidence_gate_hidden: 64
-  init: 'none'
-
-
 WidModel:
   n_writer: 339
   in_dim: 256
-  # Must match the W+B teacher exported by configs/wid_iam.yml.
-  pool: 'attentive_stats'
+  pool: attentive_stats
   attention_dim: 128
-  init: 'none'
+  init: none
+
+inference:
+  ckpt: ./pretrained/best_fid.pth
+  mode: text
+  guided: true
+  deploy_dst: ./pretrained/deploy.pth
+
+test:
+  interp_num: 7
+  nrow: 8
