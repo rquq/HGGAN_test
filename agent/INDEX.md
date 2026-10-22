@@ -4,6 +4,9 @@ Collected on 2026-10-20 from the four local branch checkouts, project reports an
 
 ## Start here
 
+- [2026-10-23 DEV two-view reference memory, config and logging changes](2026-10-23-dev-dual-reference-memory.md)
+- [Change documentation workflow](WORKFLOW.md)
+
 - [Current independent OCR evaluation guide](OCR_EVALUATION.md)
 - [OCR implementation measurements and verification](OCR_IMPLEMENTATION_RESULTS.md)
 - [2026-10-19 experiment design](2026-10-19-handwriting-evaluation-design.md)

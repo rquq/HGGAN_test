@@ -1,5 +1,6 @@
 # Retain useful documentation and rendered diagrams, not execution debris.
 __pycache__/
+tests/
 *.py[cod]
 **/qa_*.png
 **/native_*.png
