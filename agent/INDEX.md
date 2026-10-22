@@ -4,7 +4,8 @@ Collected on 2026-10-20 from the four local branch checkouts, project reports an
 
 ## Start here
 
-- [2026-10-23 DEV two-view reference memory, config and logging changes](2026-10-23-dev-dual-reference-memory.md)
+- [2026-10-23 DEV shared-backbone reference memory — current design](2026-10-23-dev-shared-backbone-reference-memory.md)
+- [Superseded two-view experiment and correction history](2026-10-23-dev-dual-reference-memory.md)
 - [Change documentation workflow](WORKFLOW.md)
 
 - [Current independent OCR evaluation guide](OCR_EVALUATION.md)

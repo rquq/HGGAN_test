@@ -1,9 +1,9 @@
 # DEV spatial reference memory experiment
 
-Historical stage 1, implemented on 2026-10-23. This document describes the initial
-original-image-only implementation and its checks. The current two-view design,
-including the subsequently requested high-frequency branch, is documented in
-[the dated implementation report](2026-10-23-dev-dual-reference-memory.md).
+Initial implementation record, 2026-10-23. The user subsequently clarified that
+this shared-backbone design is the intended experiment. The current architecture,
+verification and correction history are documented in
+[the authoritative dated report](2026-10-23-dev-shared-backbone-reference-memory.md).
 
 Approved design: copy MAIN's versioned code and pretrained teachers into DEV,
 preserving DEV's repository, datasets and runs. Keep MAIN and ALPHA unchanged.

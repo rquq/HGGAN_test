@@ -1,5 +1,10 @@
 # DEV: two-view spatial reference memory
 
+**Superseded on 2026-10-23:** the user corrected the target architecture to a
+single shared backbone. The high-frequency encoder and merge gate have been
+removed. See [the current design and correction report](2026-10-23-dev-shared-backbone-reference-memory.md).
+This document is retained as the historical record of commit efca5aa.
+
 Date: 2026-10-23, Asia/Bangkok (UTC+07:00).
 
 DEV implementation commit: `efca5aaa5d3bdb384242c85ce58788650a635cfd`
