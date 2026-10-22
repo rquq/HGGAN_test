@@ -177,8 +177,7 @@ EncModel:
   in_dim: 256
   num_style_tokens: 1
 
-  # Reference memory: original-image features plus learned high-frequency features
-  use_high_frequency: true
+  # Reference memory from the shared backbone's intermediate spatial features
   memory_feature_index: 1
   memory_dim: 128
   memory_height: 4

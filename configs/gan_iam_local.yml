@@ -179,8 +179,7 @@ EncModel:
   n_class: 81
   content_grl: 1.0
 
-  # Reference memory: original-image features plus learned high-frequency features
-  use_high_frequency: true
+  # Reference memory from the shared backbone's intermediate spatial features
   memory_feature_index: 1
   memory_dim: 128
   memory_height: 4

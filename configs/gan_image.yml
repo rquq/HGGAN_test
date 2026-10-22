@@ -69,8 +69,7 @@ EncModel:
   style_dim: 32
   in_dim: 256
 
-  # Reference memory: original-image features plus learned high-frequency features
-  use_high_frequency: true
+  # Reference memory from the shared backbone's intermediate spatial features
 
   # Contextual-loss feature maps and initialization
   init: none

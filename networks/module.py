@@ -298,62 +298,6 @@ def _gradient_reverse(x, scale):
     return _GradientReverse.apply(x, scale)
 
 
-class HighFrequencyEncoder(nn.Module):
-    """Encode signed local contrast without paper/padding boundary artifacts."""
-
-    def __init__(self, width=32):
-        super().__init__()
-        self.out_channels = width * 2
-        self.register_buffer('laplacian', torch.tensor([
-            [0., 1., 0.], [1., -4., 1.], [0., 1., 0.],
-        ]).reshape(1, 1, 3, 3) / 4)
-        self.stem = nn.Conv2d(1, width, 3, stride=2, padding=1, bias=False)
-        self.stem_norm = nn.LayerNorm(width)
-        self.down = nn.Conv2d(width, self.out_channels, 3, stride=2, padding=1, bias=False)
-        self.down_norm = nn.LayerNorm(self.out_channels)
-        self.depthwise = nn.Conv2d(
-            self.out_channels, self.out_channels, 3, padding=1,
-            groups=self.out_channels, bias=False,
-        )
-        self.context_norm = nn.LayerNorm(self.out_channels)
-        self.pointwise = nn.Conv2d(self.out_channels, self.out_channels, 1, bias=False)
-
-    @staticmethod
-    def _normalize(x, norm):
-        # Per-position channel normalization is independent of batch padding.
-        return norm(x.permute(0, 2, 3, 1)).permute(0, 3, 1, 2)
-
-    def high_frequency_view(self, image, lengths):
-        lengths = lengths.to(device=image.device, dtype=torch.long).clamp(1, image.size(-1))
-        columns = torch.arange(image.size(-1), device=image.device)[None, :]
-        indices = torch.minimum(columns, lengths[:, None] - 1)
-        # Extend each sample's own edge before filtering. A different image's
-        # longer width must not create a false outline at this sample's border.
-        extended = image.gather(-1, indices[:, None, None, :].expand_as(image))
-        response = F.conv2d(F.pad(extended, (1, 1, 1, 1), mode='replicate'), self.laplacian)
-        return _mask_width(response, lengths)
-
-    def forward(self, image, lengths=None):
-        if image.ndim != 4 or image.size(1) != 1:
-            raise ValueError('The high-frequency encoder requires grayscale BCHW images')
-        if lengths is None:
-            lengths = torch.full((image.size(0),), image.size(-1), device=image.device, dtype=torch.long)
-        else:
-            lengths = lengths.to(device=image.device, dtype=torch.long).clamp(1, image.size(-1))
-        x = self.high_frequency_view(image, lengths)
-        # Normalize encoder sampling density from image geometry at 32/64px,
-        # using the same filters and channels at both resolutions.
-        stride = 2 * _input_stride_for_height(image.size(-2))
-        x = F.conv2d(x, self.stem.weight, stride=stride, padding=1)
-        lengths = torch.div(lengths + stride - 1, stride, rounding_mode='floor')
-        x = _mask_width(F.silu(self._normalize(x, self.stem_norm)), lengths)
-        x = self.down(x)
-        lengths = torch.div(lengths + 1, 2, rounding_mode='floor')
-        x = _mask_width(F.silu(self._normalize(x, self.down_norm)), lengths)
-        context = self.depthwise(x)
-        context = _mask_width(F.silu(self._normalize(context, self.context_norm)), lengths)
-        x = _mask_width(x + self.pointwise(context), lengths)
-        return x, lengths
 
 
 class StyleEncoder(nn.Module):
@@ -363,7 +307,7 @@ class StyleEncoder(nn.Module):
                  num_style_tokens=1, backbone_channels=(64, 128, 256),
                  n_class=None, content_grl=1.0, feature_scales=None,
                  memory_dim=128, memory_height=4, memory_max_width=32,
-                 memory_feature_index=1, use_high_frequency=True, **kwargs):
+                 memory_feature_index=1, **kwargs):
         super().__init__()
         if kwargs:
             raise TypeError(f"Unknown StyleEncoder option(s): {', '.join(sorted(kwargs))}")
@@ -388,7 +332,6 @@ class StyleEncoder(nn.Module):
         self.memory_height = int(memory_height)
         self.memory_max_width = int(memory_max_width)
         self.memory_feature_index = int(memory_feature_index)
-        self.use_high_frequency = bool(use_high_frequency)
 
         self.linear_style = nn.Sequential(
             nn.Linear(in_dim, in_dim), nn.LeakyReLU(),
@@ -403,21 +346,11 @@ class StyleEncoder(nn.Module):
             kernel_size=1, bias=False,
         )
         self.memory_norm = nn.LayerNorm(self.memory_dim, elementwise_affine=False)
-        self.high_frequency_encoder = HighFrequencyEncoder() if self.use_high_frequency else None
-        self.high_frequency_projection = nn.Conv2d(
-            self.high_frequency_encoder.out_channels, self.memory_dim, 1, bias=False,
-        ) if self.use_high_frequency else None
-        self.memory_gate = nn.Linear(self.memory_dim * 2, self.memory_dim) if self.use_high_frequency else None
         self.content_probe = nn.Linear(style_dim, n_class or get_alphabet_size('all'))
         if init != 'none':
             init_weights(self, init)
         nn.init.zeros_(self.logvar.weight)
         nn.init.constant_(self.logvar.bias, -10.)
-        if self.memory_gate is not None:
-            nn.init.zeros_(self.memory_gate.weight)
-            # Start with a modest residual contribution; the gate learns from
-            # both sources and is not tied to characters or input resolution.
-            nn.init.constant_(self.memory_gate.bias, -2.)
 
     @staticmethod
     def global_token(style_tokens):
@@ -441,7 +374,7 @@ class StyleEncoder(nn.Module):
         global_style = self.linear_style(self.global_context_norm(global_context)).unsqueeze(1)
         return self.mu(global_style), self.logvar(global_style).clamp(-14.0, 4.0)
 
-    def _build_reference_memory(self, feature, lengths, image=None, image_lengths=None):
+    def _build_reference_memory(self, feature, lengths):
         """Pool valid regions before padding so batch width cannot alter evidence."""
         if lengths is None:
             valid_widths = [feature.size(-1)] * feature.size(0)
@@ -462,21 +395,6 @@ class StyleEncoder(nn.Module):
             )
         ], dim=0)
         visual = self.memory_norm(self.memory_projection(pooled).flatten(2).transpose(1, 2))
-        if self.high_frequency_encoder is not None:
-            if image is None:
-                raise ValueError('High-frequency reference memory requires the reference image')
-            hf, hf_lengths = self.high_frequency_encoder(image, image_lengths)
-            hf_widths = hf_lengths.clamp(1, hf.size(-1)).detach().cpu().tolist()
-            hf_pooled = torch.cat([
-                F.pad(
-                    F.adaptive_avg_pool2d(row[:, :, :, :valid_width], (self.memory_height, target_width)),
-                    (0, batch_width - target_width),
-                )
-                for row, valid_width, target_width in zip(hf.split(1), hf_widths, pooled_widths)
-            ], dim=0)
-            detail = self.memory_norm(self.high_frequency_projection(hf_pooled).flatten(2).transpose(1, 2))
-            gate = torch.sigmoid(self.memory_gate(torch.cat([visual, detail], dim=-1)))
-            visual = self.memory_norm(visual + gate * detail)
         widths = torch.tensor(pooled_widths, device=feature.device)
         valid = (
             torch.arange(batch_width, device=feature.device)[None, None, :]
@@ -524,7 +442,6 @@ class StyleEncoder(nn.Module):
             index = self.memory_feature_index
             memory, valid = self._build_reference_memory(
                 all_feats[index], map_lengths[index] if map_lengths is not None else None,
-                image=img, image_lengths=img_len,
             )
             return result, memory, valid
         return result
