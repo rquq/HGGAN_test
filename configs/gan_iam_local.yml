@@ -69,7 +69,7 @@ training:
   ctc_rand_decay_start_epoch: 10
   ctc_rand_decay_end_epoch: 20
   lambda_ctc_style: 0.5
-  lambda_ctc_style_final: 0.2
+  lambda_ctc_style_final: 0.3
   ctc_style_decay_start_epoch: 8
   ctc_style_decay_end_epoch: 28
 
@@ -79,7 +79,7 @@ training:
   lambda_recn_final: 2.5
   recn_decay_start_epoch: 24
   recn_decay_end_epoch: 42
-  lambda_wid: 0.5
+  lambda_wid: 0.25
   lambda_info: 1.0
   lambda_style_cycle: 1.0
   lambda_content_adv: 0.02
@@ -181,7 +181,7 @@ EncModel:
 
   # Reference memory from the shared backbone's intermediate spatial features
   memory_feature_index: 1
-  memory_dim: 128
+  memory_dim: 64
   memory_height: 4
   memory_max_width: 32
 
@@ -193,7 +193,7 @@ GenModel:
   # Global conditioning and reference retrieval
   style_dim: 32
   use_reference_memory: true
-  reference_memory_dim: 128
+  reference_memory_dim: 64
   reference_memory_height: 4
   fusion_nhead: 4
   fusion_attn_dim: 128

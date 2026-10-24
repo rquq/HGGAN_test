@@ -75,7 +75,7 @@ class Generator(nn.Module):
                  embed_pad_idx=0, embed_max_norm=1.0,
                  fusion_nhead=4, fusion_attn_dim=128, fusion_ffn_dim=None,
                  fusion_residual_init=0.25, use_reference_memory=True,
-                 reference_memory_dim=128, reference_memory_height=4):
+                 reference_memory_dim=64, reference_memory_height=4):
         super(Generator, self).__init__()
         dim_z = style_dim
         self.style_dim = style_dim

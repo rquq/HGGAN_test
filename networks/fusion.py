@@ -62,7 +62,7 @@ class ContentSelfAttention(nn.Module):
 class SpatialStyleRefinement(nn.Module):
     """Retrieve spatial reference evidence for early generator features."""
 
-    def __init__(self, d_model, memory_dim=128, memory_height=4,
+    def __init__(self, d_model, memory_dim=64, memory_height=4,
                  nhead=4, attn_dim=128, residual_init=0.25):
         super().__init__()
         if nhead < 1 or attn_dim < 1 or attn_dim % nhead:

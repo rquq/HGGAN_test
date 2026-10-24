@@ -306,7 +306,7 @@ class StyleEncoder(nn.Module):
     def __init__(self, style_dim=32, in_dim=256, init='N02',
                  num_style_tokens=1, backbone_channels=(64, 128, 256),
                  n_class=None, content_grl=1.0, feature_scales=None,
-                 memory_dim=128, memory_height=4, memory_max_width=32,
+                 memory_dim=64, memory_height=4, memory_max_width=32,
                  memory_feature_index=1, **kwargs):
         super().__init__()
         if kwargs:
