@@ -4,9 +4,17 @@ Collected on 2026-10-20 from the four local branch checkouts, project reports an
 
 ## Start here
 
+- [2026-10-24 shared 64D reference memory and objective balance — current DEV/MAIN settings](2026-10-24-shared-memory-balance.md)
+- [2026-10-24 MAIN gain-only spatial modulation experiment](2026-10-24-main-gain-only-modulation.md)
+- [2026-10-24 DEV memory dimensions, redundancy and gradient audit](analysis/2026-10-24-dev-memory-capacity/REPORT.md)
+- Local-only 2026-10-24 ALPHA/DEV sample and checkpoint analysis: `analysis/2026-10-24-checkpoints/REPORT.md` (generated sample panels stay outside Git).
 - [2026-10-23 DEV shared-backbone reference memory — current design](2026-10-23-dev-shared-backbone-reference-memory.md)
 - [Superseded two-view experiment and correction history](2026-10-23-dev-dual-reference-memory.md)
 - [Change documentation workflow](WORKFLOW.md)
+
+- [2026-10-23 MAIN/ALPHA checkpoint audit and local-token collapse probes](analysis/2026-10-23-checkpoints/REPORT.md)
+
+- [2026-10-22 independent CER/WER comparison: MAIN, ALPHA and three baselines](evaluation/2026-10-22-baseline-ocr/REPORT.md)
 
 - [Current independent OCR evaluation guide](OCR_EVALUATION.md)
 - [OCR implementation measurements and verification](OCR_IMPLEMENTATION_RESULTS.md)
