@@ -1009,8 +1009,13 @@ class AdversarialModel(BaseModel):
 
             recn_imgs = None
             if 'E' in self.models:
-                enc_z = encoder(style_refs, style_ref_lens, self.models.B)
-                recn_imgs = generator(enc_z, real_lbs, real_lb_lens)
+                enc_z, memory, memory_mask = encoder(
+                    style_refs, style_ref_lens, self.models.B, return_memory=True,
+                )
+                recn_imgs = generator(
+                    enc_z, real_lbs, real_lb_lens,
+                    reference_memory=memory, memory_valid_mask=memory_mask,
+                )
 
             fake_real_imgs = generator(eval_z_in, real_lbs, real_lb_lens)
 
@@ -1024,7 +1029,10 @@ class AdversarialModel(BaseModel):
             fake_lbs, fake_lb_lens = self.label_converter.encode(sampled_words)
             fake_lbs, fake_lb_lens = fake_lbs.to(device), fake_lb_lens.to(device)
             fake_imgs = generator(eval_z_in, fake_lbs, fake_lb_lens)
-            style_imgs = generator(enc_z, fake_lbs, fake_lb_lens)
+            style_imgs = generator(
+                enc_z, fake_lbs, fake_lb_lens,
+                reference_memory=memory, memory_valid_mask=memory_mask,
+            )
 
             tensors_to_pad = [real_imgs, fake_real_imgs, fake_imgs, style_imgs]
             if recn_imgs is not None:
@@ -1102,15 +1110,22 @@ class AdversarialModel(BaseModel):
                     fake_batch['lbs'], fake_batch['lb_lens'] = content_lbs, content_lb_lens
 
                     if style_guided:
-                        enc_z = self.models.E(style_refs, style_ref_lens, self.models.B)
+                        enc_z, memory, memory_mask = self.models.E(
+                            style_refs, style_ref_lens, self.models.B,
+                            return_memory=True,
+                        )
                     else:
-                        num_tokens = getattr(self.opt.EncModel, 'num_style_tokens', 8)
+                        memory, memory_mask = None, None
+                        num_tokens = getattr(self.opt.EncModel, 'num_style_tokens', 1)
                         enc_z = center_style_prior(torch.randn(
                             style_lb_lens.size(0), num_tokens, self.models.G.style_dim,
                             device=device,
                         ))
 
-                    fake_batch['style_imgs'] = self.models.G(enc_z, content_lbs, content_lb_lens)
+                    fake_batch['style_imgs'] = self.models.G(
+                        enc_z, content_lbs, content_lb_lens,
+                        reference_memory=memory, memory_valid_mask=memory_mask,
+                    )
                     fake_batch['style_img_lens'] = fake_batch['lb_lens'] * self.opt.char_width
                     fake_batch['wids'] = batch['wids']
 
@@ -1637,7 +1652,7 @@ class AdversarialModel(BaseModel):
                 fake_lbs = torch.LongTensor(fake_lbs).unsqueeze(0)
                 fake_lb_lens = torch.IntTensor([len(text)])
 
-                num_tokens = getattr(self.opt.EncModel, 'num_style_tokens', 8)
+                num_tokens = getattr(self.opt.EncModel, 'num_style_tokens', 1)
                 style_dim = getattr(self.opt.EncModel, 'style_dim', 32)
                 style0 = center_style_prior(torch.randn((1, num_tokens, style_dim)))
                 style1 = center_style_prior(torch.randn(style0.size()))
@@ -1685,11 +1700,17 @@ class AdversarialModel(BaseModel):
                 nrow = batch['org_imgs'].size(0)
                 fake_lbs = fake_lbs.repeat(nrow, 1).to(self.device)
                 fake_lb_lens = fake_lb_lens.repeat(nrow,).to(self.device)
-                enc_styles = self.models.E(real_imgs, real_img_lens, self.models.B)
+                enc_styles, memory, memory_mask = self.models.E(
+                    real_imgs, real_img_lens, self.models.B, return_memory=True,
+                )
                 S, D = enc_styles.size(1), enc_styles.size(2)
                 enc_styles = enc_styles.unsqueeze(1).repeat(1, ncol, 1, 1).view(nrow * ncol, S, D)
 
-                gen_imgs = self.models.G(enc_styles, fake_lbs, fake_lb_lens)
+                gen_imgs = self.models.G(
+                    enc_styles, fake_lbs, fake_lb_lens,
+                    reference_memory=memory.repeat_interleave(ncol, dim=0),
+                    memory_valid_mask=memory_mask.repeat_interleave(ncol, dim=0),
+                )
                 gen_imgs, gen_img_lens = rescale_images2(gen_imgs, fake_lb_lens * self.opt.char_width, fake_lb_lens,
                                            batch['org_img_lens'].repeat_interleave(ncol).to(self.device),
                                            batch['lb_lens'].repeat_interleave(ncol).to(self.device))
@@ -1719,7 +1740,7 @@ class AdversarialModel(BaseModel):
 
         with torch.no_grad():
             nrow, ncol = self.opt.test.nrow, 2
-            rand_z = prepare_z_dist(nrow, self.opt.EncModel.style_dim, self.device, num_tokens=getattr(self.opt.EncModel, 'num_style_tokens', 8))
+            rand_z = prepare_z_dist(nrow, self.opt.EncModel.style_dim, self.device, num_tokens=getattr(self.opt.EncModel, 'num_style_tokens', 1))
             while True:
                 text = input('input text: ')
                 if len(text) == 0:
@@ -1779,10 +1800,15 @@ class AdversarialModel(BaseModel):
                 nrow = real_imgs.size(0)
                 fake_lbs = fake_lbs.repeat(nrow, 1).to(self.device)
                 fake_lb_lens = fake_lb_lens.repeat(nrow,).to(self.device)
-                enc_styles = self.models.E(real_imgs, real_img_lens, self.models.B)
+                enc_styles, memory, memory_mask = self.models.E(
+                    real_imgs, real_img_lens, self.models.B, return_memory=True,
+                )
 
                 real_imgs = (1 - real_imgs).squeeze(1).cpu().numpy() * 127
-                gen_imgs = self.models.G(enc_styles, fake_lbs, fake_lb_lens)
+                gen_imgs = self.models.G(
+                    enc_styles, fake_lbs, fake_lb_lens,
+                    reference_memory=memory, memory_valid_mask=memory_mask,
+                )
                 space_indexs = get_space_index(text)
                 for idx in space_indexs:
                     gen_imgs[:, :, idx * self.opt.char_width: (idx + 1) * self.opt.char_width] = -1
@@ -1812,10 +1838,14 @@ class GlobalLocalAdversarialModel(AdversarialModel):
         generator = Generator(**opt.GenModel).to(device)
         style_backbone = StyleBackbone(**opt.StyBackbone, img_height=getattr(opt, 'img_height', 64)).to(device)
         style_encoder = StyleEncoder(**opt.EncModel).to(device)
-        if generator.use_local_style != (style_encoder.num_local_queries > 0):
-            raise ValueError('GenModel.use_local_style must match whether EncModel has local queries')
-        # All random-style paths must use the encoder's effective token count,
-        # including configurations that specify only num_local_queries.
+        if generator.style_dim != style_encoder.style_dim:
+            raise ValueError('G and E global style dimensions must match')
+        if generator.spatial_style is not None and (
+            generator.spatial_style.memory_dim != style_encoder.memory_dim
+            or generator.spatial_style.memory_height != style_encoder.memory_height
+        ):
+            raise ValueError('G and E reference-memory dimensions and height must match')
+        # Random generation samples only the global latent, never spatial evidence.
         opt.EncModel.num_style_tokens = style_encoder.num_style_tokens
         writer_identifier = WriterIdentifier(**opt.WidModel).to(device)
         discriminator = Discriminator(**opt.DiscModel).to(device)
@@ -1854,9 +1884,9 @@ class GlobalLocalAdversarialModel(AdversarialModel):
         # this summary and all subsequent checkpoint messages reach Logs.
 
         opt = self.opt
-        num_style_tokens = getattr(opt.EncModel, 'num_style_tokens', 8)
-        # Separate local-slot capacity from the existing global objectives'
-        # normalization so token-count ablations retain the same loss weights.
+        num_style_tokens = getattr(opt.EncModel, 'num_style_tokens', 1)
+        # Spatial memory is not a latent token. Preserve the existing global
+        # objectives' baseline normalization independently of memory size.
         style_loss_normalization_tokens = getattr(
             opt.training, 'style_loss_normalization_tokens', num_style_tokens
         )
@@ -2033,7 +2063,7 @@ class GlobalLocalAdversarialModel(AdversarialModel):
         self.averager_meters = AverageMeterManager([
             'g_total', 'd_total', 'g_adv', 'g_ctc', 'g_writer',
             'g_recn', 'g_style', 'g_context', 'g_kl',
-            'r1_loss', 'fusion_strength', 'fusion_scale_min', 'fusion_scale_max',
+            'r1_loss',
             'd_real', 'd_fake', 'd_real_patch', 'd_fake_patch',
             'g_adv_global', 'g_adv_patch', 'g_ctc_rand', 'g_ctc_style',
             'g_info', 'g_style_cycle', 'g_content_adv',
@@ -2202,22 +2232,22 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                     reference_features = self.models.B(
                         style_refs, ret_feats=True, x_lens=style_ref_lens
                     )
-                    if self.vae_mode:
-                        enc_z, _, _ = self.models.E(
-                            style_refs, style_ref_lens, self.models.B, vae_mode=True,
-                            backbone_features=reference_features,
-                        )
-                    else:
-                        enc_z = self.models.E(
-                            style_refs, style_ref_lens, self.models.B, vae_mode=False,
-                            backbone_features=reference_features,
-                        )
+                    encoded, memory, memory_mask = self.models.E(
+                        style_refs, style_ref_lens, self.models.B,
+                        vae_mode=self.vae_mode, return_memory=True,
+                        backbone_features=reference_features,
+                    )
+                    enc_z = encoded[0] if self.vae_mode else encoded
 
                     # Batch forward all fake/generated types to avoid multiple GPU kernel launches
                     cat_z = torch.cat([z_in, enc_z, enc_z], dim=0)
                     cat_fake_lb_lens = torch.cat([fake_lb_lens, fake_lb_lens, real_lb_lens], dim=0)
                     cat_y = torch.cat([fake_lbs, fake_lbs, real_lbs], dim=0)
-                    cat_fake_imgs = self.models.G(cat_z, cat_y, cat_fake_lb_lens)
+                    cat_fake_imgs = self.models.G(
+                        cat_z, cat_y, cat_fake_lb_lens,
+                        reference_memory=torch.cat([torch.zeros_like(memory), memory, memory]),
+                        memory_valid_mask=torch.cat([torch.zeros_like(memory_mask), memory_mask, memory_mask]),
+                    )
                     fake_imgs, style_imgs, recn_imgs = torch.chunk(cat_fake_imgs, 3, dim=0)
                     cat_fake_img_lens = cat_fake_lb_lens * self.opt.char_width
 
@@ -2340,24 +2370,25 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                     z_in = center_style_prior(self.z)
 
                     # Keep reference strokes intact for style encoding.
+                    encoded, memory, memory_mask = self.models.E(
+                        style_refs, style_ref_lens, self.models.B,
+                        vae_mode=self.vae_mode, return_memory=True,
+                        backbone_features=reference_features,
+                    )
                     if self.vae_mode:
-                        enc_z, mu, logvar = self.models.E(
-                            style_refs, style_ref_lens, self.models.B,
-                            vae_mode=True,
-                            backbone_features=reference_features,
-                        )
+                        enc_z, mu, logvar = encoded
                     else:
-                        enc_z = self.models.E(
-                            style_refs, style_ref_lens, self.models.B,
-                            vae_mode=False,
-                            backbone_features=reference_features,
-                        )
+                        enc_z = encoded
 
                     # Batch forward all fake/generated types through G to avoid multiple GPU kernel launches
                     cat_z = torch.cat([z_in, enc_z, enc_z], dim=0)
                     cat_fake_lb_lens = torch.cat([fake_lb_lens, fake_lb_lens, real_lb_lens], dim=0)
                     cat_y = torch.cat([fake_lbs, fake_lbs, real_lbs], dim=0)
-                    cat_fake_imgs = self.models.G(cat_z, cat_y, cat_fake_lb_lens)
+                    cat_fake_imgs = self.models.G(
+                        cat_z, cat_y, cat_fake_lb_lens,
+                        reference_memory=torch.cat([torch.zeros_like(memory), memory, memory]),
+                        memory_valid_mask=torch.cat([torch.zeros_like(memory_mask), memory_mask, memory_mask]),
+                    )
                     fake_imgs, style_imgs, recn_imgs = torch.chunk(cat_fake_imgs, 3, dim=0)
 
                     ###################################################
@@ -2493,9 +2524,8 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                                 input_lengths=fake_feat_lens,
                             )
 
-                    # Local tokens are deterministic and have no Gaussian KL.
-                    # Use the same explicit baseline divisor as the other
-                    # global losses, independently of the local-slot count.
+                    # Only the global latent has a Gaussian posterior. Spatial
+                    # reference evidence is deterministic and has no KL term.
                     kl_loss = (
                         KLloss(mu[:, :1], logvar[:, :1]) / style_loss_normalization_tokens
                         if self.vae_mode else torch.tensor(0.0, device=self.device)
@@ -2608,8 +2638,6 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                         chain(self.models.G.parameters(), self.models.E.parameters()),
                         getattr(self.opt.training, 'grad_clip', 5.0),
                     )
-                    generator = self.unwrap_model(self.models.G)
-                    fusion_scales = generator.fusion_scales.detach()
                     self.averager_meters.update_many({
                         'g_total': g_loss,
                         'g_adv': g_adv,
@@ -2626,9 +2654,6 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                         'g_content_adv': content_adv_loss,
                         'g_context': g_context,
                         'g_kl': g_kl,
-                        'fusion_strength': fusion_scales.mean(),
-                        'fusion_scale_min': fusion_scales.min(),
-                        'fusion_scale_max': fusion_scales.max(),
                     })
                     self.optimizers.G.step()
                     if self.use_ema:
@@ -2655,8 +2680,7 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                         f"Style:{meter_vals['g_style']:.3f} Wid:{meter_vals['g_writer']:.3f} "
                         + (f"Ctx:{meter_vals['g_context']:.3f} " if context_weight > 0 else '')
                         + f"KL:{meter_vals['g_kl']:.3f} | "
-                        f"R1:{meter_vals['r1_loss']:.3f} Fuse:{meter_vals['fusion_strength']:.3f}"
-                        f"[{meter_vals['fusion_scale_min']:.3f},{meter_vals['fusion_scale_max']:.3f}] "
+                        f"R1:{meter_vals['r1_loss']:.3f} "
                         f"Lr: G={lr_g:.6g}/D={lr_d:.6g}/P={lr_p:.6g}"
                     )
                     self.print(info) if self.local_rank < 1 else None
@@ -2668,9 +2692,6 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                             'train/lr_d': lr_d,
                             'train/lr_p': lr_p,
                             'train/epoch': epoch,
-                            'train/fusion_strength': meter_vals['fusion_strength'],
-                            'train/fusion_scale_min': meter_vals['fusion_scale_min'],
-                            'train/fusion_scale_max': meter_vals['fusion_scale_max'],
 
                             # ── Loss Category: Overall Totals ──
                             'loss/g_total': meter_vals['g_total'],

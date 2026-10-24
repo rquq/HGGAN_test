@@ -1,40 +1,63 @@
-device: 'cuda:0'
+# Runtime
+device: cuda:0
 multi_gpu: false
 gpus: [0]
-model: 'recognize_model'
-dataset: 'iam_word'
-dataset_source_polarity: white
 seed: 123456
+model: recognize_model
+
+# Dataset geometry and source convention
+dataset: iam_word
+dataset_source_polarity: white
 img_height: 32
 
 training:
-  dset_name: 'iam_word'
+  # Data and initialization
+  dset_name: iam_word
+  dset_split: trnval
   resume: ''
-  dset_split: 'trnval'
-  augment: True
+  pretrained_backbone: ''
+
+  # Batches and data loading
+  batch_size: 128
+  sort_input: true
+
+  # Optimizers and update cadence
+  lr: 0.001
+
+  # Epoch schedule
   epochs: 100
-  lr_policy: 'linear'
+  lr_policy: linear
   start_decay_epoch: 60
   n_epochs_decay: 40
-  batch_size: 128
-  lr: 1.0e-3
+
+  # Exponential moving averages
+  teacher_ema: true
+  teacher_ema_beta: 0.999
+
+  # Text sampling
+  n_class: 81
+
+  # Augmentation and regularization
+  augment: true
+
+  # Logging, evaluation, saving and exports
   print_iter_val: 20
   eval_epoch_val: 10
-  teacher_ema: true  # true: validate/export EMA; false: current trained weights
-  teacher_ema_beta: 0.999  # Used only when teacher_ema is true
-  ckpt_dir: 'ckpts'
-  n_class: 81
-  sort_input: true
-  pretrained_backbone: ''
-  export_recognizer: './pretrained/ocr_iam_train32.pth'
+  ckpt_dir: ckpts
+  export_recognizer: ./pretrained/ocr_iam_train32.pth
 
 valid:
-  dset_name: 'iam_word'
-  dset_split: 'test'
+  # Dataset and metric switches
+  dset_name: iam_word
+  dset_split: test
+
+  # Feature extraction and sampling
   batch_size: 256
   n_class: 81
+
+  # Optional writer evaluation and CTC decoder
   ctcdecode:
-    model_path: ~
+    model_path: null
     blank_id: 0
     alpha: 1
     beta: 3
@@ -47,9 +70,9 @@ OcrModel:
   resolution: 16
   max_dim: 256
   in_channel: 1
-  norm: 'bn'
-  init: 'none'
+  norm: bn
+  init: none
   dropout: 0.2
   n_class: 81
   rnn_depth: 2
-  bidirectional: True
+  bidirectional: true

@@ -207,8 +207,11 @@ def evaluate_transfer(generator, encoder, backbone, converter, train, test, mani
             x = torch.full((len(refs),1,refs[0].size(-2),int(lengths.max())), -1., device=device)
             for i, image in enumerate(refs): x[i,:,:,:image.size(-1)] = image.to(device)
             labels, label_lengths = converter.encode([row['target'] for row in selected])
-            z = encoder(x, lengths, backbone)
-            imgs = generator(z, labels.to(device), label_lengths.to(device))
+            z, memory, memory_mask = encoder(x, lengths, backbone, return_memory=True)
+            imgs = generator(
+                z, labels.to(device), label_lengths.to(device),
+                reference_memory=memory, memory_valid_mask=memory_mask,
+            )
             pictures = [canonical_pil(imgs[i,:,:,:int(n)*train.height//2]) for i,n in enumerate(label_lengths)]
             predictions = evaluator.predict(pictures)
             missing = [(i,f'{row["split"]}:{row["index"]}') for i,row in enumerate(selected) if f'{row["split"]}:{row["index"]}' not in real_cache]

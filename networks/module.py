@@ -298,131 +298,58 @@ def _gradient_reverse(x, scale):
     return _GradientReverse.apply(x, scale)
 
 
+
+
 class StyleEncoder(nn.Module):
-    def __init__(self, style_dim=32, in_dim=256, init='N02', num_style_tokens=None,
-                 backbone_channels=(64, 128, 256), n_class=None, content_grl=1.0,
-                 # These names are kept as aliases because older DEV YAML files
-                 # used them.  Previously they landed in **kwargs and were
-                 # silently ignored, making the printed configuration untrue.
-                 num_local_queries=None, query_dim=None, heads=4,
-                 cross_attn_dropout=0.0,
-                 feature_scales=None, **kwargs):
-        super(StyleEncoder, self).__init__()
-        if n_class is None:
-            n_class = get_alphabet_size('all')
+    """Encode a global latent and optional spatial reference evidence."""
+
+    def __init__(self, style_dim=32, in_dim=256, init='N02',
+                 num_style_tokens=1, backbone_channels=(64, 128, 256),
+                 n_class=None, content_grl=1.0, feature_scales=None,
+                 memory_dim=64, memory_height=4, memory_max_width=32,
+                 memory_feature_index=1, **kwargs):
+        super().__init__()
         if kwargs:
-            unknown = ', '.join(sorted(str(key) for key in kwargs))
-            raise TypeError(f'Unknown StyleEncoder option(s): {unknown}')
-        if (num_style_tokens is not None and num_local_queries is not None
-                and int(num_style_tokens) != int(num_local_queries) + 1):
-            raise ValueError(
-                'num_style_tokens must equal num_local_queries + 1'
-            )
-        if num_style_tokens is None:
-            num_style_tokens = (
-                int(num_local_queries) + 1
-                if num_local_queries is not None else 8
-            )
-        if query_dim is not None and int(query_dim) != int(in_dim):
-            raise ValueError(
-                f'query_dim ({query_dim}) must equal in_dim ({in_dim}); '
-                'separate query projections are not implemented.'
-            )
-        if not 1 <= int(heads) <= int(in_dim):
-            raise ValueError('heads must be in [1, in_dim]')
-        if int(in_dim) % int(heads) != 0:
-            raise ValueError('in_dim must be divisible by heads')
-        if not 0.0 <= float(cross_attn_dropout) < 1.0:
-            raise ValueError('cross_attn_dropout must be in [0, 1)')
-        if feature_scales is not None:
-            feature_scales = tuple(feature_scales)
-            if not feature_scales:
-                raise ValueError('feature_scales cannot be empty')
-            if len(feature_scales) > len(backbone_channels):
-                raise ValueError(
-                    'feature_scales cannot request more maps than '
-                    'backbone_channels'
-                )
-            if any(float(scale) <= 0 for scale in feature_scales):
-                raise ValueError('feature_scales must contain positive values')
-            available_scales = tuple(2 ** i for i in range(len(backbone_channels)))
-            if (len(set(feature_scales)) != len(feature_scales)
-                    or any(scale not in available_scales for scale in feature_scales)):
-                raise ValueError(
-                    f'feature_scales must be distinct members of {available_scales}'
-                )
-        self.style_dim = style_dim
-        self._in_dim = in_dim
-        self.num_style_tokens = int(num_style_tokens)
-        self.num_local_queries = self.num_style_tokens - 1
-        self.attention_heads = int(heads)
-        self.cross_attn_dropout = float(cross_attn_dropout)
-        # The backbone exposes three feature maps.  Keep all of them by
-        # default. Scale IDs 1/2/4 select the corresponding shallow/deeper maps;
-        # [2, 4] must not silently select the first two maps.
-        self.feature_scales = feature_scales
-        self.feature_indices = tuple(
-            available_scales.index(scale) for scale in feature_scales
-        ) if feature_scales is not None else tuple(range(len(backbone_channels)))
+            raise TypeError(f"Unknown StyleEncoder option(s): {', '.join(sorted(kwargs))}")
+        if num_style_tokens != 1:
+            raise ValueError('Spatial-memory encoding uses exactly one global latent token')
+        if min(style_dim, in_dim, memory_dim, memory_height, memory_max_width) < 1:
+            raise ValueError('Style and memory dimensions must be positive')
+        if not 0 <= memory_feature_index < len(backbone_channels):
+            raise ValueError('memory_feature_index is outside the backbone maps')
+        available_scales = tuple(2 ** i for i in range(len(backbone_channels)))
+        feature_scales = tuple(feature_scales) if feature_scales is not None else available_scales
+        if (not feature_scales or len(set(feature_scales)) != len(feature_scales)
+                or any(scale not in available_scales for scale in feature_scales)):
+            raise ValueError(f'feature_scales must be distinct members of {available_scales}')
+        self.style_dim = int(style_dim)
+        self._in_dim = int(in_dim)
+        self.num_style_tokens = 1
         self.content_grl = content_grl
-        if num_style_tokens < 1:
-            raise ValueError('num_style_tokens must be at least 1')
+        # These maps remain available to the unchanged contextual objective.
+        self.feature_indices = tuple(available_scales.index(scale) for scale in feature_scales)
+        self.memory_dim = int(memory_dim)
+        self.memory_height = int(memory_height)
+        self.memory_max_width = int(memory_max_width)
+        self.memory_feature_index = int(memory_feature_index)
 
         self.linear_style = nn.Sequential(
-            nn.Linear(in_dim, in_dim),
-            nn.LeakyReLU(),
-            nn.Linear(in_dim, in_dim),
-            nn.LeakyReLU(),
+            nn.Linear(in_dim, in_dim), nn.LeakyReLU(),
+            nn.Linear(in_dim, in_dim), nn.LeakyReLU(),
         )
-        # Global pooled features have a different scale from attention tokens.
-        # Normalize them before the global-style projector so short or
-        # low-ink references cannot drive an extreme conditioning vector.
-        self.global_context_norm = nn.LayerNorm(
-            in_dim, elementwise_affine=False
-        )
+        self.global_context_norm = nn.LayerNorm(in_dim, elementwise_affine=False)
         self.mu = nn.Linear(in_dim, style_dim)
         self.logvar = nn.Linear(in_dim, style_dim)
         self.sequence_model = GatedStyleContext(in_dim)
-
-        # Build every trainable projection before the optimizer is created. The old
-        # forward-time replacement silently left new parameters unoptimised.
-        self.proj_layers = nn.ModuleList([
-            nn.Conv2d(backbone_channels[index], in_dim, kernel_size=1)
-            for index in self.feature_indices if self.num_local_queries
-        ])
-        for layer in self.proj_layers:
-            nn.init.normal_(layer.weight, 0.0, 0.02)
-            if layer.bias is not None:
-                nn.init.zeros_(layer.bias)
-
-        # Token zero is an explicit global style summary. The remaining compact
-        # query set captures local stroke details without a 32x32 content-rich code.
-        query_count = self.num_local_queries
-        style_query_init = torch.empty(1, query_count, in_dim)
-        if query_count:
-            # Orthogonal rows start as distinct local stroke slots while matching
-            # the old N(0, 0.02) per-component scale in expectation.
-            nn.init.orthogonal_(style_query_init[0])
-            style_query_init.mul_(0.02 * (in_dim ** 0.5))
-        self.style_queries = nn.Parameter(style_query_init) if query_count else None
-        # Slot queries are learned after orthogonal initialization.
-
-        self.style_cross_attn = nn.MultiheadAttention(
-            embed_dim=in_dim, num_heads=self.attention_heads,
-            dropout=self.cross_attn_dropout, batch_first=True, bias=False,
-        ) if query_count else None
-        # Affine-free norms add no checkpoint state. They prevent the frozen
-        # backbone's very different feature scales from dominating attention.
-        self.style_key_norm = nn.LayerNorm(in_dim, elementwise_affine=False)
-        self.style_query_norm = nn.LayerNorm(in_dim, elementwise_affine=False)
-        # Local values describe visual deviations only. No affine offset or
-        # output normalization can manufacture evidence from a uniform map.
-        self.local_projection = nn.Linear(in_dim, style_dim, bias=False) if query_count else None
-        self.content_probe = nn.Linear(style_dim, n_class)
-
+        self.memory_projection = nn.Conv2d(
+            backbone_channels[self.memory_feature_index], self.memory_dim,
+            kernel_size=1, bias=False,
+        )
+        self.memory_norm = nn.LayerNorm(self.memory_dim, elementwise_affine=False)
+        self.content_probe = nn.Linear(style_dim, n_class or get_alphabet_size('all'))
         if init != 'none':
             init_weights(self, init)
-        nn.init.constant_(self.logvar.weight, 0.)
+        nn.init.zeros_(self.logvar.weight)
         nn.init.constant_(self.logvar.bias, -10.)
 
     @staticmethod
@@ -435,154 +362,89 @@ class StyleEncoder(nn.Module):
             style_for_probe = _gradient_reverse(style_for_probe, self.content_grl)
         return self.content_probe(style_for_probe)
 
-    def _encode_global_style(
-        self, feat: torch.Tensor, feat_len: torch.Tensor | None,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """The original writer-summary path, shared by full/global-only calls."""
+    def _encode_global_style(self, feat, feat_len):
         feat_mask = (
             torch.arange(feat.size(-1), device=feat.device)[None, :] < feat_len[:, None]
         ) if feat_len is not None else None
         contextual = self.sequence_model(feat, valid_mask=feat_mask)
-        if feat_len is None:
-            global_context = contextual.mean(dim=-1)
-        else:
-            global_context = contextual.sum(dim=-1) / feat_len.unsqueeze(1).to(feat.dtype)
-        global_style = self.linear_style(
-            self.global_context_norm(global_context)
-        ).unsqueeze(1)
+        global_context = (
+            contextual.mean(dim=-1) if feat_len is None
+            else contextual.sum(dim=-1) / feat_len.unsqueeze(1).to(feat.dtype)
+        )
+        global_style = self.linear_style(self.global_context_norm(global_context)).unsqueeze(1)
         return self.mu(global_style), self.logvar(global_style).clamp(-14.0, 4.0)
 
-    def _build_local_attention_inputs(
-        self, selected_feats: list[torch.Tensor],
-        map_lengths: list[torch.Tensor] | None,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
-        """Position selects evidence; values carry only per-map deviations.
-
-        map_lengths retains the full backbone map order. selected_feats and
-        proj_layers instead follow feature_indices, including subset/reordering.
-        """
-        keys, values, padding_masks = [], [], []
-        for feature_index, projection, feature in zip(
-            self.feature_indices, self.proj_layers, selected_feats,
-        ):
-            width_mask = (
-                torch.arange(feature.size(-1), device=feature.device)[None, :]
-                < map_lengths[feature_index][:, None]
-            ) if map_lengths is not None else None
-            if width_mask is not None:
-                feature = feature.masked_fill(~width_mask[:, None, None, :], 0.0)
-            # A pointwise projection commutes with average pooling. Keep the
-            # same four height rows without projecting the full feature map.
-            pooled = projection(F.adaptive_avg_pool2d(feature, (4, feature.size(-1))))
-            height, width = pooled.shape[-2:]
-            visual = self.style_key_norm(pooled.flatten(2).transpose(1, 2))
-            position = get_2d_sinusoidal_embeddings(
-                height, width, self._in_dim, pooled.device,
-            ).reshape(1, height * width, self._in_dim)
-            if width_mask is None:
-                visual_mean = visual.mean(dim=1, keepdim=True)
-                map_keys = visual + position
-                map_values = visual - visual_mean
-            else:
-                valid = width_mask[:, None, :].expand(-1, height, -1).reshape(feature.size(0), -1)
-                visual = visual.masked_fill(~valid.unsqueeze(-1), 0.0)
-                visual_mean = visual.sum(dim=1, keepdim=True) / valid.sum(
-                    dim=1, keepdim=True,
-                ).clamp_min(1).unsqueeze(-1).to(visual.dtype)
-                map_keys = (visual + position).masked_fill(~valid.unsqueeze(-1), 0.0)
-                map_values = (visual - visual_mean).masked_fill(~valid.unsqueeze(-1), 0.0)
-                padding_masks.append(~valid)
-            keys.append(map_keys)
-            values.append(map_values)
-        padding_mask = torch.cat(padding_masks, dim=1) if padding_masks else None
-        return torch.cat(keys, dim=1), torch.cat(values, dim=1), padding_mask
+    def _build_reference_memory(self, feature, lengths):
+        """Pool valid regions before padding so batch width cannot alter evidence."""
+        if lengths is None:
+            valid_widths = [feature.size(-1)] * feature.size(0)
+        else:
+            valid_widths = lengths.clamp(1, feature.size(-1)).detach().cpu().tolist()
+        pooled_widths = [min(width, self.memory_max_width) for width in valid_widths]
+        batch_width = max(pooled_widths)
+        pooled = torch.cat([
+            F.pad(
+                F.adaptive_avg_pool2d(
+                    row[:, :, :, :valid_width],
+                    (self.memory_height, pooled_width),
+                ),
+                (0, batch_width - pooled_width),
+            )
+            for row, valid_width, pooled_width in zip(
+                feature.split(1), valid_widths, pooled_widths,
+            )
+        ], dim=0)
+        visual = self.memory_norm(self.memory_projection(pooled).flatten(2).transpose(1, 2))
+        widths = torch.tensor(pooled_widths, device=feature.device)
+        valid = (
+            torch.arange(batch_width, device=feature.device)[None, None, :]
+            < widths[:, None, None]
+        ).expand(-1, self.memory_height, -1).reshape(feature.size(0), -1)
+        return visual.masked_fill(~valid.unsqueeze(-1), 0.0), valid
 
     def forward(self, img, img_len, cnn_backbone=None, ret_feats=False,
                 vae_mode=False, ret_backbone_feat=False, backbone_features=None,
-                global_only=False):
+                global_only=False, return_memory=False):
+        if global_only and return_memory:
+            raise ValueError('global_only and return_memory are mutually exclusive')
         feat, all_feats = (
             cnn_backbone(img, ret_feats=True, x_lens=img_len)
             if backbone_features is None else backbone_features
         )
-        if self.feature_indices and max(self.feature_indices) >= len(all_feats):
-            raise RuntimeError(
-                f'StyleEncoder requested feature map indices {self.feature_indices}, '
-                f'but the backbone returned {len(all_feats)} maps.'
-            )
-        selected_all_feats = [all_feats[index] for index in self.feature_indices]
-        if self.num_local_queries and len(self.proj_layers) != len(selected_all_feats):
-            raise RuntimeError(
-                f'StyleEncoder expected {len(self.proj_layers)} backbone feature maps, '
-                f'but received {len(selected_all_feats)}. Set EncModel.feature_scales '
-                'and EncModel.backbone_channels consistently.'
-            )
-        for index, (proj_layer, feature) in enumerate(zip(self.proj_layers, selected_all_feats)):
-            if proj_layer.in_channels != feature.size(1):
-                raise RuntimeError(
-                    f'Backbone feature {index} has {feature.size(1)} channels, but the '
-                    f'configured projection expects {proj_layer.in_channels}.'
-                )
-
+        if max((*self.feature_indices, self.memory_feature_index)) >= len(all_feats):
+            raise RuntimeError('The backbone did not return the configured feature maps')
         backbone = getattr(cnn_backbone, 'module', cnn_backbone)
         if img_len is not None:
             feat_len, map_lengths = backbone.feature_lengths(img_len)
-            feat_len = feat_len.clamp(min=1, max=feat.size(-1))
+            feat_len = feat_len.clamp(1, feat.size(-1))
         else:
             feat_len, map_lengths = None, None
-
         global_mu, global_logvar = self._encode_global_style(feat, feat_len)
-        # Optional returned maps preserve their original channels and selected
-        # order even when local retrieval is skipped by objective-only calls.
-        masked_all_feats = []
-        if ret_feats or ret_backbone_feat:
-            for feature_index, feature in zip(self.feature_indices, selected_all_feats):
-                width_mask = (
-                    torch.arange(feature.size(-1), device=feature.device)[None, :]
-                    < map_lengths[feature_index][:, None]
-                ) if map_lengths is not None else None
-                masked_all_feats.append(
-                    feature.masked_fill(~width_mask[:, None, None, :], 0.0)
-                    if width_mask is not None else feature
-                )
-
-        if not global_only and self.num_local_queries:
-            style_keys, style_values, key_padding_mask = self._build_local_attention_inputs(
-                selected_all_feats, map_lengths,
-            )
-            style_queries = self.style_query_norm(self.style_queries.expand(img.size(0), -1, -1))
-            local_attended, _ = self.style_cross_attn(
-                query=style_queries,
-                key=style_keys,
-                value=style_values,
-                key_padding_mask=key_padding_mask,
-                need_weights=False,
-            )
-            local_mu = self.local_projection(local_attended)
-            local_mu = local_mu - local_mu.mean(dim=1, keepdim=True)
-        else:
-            local_mu = global_mu.new_empty(img.size(0), 0, self.style_dim)
-        style_tokens_mu = torch.cat([global_mu, local_mu], dim=1)
-
         if vae_mode:
-            # Keep stochastic variation in the global writer code. Local
-            # tokens describe observed strokes and remain deterministic; their
-            # unit-Gaussian KL pressure had driven their posterior to the prior.
-            global_std = torch.exp(0.5 * global_logvar)
-            global_sample = torch.randn_like(global_std) * global_std + global_mu
-            style_tokens_sampled = torch.cat([global_sample, local_mu], dim=1)
-            local_logvar = torch.zeros_like(local_mu)
-            logvar = torch.cat([global_logvar, local_logvar], dim=1)
-            style_tokens = (style_tokens_sampled, style_tokens_mu, logvar)
+            sample = global_mu + torch.randn_like(global_mu) * torch.exp(0.5 * global_logvar)
+            style = (sample, global_mu, global_logvar)
         else:
-            style_tokens = style_tokens_mu
+            style = global_mu
 
-        if ret_backbone_feat and not ret_feats:
-            ret_feats = True
-        if ret_backbone_feat:
-            return style_tokens, masked_all_feats, feat
-        if ret_feats:
-            return style_tokens, masked_all_feats
-        return style_tokens
+        if ret_feats or ret_backbone_feat:
+            features = []
+            for index in self.feature_indices:
+                feature = all_feats[index]
+                if map_lengths is not None:
+                    valid = torch.arange(feature.size(-1), device=feature.device)[None, :] < map_lengths[index][:, None]
+                    feature = feature.masked_fill(~valid[:, None, None, :], 0.0)
+                features.append(feature)
+            result = (style, features, feat) if ret_backbone_feat else (style, features)
+        else:
+            result = style
+        # Loss-only calls do not allocate spatial memory.
+        if return_memory:
+            index = self.memory_feature_index
+            memory, valid = self._build_reference_memory(
+                all_feats[index], map_lengths[index] if map_lengths is not None else None,
+            )
+            return result, memory, valid
+        return result
 
 
 class MaskedAttentiveStatsPool(nn.Module):

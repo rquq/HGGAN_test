@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .utils import ensure_dim3
+from .module import get_2d_sinusoidal_embeddings
 
 
 def _mask_tokens(sequence, mask):
@@ -59,74 +59,110 @@ class ContentSelfAttention(nn.Module):
         return _mask_tokens(self.attn_out(attended), mask)
 
 
-class SpatialStyleRefinement(nn.Module):
-    """Refine early spatial G features with local evidence relative to global.
+class SpatialStyleModulation(nn.Module):
+    """Use retrieved reference evidence to modulate early generator features.
 
-    Every valid spatial location is a query; local slots are the only keys.
-    A direct learned residual preserves the feature path without a strength cap.
+    The reference branch predicts a per-position, per-channel residual gain,
+    rather than adding its visual features directly to the generator stream.
+    The gain and its learned scale are unconstrained; this is not an artifact
+    filter or a guarantee that downstream convolutions preserve glyph shapes.
     """
 
-    def __init__(self, d_model, style_dim, nhead=4, attn_dim=128,
-                 residual_init=0.25):
+    def __init__(self, d_model, memory_dim=64, memory_height=4,
+                 nhead=4, attn_dim=128, residual_init=0.25):
         super().__init__()
         if nhead < 1 or attn_dim < 1 or attn_dim % nhead:
             raise ValueError('attn_dim must be positive and divisible by nhead')
-        if d_model < 1 or style_dim < 1 or residual_init <= 0:
-            raise ValueError('feature/style dimensions and residual_init must be positive')
+        if min(d_model, memory_dim, memory_height) < 1 or residual_init <= 0:
+            raise ValueError('Feature/memory dimensions and residual_init must be positive')
         self.d_model = d_model
+        self.memory_dim = memory_dim
+        self.memory_height = memory_height
         self.residual_init = float(residual_init)
         self.nhead = nhead
         self.head_dim = attn_dim // nhead
         self.feature_norm = nn.LayerNorm(d_model, elementwise_affine=False)
-        self.style_norm = nn.LayerNorm(style_dim, elementwise_affine=False)
+        self.memory_norm = nn.LayerNorm(memory_dim, elementwise_affine=False)
         self.q_proj = nn.Linear(d_model, attn_dim, bias=False)
-        self.k_proj = nn.Linear(style_dim, attn_dim, bias=False)
-        self.v_proj = nn.Linear(style_dim, attn_dim, bias=False)
-        self.out_proj = nn.Linear(attn_dim, d_model, bias=False)
+        self.k_proj = nn.Linear(memory_dim, attn_dim, bias=False)
+        self.v_proj = nn.Linear(memory_dim, attn_dim, bias=False)
+        self.gain_proj = nn.Linear(attn_dim, d_model, bias=False)
         self.reference_scale = nn.Parameter(torch.full((d_model,), self.residual_init))
         self.reset_stability_parameters()
 
     def reset_stability_parameters(self):
-        for layer in (self.q_proj, self.k_proj, self.v_proj, self.out_proj):
+        for layer in (self.q_proj, self.k_proj, self.v_proj, self.gain_proj):
             nn.init.xavier_uniform_(layer.weight)
         with torch.no_grad():
             self.reference_scale.fill_(self.residual_init)
 
-    def forward(self, feature, style_seq, x_lens=None):
+    def forward(self, feature, reference_memory=None, memory_valid_mask=None,
+                x_lens=None):
         if feature.ndim != 4 or feature.size(1) != self.d_model:
-            raise ValueError('spatial style refinement requires BCHW features with matching channels')
-        style_seq = ensure_dim3(style_seq)
-        if style_seq.size(0) != feature.size(0) or style_seq.size(1) < 2:
-            raise ValueError('spatial refinement requires one global and at least one local token per image')
-        batch_size, channels, height, width = feature.shape
-        spatial_seq = feature.permute(0, 2, 3, 1).reshape(batch_size, height * width, channels)
-        mask = None
+            raise ValueError('Spatial retrieval requires BCHW features with matching channels')
+        if reference_memory is None:
+            if memory_valid_mask is not None:
+                raise ValueError('A memory mask requires reference memory')
+            return feature
+        if (reference_memory.ndim != 3
+                or reference_memory.size(0) != feature.size(0)
+                or reference_memory.size(2) != self.memory_dim
+                or reference_memory.size(1) < self.memory_height
+                or reference_memory.size(1) % self.memory_height):
+            raise ValueError('Reference memory must be B x (height * width) x memory_dim')
+        if (memory_valid_mask is None or memory_valid_mask.dtype != torch.bool
+                or memory_valid_mask.shape != reference_memory.shape[:2]
+                or memory_valid_mask.device != feature.device
+                or reference_memory.device != feature.device):
+            raise ValueError('Reference memory requires a matching boolean validity mask')
+
+        # Random-style rows bypass retrieval entirely: never run an all-masked
+        # softmax, and never invent reference features from Gaussian latents.
+        active = memory_valid_mask.any(dim=1).nonzero(as_tuple=True)[0]
+        if active.numel() == 0:
+            return feature
+        selected = feature.index_select(0, active)
+        memory = reference_memory.index_select(0, active)
+        valid_memory = memory_valid_mask.index_select(0, active)
+        memory = memory.masked_fill(~valid_memory.unsqueeze(-1), 0.0)
+        batch_size, channels, height, width = selected.shape
+        sequence = selected.flatten(2).transpose(1, 2)
+        query_mask = None
         if x_lens is not None:
-            lengths = x_lens.to(feature.device).long().clamp(1, width)
-            width_mask = torch.arange(width, device=feature.device)[None, :] < lengths[:, None]
-            mask = width_mask[:, None, :].expand(-1, height, -1).reshape(batch_size, height * width)
-        spatial_seq = _mask_tokens(spatial_seq, mask)
-        length = spatial_seq.size(1)
-        local_style_seq = style_seq[:, 1:]
-        style = self.style_norm(local_style_seq)
-        value_style = local_style_seq
-        query = self.q_proj(self.feature_norm(spatial_seq)).view(
-            batch_size, length, self.nhead, self.head_dim
+            lengths = x_lens.to(feature.device).index_select(0, active).long().clamp(1, width)
+            query_mask = (
+                torch.arange(width, device=feature.device)[None, None, :]
+                < lengths[:, None, None]
+            ).expand(-1, height, -1).reshape(batch_size, -1)
+        sequence = _mask_tokens(sequence, query_mask)
+
+        # Position influences selection only; values remain visual evidence.
+        position = get_2d_sinusoidal_embeddings(
+            self.memory_height, memory.size(1) // self.memory_height,
+            self.memory_dim, memory.device,
+        ).reshape(1, memory.size(1), self.memory_dim).to(memory.dtype)
+        keys = self.memory_norm(memory) + position
+        query = self.q_proj(self.feature_norm(sequence)).view(
+            batch_size, sequence.size(1), self.nhead, self.head_dim,
         ).transpose(1, 2)
-        key = self.k_proj(style).view(
-            batch_size, style.size(1), self.nhead, self.head_dim
+        key = self.k_proj(keys).view(
+            batch_size, memory.size(1), self.nhead, self.head_dim,
         ).transpose(1, 2)
-        value = self.v_proj(value_style).view(
-            batch_size, style.size(1), self.nhead, self.head_dim
+        value = self.v_proj(memory).view(
+            batch_size, memory.size(1), self.nhead, self.head_dim,
         ).transpose(1, 2)
         attended = F.scaled_dot_product_attention(
-            query, key, value, dropout_p=0.0, is_causal=False
+            query, key, value,
+            attn_mask=valid_memory[:, None, None, :],
+            dropout_p=0.0, is_causal=False,
         )
-        attended = attended.transpose(1, 2).reshape(batch_size, length, -1)
+        attended = attended.transpose(1, 2).reshape(batch_size, sequence.size(1), -1)
         refined = _mask_tokens(
-            spatial_seq + self.reference_scale * self.out_proj(attended), mask
+            sequence * (1.0 + self.reference_scale * self.gain_proj(attended)),
+            query_mask,
         )
-        return refined.reshape(batch_size, height, width, channels).permute(0, 3, 1, 2).contiguous()
+        refined = refined.transpose(1, 2).reshape(batch_size, channels, height, width)
+        return feature.index_copy(0, active, refined)
 
 
 class LocalGatedFeedForward(nn.Module):
