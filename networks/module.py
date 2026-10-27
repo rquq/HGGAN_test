@@ -1,8 +1,7 @@
 import numpy as np
 import torch
 from torch import nn
-import functools
-from networks.block import Conv2dBlock, ActFirstResBlock, DeepBLSTM, DeepGRU, DeepLSTM, Identity
+from networks.block import Conv2dBlock, ActFirstResBlock, DeepBLSTM, DeepLSTM
 from networks.utils import _len2mask, init_weights
 from lib.alphabet import get_alphabet_size
 import torch.nn.functional as F
@@ -15,6 +14,41 @@ def _input_stride_for_height(img_height, base_height=32):
     if height < 1 or base_height < 1:
         raise ValueError('image and base heights must be positive')
     return max(1, height // base_height)
+
+
+def _build_ocr_style_cnn(resolution, max_dim, in_channel, norm, dropout, init_stride):
+    """Build the shared CNN feature extractor and CTC head for StyleBackbone and Recognizer."""
+    nf = resolution
+    cnn_f = [
+        nn.ConstantPad2d(2, -1),
+        Conv2dBlock(in_channel, nf, 5, init_stride, 0, norm='none', activation='none'),
+    ]
+    for _ in range(2):
+        nf_out = min(int(nf * 2), max_dim)
+        cnn_f += [
+            ActFirstResBlock(nf, nf, None, 'relu', norm, 'zero', dropout=dropout / 2),
+            nn.ZeroPad2d((1, 1, 0, 0)),
+            ActFirstResBlock(nf, nf_out, None, 'relu', norm, 'zero', dropout=dropout / 2),
+            nn.ZeroPad2d(1),
+            nn.MaxPool2d(kernel_size=3, stride=2),
+        ]
+        nf = min(nf_out, max_dim)
+
+    df = nf
+    for i in range(2):
+        df_out = min(int(df * 2), max_dim)
+        cnn_f += [
+            ActFirstResBlock(df, df, None, 'relu', norm, 'zero', dropout=dropout),
+            ActFirstResBlock(df, df_out, None, 'relu', norm, 'zero', dropout=dropout),
+            nn.MaxPool2d(kernel_size=3, stride=2) if i < 1 else nn.ZeroPad2d((1, 1, 0, 0)),
+        ]
+        df = min(df_out, max_dim)
+
+    cnn_c = [
+        nn.ReLU(),
+        Conv2dBlock(df, df, 3, 1, 0, norm=norm, activation='relu'),
+    ]
+    return nn.Sequential(*cnn_f), nn.Sequential(*cnn_c), df
 
 
 def _mask_width(x, lengths, value=0.0, cache=None):
@@ -147,8 +181,8 @@ class GatedStyleContext(nn.Module):
 
     Two residual blocks, with dilation 1 then 2, cover 19 feature positions:
     the old widest dilated-plus-fusion receptive field without four dense
-    parallel branches. Global pooling and multi-scale local-token attention
-    remain in StyleEncoder, rather than being duplicated here.
+    parallel branches. StyleEncoder pools this sequence for the global code;
+    spatial reference memory is built separately from an intermediate B map.
     """
 
     def __init__(self, in_dim):
@@ -171,43 +205,14 @@ class StyleBackbone(nn.Module):
         # metadata in lock-step with the CNN at every supported resolution.
         init_stride = _input_stride_for_height(img_height)
         self.reduce_len_scale = 8 * init_stride
-        nf = resolution
-        cnn_f = [nn.ConstantPad2d(2, -1),
-                 Conv2dBlock(in_channel, nf, 5, init_stride, 0,
-                             norm='none',
-                             activation='none')]
-        for i in range(2):
-            nf_out = min([int(nf * 2), max_dim])
-            cnn_f += [ActFirstResBlock(nf, nf, None, 'relu', norm, 'zero', dropout=dropout / 2)]
-            cnn_f += [nn.ZeroPad2d((1, 1, 0, 0))]
-            cnn_f += [ActFirstResBlock(nf, nf_out, None, 'relu', norm, 'zero', dropout=dropout / 2)]
-            cnn_f += [nn.ZeroPad2d(1)]
-            cnn_f += [nn.MaxPool2d(kernel_size=3, stride=2)]
-            nf = min([nf_out, max_dim])
-
-        df = nf
-        for i in range(2):
-            df_out = min([int(df * 2), max_dim])
-            cnn_f += [ActFirstResBlock(df, df, None, 'relu', norm, 'zero', dropout=dropout)]
-            cnn_f += [ActFirstResBlock(df, df_out, None, 'relu', norm, 'zero', dropout=dropout)]
-            if i < 1:
-                cnn_f += [nn.MaxPool2d(kernel_size=3, stride=2)]
-            else:
-                cnn_f += [nn.ZeroPad2d((1, 1, 0, 0))]
-            df = min([df_out, max_dim])
-        self.cnn_backbone = nn.Sequential(*cnn_f)
+        self.cnn_backbone, self.cnn_ctc, _ = _build_ocr_style_cnn(
+            resolution, max_dim, in_channel, norm, dropout, init_stride
+        )
         self.layer_name_mapping = {
             '9': "feat2",
             '13': "feat3",
             '16': "feat4",
         }
-
-        self.cnn_ctc = nn.Sequential(
-            nn.ReLU(),
-            Conv2dBlock(df, df, 3, 1, 0,
-                        norm=norm,
-                        activation='relu')
-        )
         if init != 'none':
             init_weights(self, init)
 
@@ -239,18 +244,6 @@ class StyleBackbone(nn.Module):
             out = out.squeeze(2) if out.size(2) == 1 else out.mean(dim=2)
 
         return out, feats
-
-
-def get_1d_sinusoidal_embeddings(length, dim, device):
-    pe = torch.zeros(length, dim, device=device)
-    div_term = torch.exp(torch.arange(0, dim, 2, device=device).float() * -(np.log(10000.0) / dim))
-    pos = torch.arange(0, length, device=device).float().unsqueeze(1)
-    pe[:, 0::2] = torch.sin(pos * div_term)
-    if dim % 2 == 0:
-        pe[:, 1::2] = torch.cos(pos * div_term)
-    else:
-        pe[:, 1::2] = torch.cos(pos * div_term[:dim//2])
-    return pe
 
 
 def get_2d_sinusoidal_embeddings(height, width, dim, device):
@@ -296,8 +289,6 @@ class _GradientReverse(torch.autograd.Function):
 
 def _gradient_reverse(x, scale):
     return _GradientReverse.apply(x, scale)
-
-
 
 
 class StyleEncoder(nn.Module):
@@ -557,44 +548,9 @@ class Recognizer(nn.Module):
         self.use_rnn = rnn_depth > 0
         self.bidirectional = bidirectional
 
-        ######################################
-        # Construct Backbone
-        ######################################
-        nf = resolution
-        cnn_f = [nn.ConstantPad2d(2, -1),
-                 Conv2dBlock(in_channel, nf, 5, init_stride, 0,
-                             norm='none',
-                             activation='none')]
-        for i in range(2):
-            nf_out = min([int(nf * 2), max_dim])
-            cnn_f += [ActFirstResBlock(nf, nf, None, 'relu', norm, 'zero', dropout=dropout / 2)]
-            cnn_f += [nn.ZeroPad2d((1, 1, 0, 0))]
-            cnn_f += [ActFirstResBlock(nf, nf_out, None, 'relu', norm, 'zero', dropout=dropout / 2)]
-            cnn_f += [nn.ZeroPad2d(1)]
-            cnn_f += [nn.MaxPool2d(kernel_size=3, stride=2)]
-            nf = min([nf_out, max_dim])
-
-        df = nf
-        for i in range(2):
-            df_out = min([int(df * 2), max_dim])
-            cnn_f += [ActFirstResBlock(df, df, None, 'relu', norm, 'zero', dropout=dropout)]
-            cnn_f += [ActFirstResBlock(df, df_out, None, 'relu', norm, 'zero', dropout=dropout)]
-            if i < 1:
-                cnn_f += [nn.MaxPool2d(kernel_size=3, stride=2)]
-            else:
-                cnn_f += [nn.ZeroPad2d((1, 1, 0, 0))]
-            df = min([df_out, max_dim])
-
-        ######################################
-        # Construct Classifier
-        ######################################
-        cnn_c = [nn.ReLU(),
-                 Conv2dBlock(df, df, 3, 1, 0,
-                             norm=norm,
-                             activation='relu')]
-
-        self.cnn_backbone = nn.Sequential(*cnn_f)
-        self.cnn_ctc = nn.Sequential(*cnn_c)
+        self.cnn_backbone, self.cnn_ctc, df = _build_ocr_style_cnn(
+            resolution, max_dim, in_channel, norm, dropout, init_stride
+        )
         if self.use_rnn:
             if bidirectional:
                 self.rnn_ctc = DeepBLSTM(df, df, rnn_depth, bidirectional=True)
@@ -626,10 +582,3 @@ class Recognizer(nn.Module):
         if return_log_probs:
             return logits.transpose(0, 1).log_softmax(2)
         return logits
-
-    def frozen_bn(self):
-        def fix_bn(m):
-            classname = m.__class__.__name__
-            if classname.find('BatchNorm') != -1:
-                m.eval()
-        self.apply(fix_bn)

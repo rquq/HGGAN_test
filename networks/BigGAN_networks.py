@@ -304,24 +304,6 @@ class Generator(nn.Module):
     def fusion_strength(self):
         return self.fusion_scales.mean()
 
-    def _info_attention(self):
-        attn_index = -1
-        for index in range(len(self.arch['out_channels'])):
-            if self.arch['attention'][self.arch['resolution'][index]]:
-                attn_index = index
-
-        if attn_index == -1:
-            return []
-
-        attn_layer = self.blocks[attn_index][-1]
-        out = []
-        if hasattr(attn_layer, 'attn1') and hasattr(attn_layer, 'attn2'):
-            for l in [attn_layer.attn1, attn_layer.attn2]:
-                out.append({'out': getattr(l, '_vis_out', None), 'gamma': l.gamma.item()})
-        elif hasattr(attn_layer, 'gamma'):
-            out.append({'gamma': attn_layer.gamma.item()})
-        return out
-
 
 # Discriminator architecture, same paradigm as G's above
 def D_arch(ch=64, attention='64', input_nc=3):
@@ -333,18 +315,12 @@ def D_arch(ch=64, attention='64', input_nc=3):
                 'resolution': [8, 4, 4, 16],
                 'attention': {2 ** i: 2 ** i in [int(item) for item in attention.split('_')]
                               for i in range(2, 5)}}
-    arch[33] = {'in_channels': [input_nc] + [ch * item for item in [1, 1, 2, 2, 4, 4]],
-                'out_channels': [item * ch for item in [1, 1, 2, 2, 4, 4, 4]],
-                'downsample': [False, True, False, True, False, True, False],
-                'resolution': [8, 8, 4, 4, 4, 4, 16],
-                'attention': {2 ** i: 2 ** i in [int(item) for item in attention.split('_')]
-                              for i in range(2, 9)}}
     arch[64] = {'in_channels': [input_nc] + [ch * item for item in [1, 2, 4]],
-               'out_channels': [item * ch for item in [1, 2, 4, 4]],
-               'downsample': [True] * 3 + [False],
-               'resolution': [32, 16, 8, 8],
-               'attention': {2 ** i: 2 ** i in [int(item) for item in attention.split('_')]
-                               for i in range(2, 7)}}
+                'out_channels': [item * ch for item in [1, 2, 4, 4]],
+                'downsample': [True] * 3 + [False],
+                'resolution': [32, 16, 8, 8],
+                'attention': {2 ** i: 2 ** i in [int(item) for item in attention.split('_')]
+                              for i in range(2, 7)}}
 
     return arch
 
