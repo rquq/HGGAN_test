@@ -4,6 +4,9 @@ Collected on 2026-10-20 from the four local branch checkouts, project reports an
 
 ## Start here
 
+- [2026-10-27 MAIN/DEV cleanup and checkpoint continuity](2026-10-27-main-dev-cleanup-port.md)
+- [2026-10-27 ALPHA cleanup implementation and numerical limits](2026-10-27-alpha-cleanup-implementation.md)
+- [2026-10-27 ALPHA refactor review](2026-10-27-alpha-refactor-review.md)
 - [2026-10-24 shared 64D reference memory and objective balance — current DEV/MAIN settings](2026-10-24-shared-memory-balance.md)
 - [2026-10-24 MAIN gain-only spatial modulation experiment](2026-10-24-main-gain-only-modulation.md)
 - [2026-10-24 DEV memory dimensions, redundancy and gradient audit](analysis/2026-10-24-dev-memory-capacity/REPORT.md)
