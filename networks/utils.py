@@ -1,4 +1,3 @@
-import functools
 import numpy as np
 from itertools import groupby
 import cv2
@@ -8,9 +7,6 @@ import torch.nn.functional as F
 from torch.nn import init
 import torch.nn as nn
 from torch.optim import lr_scheduler
-from networks.block import AdaptiveInstanceNorm2d, Identity, AdaptiveInstanceLayerNorm2d, InstanceLayerNorm2d
-from lib.alphabet import word_capitalize
-from lib.path_config import ImgHeight, CharWidth
 
 
 def init_weights(net, init_type='normal', init_gain=0.02):
@@ -44,49 +40,12 @@ def init_weights(net, init_type='normal', init_gain=0.02):
     return net
 
 
-def get_norm_layer(norm='in', **kwargs):
-    """Return a normalization layer
-
-    Parameters:
-        norm_type (str) -- the name of the normalization layer: batch | instance | none
-
-    For BatchNorm, we use learnable affine parameters and track running statistics (mean/stddev).
-    For InstanceNorm, we do not use learnable affine parameters. We do not track running statistics.
-    """
-    if norm == 'bn':
-        norm_layer = functools.partial(nn.BatchNorm2d)
-    elif norm == 'gn':
-        norm_layer = functools.partial(nn.GroupNorm)
-    elif norm == 'in':
-        norm_layer = functools.partial(nn.InstanceNorm2d)
-    elif norm == 'adain':
-        norm_layer = functools.partial(AdaptiveInstanceNorm2d)
-    elif norm == 'iln':
-        norm_layer = functools.partial(InstanceLayerNorm2d)
-    elif norm == 'adailn':
-        norm_layer = functools.partial(AdaptiveInstanceLayerNorm2d)
-    elif norm == 'none':
-        def norm_layer(x): return Identity()
-    else:
-        raise ValueError("Unsupported normalization: {}".format(norm))
-    return norm_layer
-
-
 def frozen_bn(model):
     def fix_bn(m):
         classname = m.__class__.__name__
         if classname.find('BatchNorm') != -1:
             m.eval()
     model.apply(fix_bn)
-
-
-def get_linear_scheduler(optimizer, start_decay_iter, n_iters_decay):
-    def lambda_rule(iter):
-        lr_l = 1.0 - max(0, iter - start_decay_iter) / float(n_iters_decay + 1)
-        return lr_l
-
-    scheduler = lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda_rule)
-    return scheduler
 
 
 def get_scheduler(optimizer, opt, last_epoch=-1, base_lr=None):
@@ -189,23 +148,6 @@ def _len2mask(length, max_len=None, dtype=torch.float32):
     return mask
 
 
-def get_init_state(deepth, batch_size, hidden_dim, device, bidirectional=False):
-    """Get cell states and hidden states."""
-    if bidirectional:
-        deepth *= 2
-        hidden_dim //= 2
-
-    h0_encoder_bi = torch.zeros(
-        deepth,
-        batch_size,
-        hidden_dim, requires_grad=False)
-    c0_encoder_bi = torch.zeros(
-        deepth,
-        batch_size,
-        hidden_dim, requires_grad=False)
-    return h0_encoder_bi.to(device), c0_encoder_bi.to(device)
-
-
 def _info(model, detail=False, ret=False):
     nParams = sum([p.nelement() for p in model.parameters()])
     mSize = nParams * 4.0 / 1024 / 1024
@@ -216,15 +158,6 @@ def _info(model, detail=False, ret=False):
         return res
     else:
         print(res)
-
-
-def _info_simple(model, tag=None):
-    nParams = sum([p.nelement() for p in model.parameters()])
-    mSize = nParams * 4.0 / 1024 / 1024
-    if tag is None:
-        tag = type(model).__name__
-    res = "%-12s P:%6dK  S:%8.4fMB" % (tag,  nParams / 1000, mSize)
-    return res
 
 
 def set_requires_grad(nets, requires_grad=False):
@@ -404,36 +337,6 @@ def ctc_greedy_decoder(probs_seq, blank_index=0):
     return index_list
 
 
-class PatchSampler(object):
-    def __init__(self, patch_size=(32, 32), sample_density=2, char_size=(64, 32)):
-        self.patch_size = (patch_size, patch_size) if isinstance(patch_size, int) else patch_size
-        self.sample_density = sample_density
-        self.char_size = char_size
-        self.max_y = self.char_size[0] - self.patch_size[0]
-
-    def random_sample(self, fake_imgs, img_lens, ret_xy=False):
-        lb_lens = img_lens // self.char_size[1]
-        patches = []
-        pos_xy = []
-        for bid in range(fake_imgs.size(0)):
-            max_x = img_lens[bid] - self.patch_size[1]
-            rand_top_xy = np.random.random((lb_lens[bid] * self.sample_density, 2))
-            inc_x = np.linspace(0, max_x, lb_lens[bid] * self.sample_density)
-            rand_y = rand_top_xy[:, 0] * self.max_y
-            rand_x = rand_top_xy[:, 1] * self.char_size[1] // 4 + inc_x
-            rand_x = rand_x.clip(0, max_x)
-            rand_top_xy = np.stack([rand_x, rand_y]).transpose().astype('int')
-            pos_xy.append(rand_top_xy)
-            for tx, ty in rand_top_xy:
-                patch = fake_imgs[bid, :, ty:ty+self.patch_size[0], tx:tx+self.patch_size[1]]
-                patches.append(patch)
-
-        if ret_xy:
-            return patches, pos_xy
-        else:
-            return patches
-
-
 def adaptive_crop_count(valid_width, patch_size=32, min_crops=4, max_crops=8):
     """Choose bounded local coverage proportional to the valid word width."""
     if patch_size < 1 or min_crops < 1 or max_crops < min_crops:
@@ -594,81 +497,9 @@ def augment_word_batch(
     return output, image_lens
 
 
-def rand_clip_images(imgs, img_lens, min_clip_width=64):
-    device = imgs.device
-    min_clip_width = max(1, int(min_clip_width))
-    step = max(1, min_clip_width // 4)
-    clip_imgs = []
-    clip_img_lens = []
-
-    lens_list = img_lens.tolist() if isinstance(img_lens, torch.Tensor) else [int(l) for l in img_lens]
-
-    for i, img_len in enumerate(lens_list):
-        img_len = int(img_len)
-        if img_len <= min_clip_width:
-            clip_imgs.append(imgs[i, :, :, :img_len])
-            clip_img_lens.append(img_len)
-        else:
-            crop_width = int(np.random.randint(min_clip_width, img_len))
-            crop_width = crop_width - crop_width % step
-            crop_width = min(img_len, max(min_clip_width, crop_width))
-
-            max_pos = img_len - crop_width
-            rand_pos = int(np.random.randint(0, max_pos)) if max_pos > 0 else 0
-            clip_img = imgs[i, :, :, rand_pos : rand_pos + crop_width]
-            clip_imgs.append(clip_img)
-            clip_img_lens.append(clip_img.size(-1))
-
-    max_img_len = max(clip_img_lens)
-    pad_imgs = torch.full(
-        (imgs.size(0), imgs.size(1), imgs.size(2), max_img_len),
-        -1.0,
-        dtype=imgs.dtype,
-        device=device
-    )
-    for i, (clip_img, clip_len) in enumerate(zip(clip_imgs, clip_img_lens)):
-        pad_imgs[i, :, :, :clip_len] = clip_img
-
-    out_lens = torch.tensor(clip_img_lens, dtype=torch.int32, device=device)
-    return pad_imgs, out_lens
-
-
-
 def _recalc_len(leng, scale):
     tmp = leng % scale
     return leng + scale - tmp if tmp != 0 else leng
-
-
-def augment_images(imgs, img_lens, lbs, lb_lens):
-    bz, c, h, w = imgs.size()
-    ref_img_lens = []
-    for img_len in img_lens:
-        ratio = (np.random.random() - 0.5) * 2 * 0.4
-        new_width = int(img_len * (1 + ratio))
-        ref_img_lens.append(_recalc_len(new_width, scale=CharWidth))
-
-    target_idx = np.argsort(ref_img_lens)[::-1].copy()
-
-    ref_img_lens = np.array(ref_img_lens, dtype=int)
-    max_ref_len = _recalc_len(int(ref_img_lens.max()), scale=CharWidth)
-    pad_imgs = -np.ones((bz, c, h, max_ref_len), dtype=np.float32)
-    for i, (img, img_len, ref_img_len) in enumerate(zip(imgs.detach(), img_lens, ref_img_lens)):
-        mode = 'area' if img_len > ref_img_len else 'bilinear'
-        align_corners = None if img_len > ref_img_len else False
-        resized_img = F.interpolate(img[:, :, :img_len].unsqueeze(dim=0),
-                                    (h, int(ref_img_len)),
-                                    mode=mode,
-                                    align_corners=align_corners)
-        org_img = resized_img[0, 0].cpu().numpy()
-        pad_imgs[i, :, :, :ref_img_len] = org_img
-
-    pad_imgs = np.stack([pad_imgs[idx] for idx in target_idx])
-    ref_img_lens = np.stack([ref_img_lens[idx] for idx in target_idx])
-    resized_imgs = torch.from_numpy(pad_imgs).float().to(imgs.device).detach()
-    resized_img_lens = torch.from_numpy(ref_img_lens).int().to(imgs.device).detach()
-    sort_lbs = lbs[target_idx]
-    sort_lb_lens = lb_lens[target_idx]
-    return resized_imgs, resized_img_lens, sort_lbs, sort_lb_lens
 
 
 def rescale_images(imgs, img_lens, ref_img_lens):
@@ -702,8 +533,3 @@ def pad_image_lengths(img_lens, scale=None):
         scale = path_cfg.ImgHeight
     tmp = img_lens % scale
     return torch.where(tmp != 0, img_lens + scale - tmp, img_lens).detach()
-
-
-def ensure_dim3(tensor):
-    """Ensures input tensor is 3D (B, S, D) by unsqueezing 2D (B, D) tensors."""
-    return tensor.unsqueeze(1) if tensor.dim() == 2 else tensor

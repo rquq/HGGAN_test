@@ -55,20 +55,6 @@ if __name__ == "__main__":
     local_rank = getattr(cfg, 'local_rank', -1)
     if local_rank == -1 and "LOCAL_RANK" in os.environ:
         local_rank = int(os.environ["LOCAL_RANK"])
-
-    # Check if config specifies multi-gpu
-    if local_rank == -1:
-        if hasattr(cfg, "gpus") and cfg.gpus:
-            if isinstance(cfg.gpus, (list, tuple)) and len(cfg.gpus) > 1:
-                if "LOCAL_RANK" in os.environ:
-                    local_rank = int(os.environ["LOCAL_RANK"])
-            elif isinstance(cfg.gpus, int) and cfg.gpus > 1:
-                if "LOCAL_RANK" in os.environ:
-                    local_rank = int(os.environ["LOCAL_RANK"])
-        elif getattr(cfg, "multi_gpu", False) or getattr(cfg, "distributed", False):
-            if "LOCAL_RANK" in os.environ:
-                local_rank = int(os.environ["LOCAL_RANK"])
-
     cfg.local_rank = local_rank
 
     if local_rank > -1:

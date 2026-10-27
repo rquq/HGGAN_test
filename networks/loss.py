@@ -1,19 +1,8 @@
+import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import math
-
-
-def _len2mask(length, max_len=None, dtype=torch.float32):
-    assert len(length.shape) == 1, 'Length shape should be 1 dimensional.'
-    if length.numel() == 0:
-        return torch.empty((0, 0), device=length.device, dtype=dtype or torch.float32)
-    max_len = max_len or int(length.max().item())
-    mask = torch.arange(max_len, device=length.device,
-                        dtype=length.dtype).expand(len(length), max_len) < length.unsqueeze(1)
-    if dtype is not None:
-        mask = torch.as_tensor(mask, dtype=dtype, device=length.device)
-    return mask
+from networks.utils import _len2mask
 
 
 def r1_reg(d_out, x_in):
@@ -29,8 +18,6 @@ def r1_reg(d_out, x_in):
     return reg
 
 
-
-
 def recn_l1_loss(img1, img2, img_lens):
     mask = _len2mask(img_lens, img1.size(-1)).to(img1.device)
     diff_img = (img1 - img2) * mask.view(mask.size(0), 1, 1, mask.size(1))
@@ -38,15 +25,11 @@ def recn_l1_loss(img1, img2, img_lens):
     return loss
 
 
-
-
 def KLloss(mu, logvar):
     # Mean, rather than sum, makes this weight independent of token count and
     # style dimension and prevents KL from abruptly dominating the generator.
     loss = -0.5 * (1 + logvar - mu ** 2 - logvar.exp())
     return loss.flatten(1).mean(dim=1).mean()
-
-
 
 
 ##############################################################################
@@ -176,63 +159,6 @@ class CXLoss(nn.Module):
         return torch.stack(losses).mean()
 
 
-
-##############################################################################
-# Gram style loss
-##############################################################################
-class GramStyleLoss(nn.Module):
-    def __init__(self):
-        super(GramStyleLoss, self).__init__()
-        self.gram = GramMatrix()
-
-    def __call__(self, input_feat, target_feat, feat_len=None):
-        input_gram = self.gram(input_feat, feat_len)
-        target_gram = self.gram(target_feat, feat_len)
-        # A raw Gram MSE scales with feature energy and channel count, so its
-        # magnitude can vary by orders of magnitude between backbone stages.
-        # Normalize by the detached energy of both Gram matrices to make the
-        # loss dimensionless while preserving gradients through input_gram.
-        error = (input_gram - target_gram).square().mean(dim=(1, 2))
-        energy = 0.5 * (
-            input_gram.square().mean(dim=(1, 2))
-            + target_gram.square().mean(dim=(1, 2))
-        )
-        return (error / energy.detach().clamp_min(1e-6)).mean()
-
-
-class GramMatrix(nn.Module):
-    def forward(self, input, feat_len=None):
-        autocast_ctx = (
-            torch.cuda.amp.autocast(enabled=False)
-            if input.device.type == 'cuda'
-            else (
-                torch.amp.autocast(input.device.type, enabled=False)
-                if hasattr(torch, 'amp') and hasattr(torch.amp, 'autocast')
-                else torch.autograd.set_grad_enabled(torch.is_grad_enabled())
-            )
-        )
-        with autocast_ctx:
-            input = input.float()
-            a, b, c, d = input.size()
-
-            if feat_len is not None:
-                # mask for varying lengths
-                mask = _len2mask(feat_len, d).view(a, 1, 1, d)
-                input = input * mask
-                denom = (c * torch.clamp(feat_len, min=1)).view(a, 1, 1) * b
-            else:
-                denom = float(b * c * d)
-
-            features = input.view(a, b, c * d)
-            G = torch.bmm(features, features.transpose(1, 2))
-
-            return G / denom
-
-
-def _global_style(style):
-    return style if style.dim() == 2 else style[:, 0]
-
-
 def global_style_reconstruction_loss(
     pred: torch.Tensor, target: torch.Tensor, num_style_tokens: int
 ) -> torch.Tensor:
@@ -287,30 +213,3 @@ def global_content_adversarial_loss(
     return F.binary_cross_entropy_with_logits(
         logits, content_targets, pos_weight=positive_weight
     ) / num_style_tokens
-
-
-
-
-def supervised_contrastive_style_loss(styles, writer_ids, temperature=0.1):
-    """Pull same-writer global style tokens together and repel other writers."""
-    features = F.normalize(_global_style(styles), dim=-1)
-    writer_ids = writer_ids.view(-1)
-    count = features.size(0)
-    if count < 2:
-        return features.sum() * 0.0
-
-    self_mask = torch.eye(count, dtype=torch.bool, device=features.device)
-    positive_mask = writer_ids[:, None].eq(writer_ids[None, :]) & ~self_mask
-    valid_anchors = positive_mask.any(dim=1)
-    if not valid_anchors.any():
-        return features.sum() * 0.0
-
-    logits = torch.matmul(features, features.t()) / temperature
-    logits = logits - logits.max(dim=1, keepdim=True).values.detach()
-    exp_logits = torch.exp(logits).masked_fill(self_mask, 0.0)
-    log_prob = logits - torch.log(exp_logits.sum(dim=1, keepdim=True).clamp_min(1e-8))
-    mean_positive_log_prob = (
-        (log_prob * positive_mask.to(log_prob.dtype)).sum(dim=1)
-        / positive_mask.sum(dim=1).clamp_min(1)
-    )
-    return -mean_positive_log_prob[valid_anchors].mean()

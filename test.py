@@ -173,17 +173,11 @@ if __name__ == '__main__':
     cfg.guided = guided
 
     if args.all_metrics:
-        cfg.valid.validate_fid = True
-        cfg.valid.validate_kid = True
-        cfg.valid.validate_hwd = True
-        cfg.valid.validate_cmmd = True
-        cfg.valid.validate_cer = True
-        cfg.valid.validate_wer = True
-        cfg.valid.validate_is_gen = True
-        cfg.valid.validate_is_org = True
-        cfg.valid.validate_psnr = True
-        cfg.valid.validate_mssim = True
-        cfg.valid.validate_wier = True
+        for metric_name in (
+            'fid', 'kid', 'hwd', 'cmmd', 'cer', 'wer',
+            'is_gen', 'is_org', 'psnr', 'mssim', 'wier',
+        ):
+            setattr(cfg.valid, f'validate_{metric_name}', True)
 
     print("=" * 60)
     print("EVALUATION TEST CONFIGURATION")

@@ -5,7 +5,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn import Parameter as P
-from .utils import _len2mask
 
 
 # Projection of x onto y
@@ -141,24 +140,22 @@ class SNLinear(nn.Linear, SN):
         return F.linear(x, self.W_(), self.bias)
 
 
-# Embedding layer with spectral norm
-# We use num_embeddings as the dim instead of embedding_dim here
-# for convenience sake
-class SNEmbedding(nn.Embedding, SN):
-    def __init__(self, num_embeddings, embedding_dim, padding_idx=None,
-                 max_norm=None, norm_type=2, scale_grad_by_freq=False,
-                 sparse=False, _weight=None,
-                 num_svs=1, num_itrs=1, eps=1e-12):
-        nn.Embedding.__init__(self, num_embeddings, embedding_dim, padding_idx,
-                              max_norm, norm_type, scale_grad_by_freq,
-                              sparse, _weight)
-        SN.__init__(self, num_svs, num_itrs, num_embeddings, eps=eps)
-
-    def forward(self, x):
-        return F.embedding(x, self.W_())
-
-#
-# # A non-local block as used in SA-GAN
+def _mask_valid_width(x, valid_lens, mask_cache=None):
+    """Zero out right-padded columns beyond each sample's valid width."""
+    if valid_lens is None:
+        return x
+    key = (id(valid_lens), x.size(-1), x.device)
+    if mask_cache is not None and key in mask_cache:
+        invalid = mask_cache[key][1]
+    else:
+        lengths = valid_lens.to(device=x.device, dtype=torch.long)
+        # Comparing positions already handles negative/oversized lengths exactly
+        # like clamping to [0, width], without another tensor operation.
+        invalid = torch.arange(x.size(-1), device=x.device)[None, :] >= lengths[:, None]
+        if mask_cache is not None:
+            # Keep the source tensor alive so its Python ID cannot be reused.
+            mask_cache[key] = (valid_lens, invalid)
+    return x.masked_fill(invalid[:, None, None, :], 0.0)
 
 
 # Self Attention module from self-attention gan
@@ -358,6 +355,8 @@ class ccbn(nn.Module):
     def __init__(self, output_size, input_size, which_linear, eps=1e-5, momentum=0.1,
                  cross_replica=False, mybn=False, norm_style='bn', ):
         super(ccbn, self).__init__()
+        if cross_replica:
+            raise ValueError('cross_replica=True is unsupported; use local normalization')
         self.output_size, self.input_size = output_size, input_size
         # Prepare gain and bias layers
         self.gain = which_linear(input_size, output_size)
@@ -373,9 +372,7 @@ class ccbn(nn.Module):
         # Norm style?
         self.norm_style = norm_style
 
-        if self.cross_replica:
-            self.bn = SyncBN2d(output_size, eps=self.eps, momentum=self.momentum, affine=False)
-        elif self.mybn:
+        if self.mybn:
             self.bn = myBN(output_size, self.eps, self.momentum)
         elif self.norm_style in ['bn', 'in']:
             self.register_buffer('stored_mean', torch.zeros(output_size))
@@ -386,9 +383,8 @@ class ccbn(nn.Module):
         gain = (1 + self.gain(y)).view(y.size(0), -1, 1, 1)
         bias = self.bias(y).view(y.size(0), -1, 1, 1)
         # If using my batchnorm
-        if self.mybn or self.cross_replica:
+        if self.mybn:
             return self.bn(x, gain=gain, bias=bias)
-        # else:
         else:
             if self.norm_style == 'bn':
                 if self.training and valid_lens is not None:
@@ -423,6 +419,8 @@ class bn(nn.Module):
     def __init__(self, output_size, eps=1e-5, momentum=0.1,
                  cross_replica=False, mybn=False):
         super(bn, self).__init__()
+        if cross_replica:
+            raise ValueError('cross_replica=True is unsupported; use local normalization')
         self.output_size = output_size
         # Prepare gain and bias layers
         self.gain = P(torch.ones(output_size), requires_grad=True)
@@ -436,17 +434,15 @@ class bn(nn.Module):
         # Use my batchnorm?
         self.mybn = mybn
 
-        if self.cross_replica:
-            self.bn = SyncBN2d(output_size, eps=self.eps, momentum=self.momentum, affine=False)
-        elif mybn:
+        if mybn:
             self.bn = myBN(output_size, self.eps, self.momentum)
-        # Register buffers if neither of the above
+        # Register buffers if not using myBN
         else:
             self.register_buffer('stored_mean', torch.zeros(output_size))
             self.register_buffer('stored_var', torch.ones(output_size))
 
     def forward(self, x, y=None, valid_lens=None):
-        if self.cross_replica or self.mybn:
+        if self.mybn:
             gain = self.gain.view(1, -1, 1, 1)
             bias = self.bias.view(1, -1, 1, 1)
             return self.bn(x, gain=gain, bias=bias)
@@ -496,23 +492,13 @@ class GBlock(nn.Module):
         # upsample layers
         self.upsample = upsample
 
-    @staticmethod
-    def _mask_valid_width(x, valid_lens):
-        if valid_lens is None:
-            return x
-        lengths = valid_lens.to(device=x.device, dtype=torch.long).clamp(
-            min=0, max=x.size(-1)
-        )
-        mask = (
-            torch.arange(x.size(-1), device=x.device)[None, :]
-            < lengths[:, None]
-        )
-        return x * mask[:, None, None, :].to(x.dtype)
+    _mask_valid_width = staticmethod(_mask_valid_width)
 
     def forward(self, x, y, x_lens=None, out_x_lens=None, **kwargs):
+        mask_cache = {}
         h = self.activation(self.bn1(x, y, valid_lens=x_lens))
-        h = self._mask_valid_width(h, x_lens)
-        x = self._mask_valid_width(x, x_lens)
+        h = _mask_valid_width(h, x_lens, mask_cache)
+        x = _mask_valid_width(x, x_lens, mask_cache)
         if self.upsample:
             input_width = x.size(-1)
             h = self.upsample(h)
@@ -522,15 +508,15 @@ class GBlock(nn.Module):
                     x_lens * x.size(-1), input_width, rounding_mode='floor'
                 )
         valid_lens = out_x_lens if out_x_lens is not None else x_lens
-        h = self._mask_valid_width(h, valid_lens)
-        x = self._mask_valid_width(x, valid_lens)
+        h = _mask_valid_width(h, valid_lens, mask_cache)
+        x = _mask_valid_width(x, valid_lens, mask_cache)
         h = self.conv1(h)
         h = self.activation(self.bn2(h, y, valid_lens=valid_lens))
-        h = self._mask_valid_width(h, valid_lens)
+        h = _mask_valid_width(h, valid_lens, mask_cache)
         h = self.conv2(h)
         if self.learnable_sc:
             x = self.conv_sc(x)
-        return self._mask_valid_width(h + x, valid_lens)
+        return _mask_valid_width(h + x, valid_lens, mask_cache)
 
 
 # Residual block for the discriminator
@@ -568,21 +554,16 @@ class DBlock(nn.Module):
         return x
 
     def forward(self, x, x_len=None, **kwargs):
-        def mask(value, lengths):
-            if lengths is None:
-                return value
-            valid = torch.arange(value.size(-1), device=value.device)[None, :] < lengths[:, None]
-            return value.masked_fill(~valid[:, None, None, :], 0.0)
-
-        x = mask(x, x_len)
+        mask_cache = {}
+        x = _mask_valid_width(x, x_len, mask_cache)
         if self.preactivation:
             # Must use an out-of-place ReLU activation to preserve shortcut connection state
             h = F.relu(x)
         else:
             h = x
-        h = mask(self.conv1(h), x_len)
-        h = mask(self.conv2(self.activation(h)), x_len)
+        h = _mask_valid_width(self.conv1(h), x_len, mask_cache)
+        h = _mask_valid_width(self.conv2(self.activation(h)), x_len, mask_cache)
         if self.downsample:
             h = self.downsample(h)
         out_lengths = torch.div(x_len, 2, rounding_mode='floor') if self.downsample and x_len is not None else x_len
-        return mask(h + self.shortcut(x), out_lengths)
+        return _mask_valid_width(h + self.shortcut(x), out_lengths, mask_cache)

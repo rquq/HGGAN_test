@@ -55,17 +55,6 @@ valid:
   batch_size: 256
   n_class: 81
 
-  # Optional writer evaluation and CTC decoder
-  ctcdecode:
-    model_path: null
-    blank_id: 0
-    alpha: 1
-    beta: 3
-    beam_width: 32
-    cutoff_prob: 0.9999
-    cutoff_top_n: 32
-    num_processes: 8
-
 OcrModel:
   resolution: 16
   max_dim: 256

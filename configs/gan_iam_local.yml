@@ -145,7 +145,7 @@ valid:
   mmd_subset_size: 1000
   mmd_var: true
 
-  # Optional writer evaluation and CTC decoder
+  # Optional writer evaluation
   pretrained_test_w: ./pretrained/wid_iam_test64.pth
   test_wid_model:
     n_writer: 161
@@ -153,15 +153,6 @@ valid:
     pool: attentive_stats
     attention_dim: 128
     init: none
-  ctcdecode:
-    model_path: null
-    blank_id: 0
-    alpha: 1
-    beta: 3
-    beam_width: 32
-    cutoff_prob: 0.9999
-    cutoff_top_n: 32
-    num_processes: 8
 
 StyBackbone:
   resolution: 16
