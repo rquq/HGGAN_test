@@ -80,7 +80,7 @@ training:
   recn_decay_end_epoch: 42
   lambda_wid: 0.25
   lambda_info: 1.0
-  lambda_style_cycle: 1.0
+  lambda_style_cycle: 0.0
   lambda_content_adv: 0.02
   lambda_kl: 0.1
   lambda_ctx: 0.1
