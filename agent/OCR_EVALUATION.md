@@ -1,5 +1,7 @@
 # Independent OCR evaluation and local-style ablation
 
+> Superseded on30October2026: normal training CER/WER now score the full configured evaluation loader and cached metric image stream. The320-case transfer protocol below is historical and explicitly opt-in via `--transfer-diagnostic`. See [full-validation OCR correction](2026-10-30-full-validation-ocr-fix.md). Historical curves and case diagnostics are not directly comparable to the new full-set same-text scores.
+
 ## Next experiment
 
 MAIN retains one global plus four local style tokens and spatial style refinement.
