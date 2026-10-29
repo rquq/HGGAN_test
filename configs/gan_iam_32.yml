@@ -123,9 +123,6 @@ valid:
   # Independent OCR evaluation
   ocr_eval_every_n_epochs: 1
   ocr_eval_batch_size: 2
-  ocr_eval_samples_per_cell: 64
-  ocr_eval_reference_pairs: 32
-  ocr_eval_disjoint_writer_splits: true
 
   # Feature extraction and sampling
   batch_size: 32

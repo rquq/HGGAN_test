@@ -6,6 +6,7 @@ import json
 import random
 import time
 from contextlib import contextmanager
+from itertools import zip_longest
 from pathlib import Path
 
 import h5py
@@ -164,6 +165,72 @@ def transfer_manifest(train, test, lexicon, converter, path, per_cell=64, pairs=
 def canonical_pil(image):
     a = ((1-image.detach().cpu().squeeze(0))*127.5).clamp(0,255).round().byte().numpy()
     return Image.fromarray(a).convert('RGB')
+
+
+def evaluate_validation(generated_batches, real_batches, converter, evaluator,
+                        output, batch_size=2, dataset_identity=None):
+    """Score every cached metric image, at its metric width, against literal labels.
+
+    No training references, sampled target words, stress manifest or per-cell
+    budget. Generators are supplied by the caller so OCR consumes the exact
+    image stream already used by FID/KID/HWD.
+    """
+    if not 1 <= batch_size <= 4:
+        raise ValueError('OCR batch size must be in [1,4]')
+    output = Path(output); output.mkdir(parents=True, exist_ok=True)
+    identity = {'protocol':'full-validation-same-text-v1',
+                'dataset':dataset_identity, 'evaluator':evaluator.identity}
+    cache_path = output.parent/'validation_real_ocr.json'
+    cache = json.loads(cache_path.read_text()) if cache_path.exists() else {}
+    if cache.get('identity') != identity:
+        cache = {'identity':identity, 'predictions':{}}
+    real_cache = cache['predictions']
+    rows = []; sentinel = object(); started = time.monotonic()
+    def transcripts(batch):
+        if hasattr(converter, 'decode_labels'):
+            return converter.decode_labels(batch['lbs'], batch['lb_lens'])
+        return [''.join(converter.alphabet[int(i)] for i in row[:int(n)] if int(i))
+                for row,n in zip(batch['lbs'],batch['lb_lens'])]
+    for fake, real in zip_longest(generated_batches, real_batches, fillvalue=sentinel):
+        if fake is sentinel or real is sentinel:
+            raise ValueError('OCR real/generated validation batch counts differ')
+        targets = transcripts(fake)
+        if targets != transcripts(real):
+            raise ValueError('OCR real/generated validation transcripts differ')
+        if len(targets) != len(real['org_imgs']) or len(targets) != len(fake['org_imgs']):
+            raise ValueError('OCR validation batch size differs from labels')
+        for begin in range(0,len(targets),batch_size):
+            ids = range(begin,min(begin+batch_size,len(targets)))
+            pictures = [canonical_pil(fake['org_imgs'][i,:,:,:int(fake['org_img_lens'][i])]) for i in ids]
+            references = [canonical_pil(real['org_imgs'][i,:,:,:int(real['org_img_lens'][i])]) for i in ids]
+            predictions = evaluator.predict(pictures)
+            keys = [hashlib.sha256(im.tobytes()+str(im.size).encode()+targets[i].encode()).hexdigest()
+                    for im,i in zip(references,ids)]
+            for picture,reference,pred,key in zip(pictures,references,predictions,keys):
+                if picture.size == reference.size and picture.tobytes() == reference.tobytes():
+                    real_cache[key] = pred
+            missing = [(j,key) for j,key in enumerate(keys) if key not in real_cache]
+            if missing:
+                decoded = evaluator.predict([references[j] for j,_ in missing])
+                real_cache.update({key:pred for (_,key),pred in zip(missing,decoded)})
+            for i,pred,key in zip(ids,predictions,keys):
+                rows.append({'index':len(rows),'target':targets[i],'prediction':pred,
+                             'real_prediction':real_cache[key],
+                             'char_errors':levenshtein(pred,targets[i])})
+    if not rows:
+        raise ValueError('OCR validation loader is empty')
+    if dataset_identity and dataset_identity.get('samples') is not None:
+        if len(rows) != int(dataset_identity['samples']):
+            raise ValueError('OCR did not cover the complete configured validation dataset')
+    result = {**identity, 'samples':len(rows),
+              'metrics':recognition_scores([r['target'] for r in rows],[r['prediction'] for r in rows]),
+              'real_metrics':recognition_scores([r['target'] for r in rows],[r['real_prediction'] for r in rows]),
+              'seconds':time.monotonic()-started}
+    cache_path.write_text(json.dumps(cache,indent=2))
+    (output/'metrics.json').write_text(json.dumps(result,indent=2))
+    with (output/'predictions.csv').open('w',newline='') as f:
+        writer=csv.DictWriter(f,fieldnames=list(rows[0]));writer.writeheader();writer.writerows(rows)
+    return result
 
 
 class IndependentOCR:

@@ -1405,7 +1405,9 @@ class AdversarialModel(BaseModel):
                 )
 
             if validate_cer_enabled or validate_wer_enabled:
-                ocr_scores = self.validate_transfer_ocr(kwargs.get('current_epoch'))
+                ocr_scores = self.validate_transfer_ocr(
+                    kwargs.get('current_epoch'), get_cached_generator(), eval_dloader
+                )
                 for key, enabled in [('cer',validate_cer_enabled), ('wer',validate_wer_enabled)]:
                     if enabled and key in ocr_scores: res[key] = ocr_scores[key]
 
@@ -1502,68 +1504,50 @@ class AdversarialModel(BaseModel):
 
         return res
 
-    def validate_transfer_ocr(self, epoch=None):
-        """Small independent CER/WER; never substitute the training teacher."""
+    def validate_transfer_ocr(self, epoch=None, generated_batches=None, real_batches=None):
+        """Independent OCR over the full configured validation image stream."""
         import gc
-        from metric.ocr_eval import IndependentOCR, WordCorpus, transfer_manifest, evaluate_transfer
-        from lib import path_config
+        from metric.ocr_eval import IndependentOCR, evaluate_validation, file_fingerprint
+        if generated_batches is None or real_batches is None:
+            raise ValueError('Full OCR requires the configured validation image streams')
         every = int(getattr(self.opt.valid, 'ocr_eval_every_n_epochs', 1))
-        if every < 0: raise ValueError('ocr_eval_every_n_epochs must be nonnegative')
+        if every < 0:
+            raise ValueError('ocr_eval_every_n_epochs must be nonnegative')
         completed = getattr(self, '_ocr_done_this_session', False)
         if completed and (every == 0 or (epoch is not None and int(epoch) % every)):
             return {}
-        if getattr(self, '_ocr_unavailable', False): return {}
-        # Reuse allocator blocks, but require room for the independent FP32
-        # recognizer plus activations. CPU fallback runs once per session.
+        if getattr(self, '_ocr_unavailable', False):
+            return {}
         device = self.device
         if device.type == 'cuda':
             free, _ = torch.cuda.mem_get_info(device)
             reusable = torch.cuda.memory_reserved(device) - torch.cuda.memory_allocated(device)
-            if free + reusable < 768 * 2**20: device = torch.device('cpu')
-        if device.type == 'cpu' and completed: return {}
+            if free + reusable < 768 * 2**20:
+                device = torch.device('cpu')
+        if device.type == 'cpu' and completed:
+            return {}
+        evaluator = None
         try:
             evaluator = IndependentOCR(device)
-        except torch.cuda.OutOfMemoryError:
-            self._ocr_unavailable = True
-            self.print('Independent OCR could not fit on CUDA; use the standalone evaluator after training. CER/WER remain empty.')
-            gc.collect()
-            return {}
-        except (OSError, ImportError) as error:
-            self._ocr_unavailable = True
-            self.print('Independent OCR disabled (weights/dependencies unavailable). '
-                       'Prepare once: python tools/evaluate_ocr.py --prepare-ocr-only --download-ocr. '
-                       f'No teacher fallback. Details: {error}')
-            return {}
-        try:
-            dataset = self.opt.dataset
-            valid_dataset = self.opt.valid.dset_name
-            root = path_config.data_roots[dataset.split('_')[0]]
-            valid_root = path_config.data_roots[valid_dataset.split('_')[0]]
-            train = WordCorpus(os.path.join(root, path_config.data_paths[dataset][self.opt.training.dset_split]),
-                               getattr(self.opt, 'dataset_source_polarity', 'white'))
-            test = WordCorpus(os.path.join(valid_root, path_config.data_paths[valid_dataset][self.opt.valid.dset_split]),
-                              getattr(self.opt, 'dataset_source_polarity', 'white'))
-            if train.height != self.opt.img_height or test.height != self.opt.img_height:
-                raise ValueError('OCR corpus image height does not match the model configuration')
-            output = os.path.join(self.log_root, 'ocr_eval')
-            manifest = transfer_manifest(train, test, self.lexicon, self.label_converter,
-                        os.path.join(output, 'manifest.json'),
-                        int(getattr(self.opt.valid, 'ocr_eval_samples_per_cell', 64)),
-                        int(getattr(self.opt.valid, 'ocr_eval_reference_pairs', 32)),
-                        int(self.opt.training.max_word_len), int(getattr(self.opt.valid,'eval_seed',self.opt.seed)),
-                        bool(getattr(self.opt.valid,'ocr_eval_disjoint_writer_splits',False)))
-            result = evaluate_transfer(self.models.G, self.models.E, self.models.B, self.label_converter,
-                        train, test, manifest, evaluator, os.path.join(output, f'epoch_{epoch if epoch is not None else "eval"}'),
-                        int(getattr(self.opt.valid, 'ocr_eval_batch_size', 2)))
+            dataset = self.eval_dloader.dataset
+            path = getattr(dataset, 'file_path', None)
+            identity = {'split':self.opt.valid.dset_split, 'samples':len(dataset),
+                        'path':os.path.realpath(path) if path else None,
+                        'sha256':file_fingerprint(path) if path else None}
+            result = evaluate_validation(
+                generated_batches, real_batches, self.label_converter, evaluator,
+                os.path.join(self.log_root, 'ocr_eval', f'full_epoch_{epoch if epoch is not None else "eval"}'),
+                int(getattr(self.opt.valid, 'ocr_eval_batch_size', 2)), identity,
+            )
             self._ocr_done_this_session = True
             self.ocr_eval_metadata = {k:v for k,v in result.items() if k != 'metrics'}
-            self.print(f'Independent OCR: CER={result["metrics"]["cer"]:.4f} WER={result["metrics"]["wer"]:.4f}; '
-                       f'{result["samples"]} transfer cases, {result["seconds"]:.1f}s, device={device}. '
-                       f'Real calibration CER={result["real_metrics"]["cer"]:.4f} WER={result["real_metrics"]["wer"]:.4f}')
+            self.print(f'Full validation OCR: CER={result["metrics"]["cer"]:.4f} '
+                       f'WER={result["metrics"]["wer"]:.4f}; {result["samples"]} images; '
+                       f'split={self.opt.valid.dset_split}; protocol={result["protocol"]}')
             return result['metrics']
-        except torch.cuda.OutOfMemoryError:
+        except (OSError, ImportError, torch.cuda.OutOfMemoryError) as error:
             self._ocr_unavailable = True
-            self.print('Independent OCR skipped after a CUDA memory limit; run the bounded standalone evaluator after training.')
+            self.print(f'Independent OCR unavailable; CER/WER empty. No training-R fallback. {error}')
             return {}
         finally:
             del evaluator
