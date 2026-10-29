@@ -609,7 +609,9 @@ class AdversarialModel(BaseModel):
             from metric.ocr_eval import IndependentOCR, evaluate_validation
             evaluator = None
             try:
-                evaluator = IndependentOCR(self.device)
+                # Loading the external OCR must not change GAN sampling RNG.
+                with torch.random.fork_rng(devices=[]):
+                    evaluator = IndependentOCR(self.device)
                 result = evaluate_validation(
                     get_generator(), eval_dloader, self.label_converter, evaluator,
                     os.path.join(self.log_root, 'ocr_eval', f'full_epoch_{kwargs.get("current_epoch", "eval")}'),
