@@ -38,6 +38,14 @@ Runner: `agent/tests/full_test_ocr_20261030.py`; outputs under `agent/analysis/2
 
 The full CPU workload is an hours-long job. Starting it does not establish full results; no earlier320-case result is reused as a full-set score. Dataset/checkpoint/model architecture is unchanged by the comparison.
 
+### User-approved GPU switch
+
+After the user requested using the local7GB-class GPU, the owned CPU controller/child were stopped after confirming their exact command lines.13,664 partial DEV CPU output PNGs were preserved recoverably under `dev-cpu-partial/`. A fresh GPU DEV generation was started rather than mixing CPU/GPU generator samples into one completed run. IAM references remain the actual source pixels.
+
+RTX4060 Laptop GPU:8,188MiB physical reported VRAM; initial57°C and about5,080MiB free in nvidia-smi. Bounded sequential FP32 generation uses batch8; OCR batch2. The PyTorch allocator cap is2GiB per phase; GPU OOM or>=82°C triggers CPU continuation/retry. Other GPU processes are not touched. Initial active-run observation: about3.3GiB total device use,4.6GiB free,61–68°C. These are observations, not a guarantee against driver/thermal failures.
+
+The restarted controller PID is129623. The runner reuses fresh full-test real-image calibration across source models and for the IAM row; it does not reuse the old320-case diagnostic's scores. Full test character count is101,954, so189 edits contribute0.18538 CER percentage points. No full-set result exists until the job finishes.
+
 ## Version-control scope
 
 DEV/MAIN changes comprise the evaluator, its training call, standalone tool, and obsolete OCR config knobs. CLASSIC changes only evaluation integration and the shared evaluator file. ALPHA staging must include only this evaluation patch, preserving its unrelated pre-existing uncommitted architecture/training edits. Do not force-push ALPHA. AI tests, generated images, large predictions and job artifacts stay outside model-branch commits.
