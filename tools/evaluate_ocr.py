@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Small independent OCR transfer evaluation; does not run full FID/KID/HWD."""
+"""Full configured evaluation-set OCR; transfer stress diagnostic is opt-in."""
 import argparse
 import gc
 import hashlib
@@ -18,6 +18,8 @@ def main():
     parser.add_argument('--dataset-root',type=Path,default=ROOT/'data/iam')
     parser.add_argument('--output',type=Path,default=ROOT/'runs/ocr_evaluation')
     parser.add_argument('--manifest',type=Path)
+    parser.add_argument('--transfer-diagnostic',action='store_true',
+                        help='Explicitly run the old sampled new-text stress diagnostic instead of full-set OCR')
     parser.add_argument('--device',default='cpu')
     parser.add_argument('--ocr-device',default=None)
     parser.add_argument('--batch-size',type=int,default=2)
@@ -64,8 +66,34 @@ def main():
         path=next((args.dataset_root/name for name in names if (args.dataset_root/name).exists()),None)
         if path is None:raise FileNotFoundError(f'No {split} HDF5 found under {args.dataset_root}: {names}')
         return WordCorpus(path,cfg.get('dataset_source_polarity','white'))
-    train,test=corpus('train'),corpus('test')
+    test=corpus('test')
     converter=strLabelConverter('all')
+    if not args.transfer_diagnostic:
+        if args.limit is not None:
+            parser.error('--limit applies only to --transfer-diagnostic; default evaluation covers the full split')
+        from types import SimpleNamespace
+        from munch import Munch
+        from torch.utils.data import DataLoader
+        from lib.datasets import Hdf5Dataset, get_collect_fn
+        from lib import path_config
+        from networks.model import AdversarialModel
+        from metric.ocr_eval import evaluate_validation
+        path_config.set_img_height(height)
+        dataset=Hdf5Dataset(str(test.path.parent),test.path.name,process_style=True,
+                            source_polarity=cfg.get('dataset_source_polarity','white'))
+        loader=DataLoader(dataset,batch_size=cfg.get('valid',{}).get('batch_size',32),shuffle=False,
+                          num_workers=0,collate_fn=get_collect_fn(cfg['training'].get('sort_input',True)))
+        view=SimpleNamespace(device=torch.device(args.device),opt=Munch.fromDict(cfg),
+                             models=SimpleNamespace(G=generator,E=encoder,B=backbone))
+        batches=AdversarialModel.image_generator(view,loader,False,True,1)
+        evaluator=IndependentOCR(args.ocr_device or args.device,allow_download=args.download_ocr)
+        result=evaluate_validation(batches,loader,converter,evaluator,args.output,args.batch_size,
+                                   {'path':str(test.path),'sha256':test.image_fingerprint,'samples':len(dataset),'split':'test'})
+        result.update(identity)
+        (args.output/'metrics.json').write_text(json.dumps(result,indent=2))
+        print('RESULTS',json.dumps(result),flush=True)
+        return
+    train=corpus('train')
     lexicon=get_lexicon(str(args.lexicon),converter.alphabet,max_length=cfg['training'].get('max_word_len',20))
     manifest_path=args.manifest or args.output/'manifest.json'
     manifest=transfer_manifest(train,test,lexicon,converter,manifest_path,args.per_cell,args.pairs,
