@@ -606,11 +606,25 @@ class AdversarialModel(BaseModel):
         validate_cer = bool(getattr(self.opt.valid, 'validate_cer', False))
         validate_wer = bool(getattr(self.opt.valid, 'validate_wer', False))
         if legacy_ocr or validate_cer or validate_wer:
-            cer, wer = self.validate_ocr(get_generator(), n_iters=len(eval_dloader) * n_rand_repeat)
-            if legacy_ocr or validate_cer:
-                res['cer'] = cer
-            if legacy_ocr or validate_wer:
-                res['wer'] = wer
+            from metric.ocr_eval import IndependentOCR, evaluate_validation
+            evaluator = None
+            try:
+                evaluator = IndependentOCR(self.device)
+                result = evaluate_validation(
+                    get_generator(), eval_dloader, self.label_converter, evaluator,
+                    os.path.join(self.log_root, 'ocr_eval', f'full_epoch_{kwargs.get("current_epoch", "eval")}'),
+                    int(getattr(self.opt.valid, 'ocr_eval_batch_size', 2)),
+                    {'split':self.opt.valid.dset_split, 'samples':len(eval_dloader.dataset)},
+                )
+                self.ocr_eval_metadata = {k:v for k,v in result.items() if k != 'metrics'}
+                if legacy_ocr or validate_cer:
+                    res['cer'] = result['metrics']['cer']
+                if legacy_ocr or validate_wer:
+                    res['wer'] = result['metrics']['wer']
+            except (OSError, ImportError, torch.cuda.OutOfMemoryError) as error:
+                self.print(f'Independent OCR unavailable; no training-R fallback: {error}')
+            finally:
+                del evaluator
 
         if getattr(self.opt.valid, 'validate_hwd', True):
             hwd_val = calculate_hwd_score(
