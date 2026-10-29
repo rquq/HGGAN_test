@@ -303,7 +303,7 @@ class StyleEncoder(nn.Module):
         if kwargs:
             raise TypeError(f"Unknown StyleEncoder option(s): {', '.join(sorted(kwargs))}")
         if num_style_tokens != 1:
-            raise ValueError('Spatial-memory encoding uses exactly one global latent token')
+            raise ValueError('Spatial-memory DEV uses exactly one global latent token')
         if min(style_dim, in_dim, memory_dim, memory_height, memory_max_width) < 1:
             raise ValueError('Style and memory dimensions must be positive')
         if not 0 <= memory_feature_index < len(backbone_channels):

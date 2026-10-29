@@ -12,6 +12,7 @@ img_height: 64
 char_width: 32
 
 training:
+  use_patch_discriminator: false
   # Data and initialization
   dset_split: ./data/image_samples/
 

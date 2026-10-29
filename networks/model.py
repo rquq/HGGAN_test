@@ -18,7 +18,7 @@ import torch.nn.functional as F
 from metric.val_metrics import calculate_fid_kid_is
 from metric.mssim_psnr import calculate_mssim_psnr
 from networks.utils import _info, set_requires_grad, get_scheduler, idx_to_words, rescale_images, rescale_images2, \
-                            words_to_images, ctc_greedy_decoder, sample_stroke_patches, run_patch_discriminator, augment_word_batch, frozen_bn, restore_scheduler_state, center_style_prior
+                            words_to_images, ctc_greedy_decoder, extract_stroke_patches, run_patch_discriminator, augment_word_batch, frozen_bn, restore_scheduler_state, center_style_prior
 from networks.BigGAN_networks import Generator, Discriminator, PatchDiscriminator
 from networks.module import Recognizer, WriterIdentifier, StyleEncoder, StyleBackbone
 from lib.datasets import get_dataset, get_collect_fn, Hdf5Dataset
@@ -226,7 +226,8 @@ class BaseModel(object):
             f"workers={getattr(training, 'num_workers', '?')}",
             f"optim       : G/lr={getattr(training, 'lr', '?')} "
             f"D/lr={getattr(training, 'd_lr', '-') } "
-            f"P/lr={getattr(training, 'patch_d_lr', '-')}",
+            + (f"P/lr={getattr(training, 'patch_d_lr', '-')}"
+               if getattr(self, 'use_patch_discriminator', True) else 'PatchD=off'),
             f"adversarial : critic_steps={getattr(training, 'num_critic_train', '-')}",
             f"validation  : {', '.join(enabled_metrics)}",
             'networks    :',
@@ -1817,18 +1818,26 @@ class GlobalLocalAdversarialModel(AdversarialModel):
         opt.EncModel.num_style_tokens = style_encoder.num_style_tokens
         writer_identifier = WriterIdentifier(**opt.WidModel).to(device)
         discriminator = Discriminator(**opt.DiscModel).to(device)
-        patch_discriminator = PatchDiscriminator(**opt.PatchDiscModel).to(device)
+        self.use_patch_discriminator = bool(getattr(opt.training, 'use_patch_discriminator', True))
+        patch_discriminator = None
+        if self.use_patch_discriminator:
+            # P is initialized on CPU. Keep its optional random draws out of
+            # shared model initialization, shuffling and posterior sampling.
+            with torch.random.fork_rng(devices=[]):
+                patch_discriminator = PatchDiscriminator(**opt.PatchDiscModel)
+            patch_discriminator = patch_discriminator.to(device)
         recognizer = Recognizer(**opt.OcrModel, img_height=getattr(opt, 'img_height', 64)).to(device)
 
         self.models = Munch(
             G=generator,
             D=discriminator,
-            P=patch_discriminator,
             R=recognizer,
             E=style_encoder,
             W=writer_identifier,
             B=style_backbone,
         )
+        if patch_discriminator is not None:
+            self.models.P = patch_discriminator
 
         self.ctc_loss = CTCLoss(zero_infinity=True, reduction='mean')
         self.classify_loss = CrossEntropyLoss()
@@ -1943,6 +1952,9 @@ class GlobalLocalAdversarialModel(AdversarialModel):
         }
         if context_weight > 0:
             wandb_log['loss/g_contextual'] = meter_vals['g_context']
+        if lr_p is None:
+            for key in ('train/lr_p', 'loss/g_adv_patch', 'loss/d_real_patch', 'loss/d_fake_patch'):
+                wandb_log.pop(key, None)
         return wandb_log
 
     def train(self):
@@ -1981,8 +1993,8 @@ class GlobalLocalAdversarialModel(AdversarialModel):
 
         d_lr = float(getattr(opt.training, 'd_lr', opt.training.lr))
         patch_d_lr = float(getattr(opt.training, 'patch_d_lr', d_lr))
-        if d_lr <= 0 or patch_d_lr <= 0:
-            raise ValueError('d_lr and patch_d_lr must be positive')
+        if d_lr <= 0 or (self.use_patch_discriminator and patch_d_lr <= 0):
+            raise ValueError('Enabled discriminator learning rates must be positive')
         self.optimizers = Munch(
             G=torch.optim.Adam(
                 chain(self.models.G.parameters(), self.models.E.parameters()),
@@ -1993,11 +2005,12 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                 self.models.D.parameters(), lr=d_lr,
                 betas=(opt.training.adam_b1, opt.training.adam_b2),
             ),
-            P=torch.optim.Adam(
+        )
+        if self.use_patch_discriminator:
+            self.optimizers.P = torch.optim.Adam(
                 self.models.P.parameters(), lr=patch_d_lr,
                 betas=(opt.training.adam_b1, opt.training.adam_b2),
-            ),
-        )
+            )
 
         # EMA only trainable generation modules. The frozen pretrained backbone
         # remains the single source of style features.
@@ -2082,8 +2095,11 @@ class GlobalLocalAdversarialModel(AdversarialModel):
             iter_count = 0
 
         self.epoch_start = start_epoch
+        scheduler_lrs = {'G': float(opt.training.lr), 'D': d_lr}
+        if self.use_patch_discriminator:
+            scheduler_lrs['P'] = patch_d_lr
         self._init_and_restore_schedulers(
-            {'G': float(opt.training.lr), 'D': d_lr, 'P': patch_d_lr},
+            scheduler_lrs,
             start_epoch, is_resuming, log_restore=True,
         )
 
@@ -2108,8 +2124,6 @@ class GlobalLocalAdversarialModel(AdversarialModel):
         device = self.device
 
         ctc_len_scale = self.unwrap_model(self.models.R).len_scale
-        min_patch_crops = int(getattr(self.opt.training, 'min_patch_crops', 4))
-        max_patch_crops = int(getattr(self.opt.training, 'max_patch_crops', 8))
         use_d_diffaug = bool(getattr(
             self.opt.training, 'd_diffaug', False
         ))
@@ -2121,7 +2135,7 @@ class GlobalLocalAdversarialModel(AdversarialModel):
         ))
         patch_adv_weight = float(
             getattr(self.opt.training, 'lambda_patch_adv', 0.5)
-        )
+        ) if self.use_patch_discriminator else 0.0
         rare_word_ratio = float(getattr(
             self.opt.training, 'rare_word_ratio', 0.15
         ))
@@ -2134,11 +2148,6 @@ class GlobalLocalAdversarialModel(AdversarialModel):
             raise ValueError('num_critic_train must be at least 1')
         if r1_interval < 1:
             raise ValueError('r1_interval must be at least 1')
-        if min_patch_crops < 1 or max_patch_crops < min_patch_crops:
-            raise ValueError(
-                'patch crop bounds must satisfy 1 <= min_patch_crops '
-                '<= max_patch_crops'
-            )
         if d_aug_translate < 0 or not 0.0 <= d_aug_width_scale < 1.0:
             raise ValueError('invalid discriminator augmentation configuration')
         if patch_adv_weight < 0:
@@ -2168,22 +2177,22 @@ class GlobalLocalAdversarialModel(AdversarialModel):
             self.opt.training, 'start_eval_epoch_val', start_save_epoch
         ))
 
+        patch_schedule = (
+            f'P lr={patch_d_lr:.6g}; patch G weight={patch_adv_weight:.3g}; crops=H/2 grid; '
+            if self.use_patch_discriminator else 'PatchD=off; '
+        )
+        critics = [self.models.D] + ([self.models.P] if self.use_patch_discriminator else [])
         self.print(
-            f'GAN schedule: G/D/P lr={opt.training.lr:.6g}/'
-            f'{d_lr:.6g}/{patch_d_lr:.6g}, '
+            f'GAN schedule: G/D lr={opt.training.lr:.6g}/{d_lr:.6g}; '
             f'full LR through epoch {opt.training.start_decay_epoch}, '
             f'floor={getattr(opt.training, "min_lr_ratio", 0.001):.3f}x; '
-            f'D/P:G={num_critic_train}:1; '
-            f'patch G weight={patch_adv_weight:.3g}; '
-            f'crops=H/2 ({min_patch_crops}-{max_patch_crops}/word); '
+            f'critic:G={num_critic_train}:1; '
+            + patch_schedule +
             f'DiffAug={"on" if use_d_diffaug else "off"}'
         )
 
         def prepare_stroke_patches(images, image_lens):
-            return sample_stroke_patches(
-                images, image_lens, min_crops=min_patch_crops,
-                max_crops=max_patch_crops,
-            )
+            return extract_stroke_patches(images, image_lens)
 
         def prepare_global_discriminator_input(images, image_lens):
             if not use_d_diffaug:
@@ -2248,9 +2257,10 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                 # Optimizing Discriminator
                 #############################
                 self.optimizers.D.zero_grad(set_to_none=True)
-                self.optimizers.P.zero_grad(set_to_none=True)
+                if self.use_patch_discriminator:
+                    self.optimizers.P.zero_grad(set_to_none=True)
                 set_requires_grad([self.models.G, self.models.E, self.models.R, self.models.W, self.models.B], False)
-                set_requires_grad([self.models.D, self.models.P], True)
+                set_requires_grad(critics, True)
 
                 with torch.no_grad():
                     self.y.sample_()
@@ -2304,19 +2314,18 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                                   torch.mean(F.relu(1.0 + d_style)) +
                                   torch.mean(F.relu(1.0 + d_recn))) / 3
 
-                # Matched adaptive crop policy for every generated path.
-                fake_patch_groups = [
-                    prepare_stroke_patches(fake_imgs.detach(), fake_img_lens),
-                    prepare_stroke_patches(style_imgs.detach(), style_img_lens),
-                    prepare_stroke_patches(recn_imgs.detach(), recn_img_lens),
-                ]
-                p_fake, p_style, p_recn = run_patch_discriminator(
-                    self.models.P, fake_patch_groups,
-                    score_transform=lambda scores: F.relu(1.0 + scores),
-                )
-                fake_disc_loss_patch = (
-                    p_fake.mean() + p_style.mean() + p_recn.mean()
-                ) / 3
+                fake_disc_loss_patch = fake_disc_loss.new_zeros(())
+                if self.use_patch_discriminator:
+                    fake_patch_groups = [
+                        prepare_stroke_patches(fake_imgs.detach(), fake_img_lens),
+                        prepare_stroke_patches(style_imgs.detach(), style_img_lens),
+                        prepare_stroke_patches(recn_imgs.detach(), recn_img_lens),
+                    ]
+                    p_fake, p_style, p_recn = run_patch_discriminator(
+                        self.models.P, fake_patch_groups,
+                        score_transform=lambda scores: F.relu(1.0 + scores),
+                    )
+                    fake_disc_loss_patch = (p_fake.mean() + p_style.mean() + p_recn.mean()) / 3
 
                 # Random crops are local views, not complete word samples. Feeding
                 # them to the global discriminator taught D that truncated words
@@ -2340,14 +2349,14 @@ class GlobalLocalAdversarialModel(AdversarialModel):
 
                 # Match the fake-patch path: crop unwarped images on both sides.
                 # Global D retains its symmetric differentiable augmentation.
-                real_patch_groups = [
-                    prepare_stroke_patches(real_imgs, real_img_lens),
-                ]
-                real_patch_losses = run_patch_discriminator(
-                    self.models.P, real_patch_groups,
-                    score_transform=lambda scores: F.relu(1.0 - scores),
-                )[0]
-                real_disc_loss_patch = real_patch_losses.mean()
+                real_disc_loss_patch = real_disc_loss.new_zeros(())
+                if self.use_patch_discriminator:
+                    real_patch_groups = [prepare_stroke_patches(real_imgs, real_img_lens)]
+                    real_patch_losses = run_patch_discriminator(
+                        self.models.P, real_patch_groups,
+                        score_transform=lambda scores: F.relu(1.0 - scores),
+                    )[0]
+                    real_disc_loss_patch = real_patch_losses.mean()
 
                 disc_loss = (
                     real_disc_loss + fake_disc_loss
@@ -2356,7 +2365,8 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                 )
                 disc_loss.backward()
                 self.optimizers.D.step()
-                self.optimizers.P.step()
+                if self.use_patch_discriminator:
+                    self.optimizers.P.step()
                 self.averager_meters.update_many({
                     'd_total': disc_loss,
                     'd_real': real_disc_loss,
@@ -2367,14 +2377,15 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                 })
                 # D/P gradients are no longer needed during the G phase.
                 self.optimizers.D.zero_grad(set_to_none=True)
-                self.optimizers.P.zero_grad(set_to_none=True)
+                if self.use_patch_discriminator:
+                    self.optimizers.P.zero_grad(set_to_none=True)
 
                 #############################
                 # Optimizing Generator
                 #############################
                 if iter_count % num_critic_train == 0:
                     self.optimizers.G.zero_grad(set_to_none=True)
-                    set_requires_grad([self.models.D, self.models.P, self.models.R, self.models.W, self.models.B], False)
+                    set_requires_grad(critics + [self.models.R, self.models.W, self.models.B], False)
                     set_requires_grad([self.models.G, self.models.E], True)
 
                     ##########################
@@ -2429,19 +2440,15 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                     d_fake, d_style, d_recn = torch.chunk(d_fake_all, 3, dim=0)
                     adv_loss = -(torch.mean(d_fake) + torch.mean(d_style) + torch.mean(d_recn)) / 3
 
-                    fake_patch_groups = [
-                        prepare_stroke_patches(fake_imgs, fake_img_lens),
-                        prepare_stroke_patches(style_imgs, style_img_lens),
-                        prepare_stroke_patches(recn_imgs, recn_img_lens),
-                    ]
-                    p_fake, p_style, p_recn = run_patch_discriminator(
-                        self.models.P, fake_patch_groups
-                    )
-                    adv_loss_patch = -(
-                        torch.mean(p_fake)
-                        + torch.mean(p_style)
-                        + torch.mean(p_recn)
-                    ) / 3
+                    adv_loss_patch = adv_loss.new_zeros(())
+                    if self.use_patch_discriminator:
+                        fake_patch_groups = [
+                            prepare_stroke_patches(fake_imgs, fake_img_lens),
+                            prepare_stroke_patches(style_imgs, style_img_lens),
+                            prepare_stroke_patches(recn_imgs, recn_img_lens),
+                        ]
+                        p_fake, p_style, p_recn = run_patch_discriminator(self.models.P, fake_patch_groups)
+                        adv_loss_patch = -(p_fake.mean() + p_style.mean() + p_recn.mean()) / 3
 
                     ### CTC Auxiliary loss ###
                     # Reconstruction already has an exact pixel target; reserve
@@ -2589,7 +2596,8 @@ class GlobalLocalAdversarialModel(AdversarialModel):
 
                     lr_g = self.optimizers.G.param_groups[0]['lr']
                     lr_d = self.optimizers.D.param_groups[0]['lr']
-                    lr_p = self.optimizers.P.param_groups[0]['lr']
+                    lr_p = self.optimizers.P.param_groups[0]['lr'] if self.use_patch_discriminator else None
+                    patch_lr_info = f'/P={lr_p:.6g}' if lr_p is not None else ''
 
                     info = (
                         f"[{epoch:3d}|{self.opt.training.epochs:3d}]-"
@@ -2600,7 +2608,7 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                         + (f"Ctx:{meter_vals['g_context']:.3f} " if context_weight > 0 else '')
                         + f"KL:{meter_vals['g_kl']:.3f} | "
                         f"R1:{meter_vals['r1_loss']:.3f} "
-                        f"Lr: G={lr_g:.6g}/D={lr_d:.6g}/P={lr_p:.6g}"
+                        f"Lr: G={lr_g:.6g}/D={lr_d:.6g}{patch_lr_info}"
                     )
                     self.print(info) if self.local_rank < 1 else None
 

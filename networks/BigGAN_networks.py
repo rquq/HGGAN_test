@@ -7,7 +7,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from . import BigGAN_layers as layers
-from .fusion import ContentContext, SpatialStyleModulation
+from .fusion import ContentContext, SpatialStyleRefinement
 from networks.utils import init_weights, _len2mask
 
 # Architectures for G
@@ -159,7 +159,7 @@ class Generator(nn.Module):
             residual_init=fusion_residual_init,
         )
         self.use_reference_memory = bool(use_reference_memory)
-        self.spatial_style = SpatialStyleModulation(
+        self.spatial_style = SpatialStyleRefinement(
             self.arch['out_channels'][0], memory_dim=reference_memory_dim,
             memory_height=reference_memory_height,
             nhead=fusion_nhead, attn_dim=fusion_attn_dim,
@@ -215,7 +215,7 @@ class Generator(nn.Module):
         if type(z) is not torch.Tensor:
             z = z.as_subclass(torch.Tensor)
         if z.ndim != 3 or z.size(1) != 1 or z.size(2) != self.style_dim:
-            raise ValueError('Reference-memory G expects exactly one global style token per image')
+            raise ValueError('DEV G expects exactly one global style token per image')
         if self.spatial_style is None and (reference_memory is not None or memory_valid_mask is not None):
             raise ValueError('Reference memory was passed to a generator with retrieval disabled')
 

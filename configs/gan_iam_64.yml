@@ -59,9 +59,8 @@ training:
   rare_word_ratio: 0.15
 
   # Patch adversarial objective
+  use_patch_discriminator: false
   lambda_patch_adv: 0.45
-  min_patch_crops: 4
-  max_patch_crops: 8
 
   # OCR objectives and schedules
   lambda_ctc_rand: 1.0
@@ -69,7 +68,7 @@ training:
   ctc_rand_decay_start_epoch: 10
   ctc_rand_decay_end_epoch: 20
   lambda_ctc_style: 0.5
-  lambda_ctc_style_final: 0.3
+  lambda_ctc_style_final: 0.4
   ctc_style_decay_start_epoch: 8
   ctc_style_decay_end_epoch: 28
 

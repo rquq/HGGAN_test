@@ -337,91 +337,55 @@ def ctc_greedy_decoder(probs_seq, blank_index=0):
     return index_list
 
 
-def adaptive_crop_count(valid_width, patch_size=32, min_crops=4, max_crops=8):
-    """Choose bounded local coverage proportional to the valid word width."""
-    if patch_size < 1 or min_crops < 1 or max_crops < min_crops:
-        raise ValueError('invalid adaptive crop configuration')
-    width_crops = (max(int(valid_width), 1) + patch_size - 1) // patch_size
-    return max(min_crops, min(max_crops, width_crops))
+def extract_stroke_patches(images, image_lens, fill_value=-1.0):
+    """Tile valid words with non-overlapping half-height squares, in row order.
 
-
-def sample_stroke_patches(
-    images, image_lens, min_crops=4, max_crops=8, fill_value=-1.0,
-):
-    """Return half-height square crop batches with per-word counts.
-
-    Crop positions are stratified across valid horizontal starts and alternate
-    upper/lower bands. No character boxes, ink thresholds, or labels are used.
-    Short words are extended with the dataset padding value, never canvas pixels.
+    Right/bottom remainder cells contain paper, never batch-padding pixels.
+    Return one flat crop batch and counts for equal-word loss reduction.
     """
-    if images.ndim != 4 or images.size(0) == 0 or min(images.shape[-2:]) < 2:
-        raise ValueError('images must be a nonempty (B, C, H, W) batch with H/W >= 2')
-    if min_crops < 1 or max_crops < min_crops:
-        raise ValueError('invalid adaptive crop bounds')
+    if (images.ndim != 4 or images.size(0) == 0 or images.size(1) == 0
+            or images.size(-2) < 2 or images.size(-1) < 1):
+        raise ValueError('images must be a nonempty BCHW batch with H >= 2 and W >= 1')
     widths = torch.as_tensor(image_lens, device=images.device, dtype=torch.long)
     if (widths.ndim != 1 or widths.numel() != images.size(0)
             or torch.any(widths < 1) or torch.any(widths > images.size(-1))):
         raise ValueError('image_lens must contain one valid width per image')
 
     height = images.size(-2)
-    slots = torch.arange(max_crops, device=images.device)
-    scales = []
-    for size in (max(1, height // 2),):
-        counts = ((widths + size - 1) // size).clamp(min_crops, max_crops)
-        rows, indices = (slots[None, :] < counts[:, None]).nonzero(as_tuple=True)
-        n = rows.numel()
-        # Every stratum covers a disjoint interval of feasible crop starts.
-        positions = (widths[rows] - size + 1).clamp_min(1)
-        left = torch.floor(
-            (indices + torch.rand(n, device=images.device))
-            * positions / counts[rows]
-        ).long()
-        vertical_positions = height - size + 1
-        band = indices.remainder(2)
-        lower = band * (vertical_positions // 2)
-        upper = torch.maximum((band + 1) * vertical_positions // 2, lower + 1)
-        top = lower + torch.floor(
-            torch.rand(n, device=images.device) * (upper - lower)
-        ).long()
-        offset = torch.arange(size, device=images.device)
-        x = left[:, None] + offset
-        patches = images[
-            rows[:, None, None, None],
-            torch.arange(images.size(1), device=images.device)[None, :, None, None],
-            (top[:, None] + offset)[:, None, :, None],
-            x.clamp_max(images.size(-1) - 1)[:, None, None, :],
-        ]
-        patches = patches.masked_fill(
-            (x >= widths[rows, None])[:, None, None, :], float(fill_value)
-        )
-        scales.append((patches, counts))
-    return tuple(scales)
+    size = height // 2
+    columns = (widths + size - 1) // size
+    counts = columns * ((height + size - 1) // size)
+    rows = torch.arange(images.size(0), device=images.device).repeat_interleave(counts)
+    starts = counts.cumsum(0) - counts
+    slots = torch.arange(rows.numel(), device=images.device) - starts[rows]
+    offset = torch.arange(size, device=images.device)
+    x = (slots % columns[rows])[:, None] * size + offset
+    y = (slots // columns[rows])[:, None] * size + offset
+    patches = images[
+        rows[:, None, None, None],
+        torch.arange(images.size(1), device=images.device)[None, :, None, None],
+        y.clamp_max(height - 1)[:, None, :, None],
+        x.clamp_max(images.size(-1) - 1)[:, None, None, :],
+    ]
+    invalid = (x >= widths[rows, None])[:, None, None, :] | (y >= height)[:, None, :, None]
+    return patches.masked_fill(invalid, float(fill_value)), counts
 
 
 def run_patch_discriminator(discriminator, groups, score_transform=None):
-    """Shared critic, equal word/scale weighting, one score vector per branch.
-
-    Batch same-size crops together; different scales must remain separate.
-    Apply any hinge penalty per spatial decision before averaging maps, crops,
-    and scales. Branch averaging is owned by the GAN objective.
-    """
+    """Batch equal-size grids; apply hinge before equal-word reduction."""
     if not groups:
         raise ValueError('at least one patch group is required')
-    branch_scores = [[] for _ in groups]
-    for scale in range(len(groups[0])):
-        batches = [group[scale] for group in groups]
-        sizes = [patches.size(0) for patches, _ in batches]
-        logits = discriminator(torch.cat([patches for patches, _ in batches], dim=0))
-        if score_transform is not None:
-            logits = score_transform(logits)
-        crop_scores = logits.flatten(1).mean(dim=1)
-        for branch, scores, (_, counts) in zip(
-            branch_scores, crop_scores.split(sizes), batches
-        ):
-            rows = torch.arange(counts.numel(), device=scores.device).repeat_interleave(counts)
-            sums = scores.new_zeros(counts.numel()).scatter_add(0, rows, scores)
-            branch.append(sums / counts.to(scores.dtype))
-    return [torch.stack(scores).mean(dim=0) for scores in branch_scores]
+    sizes = [patches.size(0) for patches, _ in groups]
+    logits = discriminator(torch.cat([patches for patches, _ in groups], dim=0))
+    if score_transform is not None:
+        logits = score_transform(logits)
+    crop_scores = logits.flatten(1).mean(dim=1)
+    branch_scores = []
+    for scores, (_, counts) in zip(crop_scores.split(sizes), groups):
+        rows = torch.arange(counts.numel(), device=scores.device).repeat_interleave(counts)
+        sums = scores.new_zeros(counts.numel()).scatter_add(0, rows, scores)
+        branch_scores.append(sums / counts.to(scores.dtype))
+    return branch_scores
 
 
 def augment_word_batch(

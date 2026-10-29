@@ -59,14 +59,8 @@ class ContentSelfAttention(nn.Module):
         return _mask_tokens(self.attn_out(attended), mask)
 
 
-class SpatialStyleModulation(nn.Module):
-    """Use retrieved reference evidence to modulate early generator features.
-
-    The reference branch predicts a per-position, per-channel residual gain,
-    rather than adding its visual features directly to the generator stream.
-    The gain and its learned scale are unconstrained; this is not an artifact
-    filter or a guarantee that downstream convolutions preserve glyph shapes.
-    """
+class SpatialStyleRefinement(nn.Module):
+    """Retrieve spatial reference evidence for early generator features."""
 
     def __init__(self, d_model, memory_dim=64, memory_height=4,
                  nhead=4, attn_dim=128, residual_init=0.25):
@@ -86,12 +80,12 @@ class SpatialStyleModulation(nn.Module):
         self.q_proj = nn.Linear(d_model, attn_dim, bias=False)
         self.k_proj = nn.Linear(memory_dim, attn_dim, bias=False)
         self.v_proj = nn.Linear(memory_dim, attn_dim, bias=False)
-        self.gain_proj = nn.Linear(attn_dim, d_model, bias=False)
+        self.out_proj = nn.Linear(attn_dim, d_model, bias=False)
         self.reference_scale = nn.Parameter(torch.full((d_model,), self.residual_init))
         self.reset_stability_parameters()
 
     def reset_stability_parameters(self):
-        for layer in (self.q_proj, self.k_proj, self.v_proj, self.gain_proj):
+        for layer in (self.q_proj, self.k_proj, self.v_proj, self.out_proj):
             nn.init.xavier_uniform_(layer.weight)
         with torch.no_grad():
             self.reference_scale.fill_(self.residual_init)
@@ -158,8 +152,7 @@ class SpatialStyleModulation(nn.Module):
         )
         attended = attended.transpose(1, 2).reshape(batch_size, sequence.size(1), -1)
         refined = _mask_tokens(
-            sequence * (1.0 + self.reference_scale * self.gain_proj(attended)),
-            query_mask,
+            sequence + self.reference_scale * self.out_proj(attended), query_mask,
         )
         refined = refined.transpose(1, 2).reshape(batch_size, channels, height, width)
         return feature.index_copy(0, active, refined)
