@@ -104,6 +104,8 @@ training:
   ckpt_dir: ckpts
 
 valid:
+  # First GAN epoch eligible for independent CER/WER evaluation.
+  num_start_ocr: 80
   # Dataset and metric switches
   dset_name: iam_word
   dset_split: test
