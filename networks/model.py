@@ -1510,6 +1510,11 @@ class AdversarialModel(BaseModel):
         from metric.ocr_eval import IndependentOCR, evaluate_validation, file_fingerprint
         if generated_batches is None or real_batches is None:
             raise ValueError('Full OCR requires the configured validation image streams')
+        start_epoch = int(getattr(self.opt.valid, 'num_start_ocr', 80))
+        if start_epoch < 0:
+            raise ValueError('num_start_ocr must be nonnegative')
+        if epoch is not None and int(epoch) < start_epoch:
+            return {}
         every = int(getattr(self.opt.valid, 'ocr_eval_every_n_epochs', 1))
         if every < 0:
             raise ValueError('ocr_eval_every_n_epochs must be nonnegative')
