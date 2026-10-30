@@ -605,7 +605,12 @@ class AdversarialModel(BaseModel):
         legacy_ocr = bool(getattr(self.opt.valid, 'validate_ocr', False))
         validate_cer = bool(getattr(self.opt.valid, 'validate_cer', False))
         validate_wer = bool(getattr(self.opt.valid, 'validate_wer', False))
-        if legacy_ocr or validate_cer or validate_wer:
+        ocr_epoch = kwargs.get('current_epoch')
+        start_epoch = int(getattr(self.opt.valid, 'num_start_ocr', 80))
+        if start_epoch < 0:
+            raise ValueError('num_start_ocr must be nonnegative')
+        ocr_due = ocr_epoch is None or int(ocr_epoch) >= start_epoch
+        if ocr_due and (legacy_ocr or validate_cer or validate_wer):
             from metric.ocr_eval import IndependentOCR, evaluate_validation
             evaluator = None
             try:

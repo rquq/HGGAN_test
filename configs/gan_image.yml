@@ -28,6 +28,8 @@ training:
   vae_mode: true
 
 valid:
+  # First GAN epoch eligible for independent CER/WER evaluation.
+  num_start_ocr: 80
   dset_name: 'custom'
   dset_split: './data/image_samples/'
 

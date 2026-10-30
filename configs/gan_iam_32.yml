@@ -50,6 +50,8 @@ training:
   pretrained_ckpt: ''
 
 valid:
+  # First GAN epoch eligible for independent CER/WER evaluation.
+  num_start_ocr: 80
   dset_name: 'iam_word_org'
   dset_split: 'test'
   validate_ocr: false
