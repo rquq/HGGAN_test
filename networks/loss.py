@@ -5,6 +5,74 @@ import torch.nn.functional as F
 from networks.utils import _len2mask
 
 
+class SlicedWassersteinLoss(nn.Module):
+    """Equal-word, multiscale matching of frozen local feature distributions.
+
+    Adapted from Heitz et al., CVPR 2021. Unlike paired feature reconstruction,
+    sorting discards spatial correspondence. Only real training features define
+    the detached scale; generated magnitude discrepancies remain penalized.
+    """
+
+    def __init__(self, channels, projections=32, samples_per_word=64, seed=123456):
+        super().__init__()
+        if not channels or min(*channels, projections, samples_per_word) < 1:
+            raise ValueError('Channels, projections and samples must be positive')
+        self.samples_per_word = int(samples_per_word)
+        self.num_scales = len(channels)
+        self.register_buffer('projection_step', torch.zeros((), dtype=torch.long))
+        self.register_buffer('projection_seed', torch.tensor(seed, dtype=torch.long))
+        rng = torch.Generator(device='cpu').manual_seed(seed)
+        for index, channel in enumerate(channels):
+            directions = F.normalize(torch.randn(channel, projections, generator=rng), dim=0)
+            self.register_buffer(f'directions_{index}', directions)
+
+    def _quantiles(self, features, lengths, directions):
+        if features.ndim != 4 or features.size(1) != directions.size(0):
+            raise ValueError('Expected BCHW features matching the projection channels')
+        lengths = torch.as_tensor(lengths, device=features.device).long()
+        if (lengths.shape != (features.size(0),) or torch.any(lengths < 1)
+                or torch.any(lengths > features.size(-1))):
+            raise ValueError('One valid width is required per feature image')
+        values = []
+        for row, width in zip(features, lengths.detach().cpu().tolist()):
+            descriptors = row[:, :, :width].flatten(1).transpose(0, 1)
+            projected = descriptors @ directions.to(descriptors)
+            ordered = projected.sort(dim=0).values
+            # Quantile resampling, not spatial subsampling: location permutation
+            # invariance also holds for short images with fewer than 64 entries.
+            quantiles = F.interpolate(
+                ordered.T.unsqueeze(0), size=self.samples_per_word,
+                mode='linear', align_corners=False,
+            )[0].T
+            values.append(quantiles)
+        return torch.cat(values, dim=0)
+
+    def forward(self, real_features, fake_features, real_lengths, fake_lengths):
+        if not all(len(items) == self.num_scales for items in
+                   (real_features, fake_features, real_lengths, fake_lengths)):
+            raise ValueError('Feature and length lists must match configured scales')
+        rng = torch.Generator(device='cpu').manual_seed(
+            int(self.projection_seed.item()) + int(self.projection_step.item())
+        )
+        if self.training:
+            self.projection_step.add_(1)
+        terms = []
+        for index, (real, fake, rw, fw) in enumerate(zip(
+                real_features, fake_features, real_lengths, fake_lengths)):
+            template = getattr(self, f'directions_{index}')
+            # Refresh training directions to avoid a permanent low-rank blind
+            # subspace. Local RNG/counter are reproducible and checkpointed.
+            directions = (F.normalize(torch.randn(template.shape, generator=rng), dim=0).to(template)
+                          if self.training else template)
+            target = self._quantiles(real.detach(), rw, directions)
+            generated = self._quantiles(fake, fw, directions)
+            if target.size(0) != generated.size(0):
+                raise ValueError('Real/fake batches must contain the same number of words')
+            scale = target.square().mean(0).sqrt().clamp_min(1e-2).detach()
+            terms.append(((target.sort(0).values - generated.sort(0).values) / scale).square().mean())
+        return torch.stack(terms).mean()
+
+
 def r1_reg(d_out, x_in):
     # zero-centered gradient penalty for real images
     batch_size = x_in.size(0)
@@ -35,128 +103,6 @@ def KLloss(mu, logvar):
 ##############################################################################
 # Contextual loss
 ##############################################################################
-class CXLoss(nn.Module):
-    def __init__(self, sigma=0.5, b=1.0, similarity="cosine", max_tokens=256):
-        super(CXLoss, self).__init__()
-        if max_tokens is not None and (
-            isinstance(max_tokens, bool) or not isinstance(max_tokens, int) or max_tokens <= 0
-        ):
-            raise ValueError('max_tokens must be a positive int or None')
-        self.similarity = similarity
-        self.sigma = sigma
-        self.b = b
-        self.max_tokens = max_tokens
-
-    def _pool_valid_crop(self, feature):
-        """Downsample a single already-cropped feature map when over budget."""
-        height, width = feature.shape[-2:]
-        if self.max_tokens is None or height * width <= self.max_tokens:
-            return feature
-        scale = math.sqrt(self.max_tokens / float(height * width))
-        out_height = max(1, int(height * scale))
-        out_width = max(1, int(width * scale))
-        while out_height * out_width > self.max_tokens:
-            if out_height >= out_width and out_height > 1:
-                out_height -= 1
-            elif out_width > 1:
-                out_width -= 1
-            else:
-                break
-        return F.adaptive_avg_pool2d(feature, (out_height, out_width))
-
-    def center_by_T(self, featureI, featureT):
-        # Center each sample independently; a batch-wide mean couples writers.
-        meanT = featureT.mean(dim=(2, 3), keepdim=True)
-        return featureI - meanT, featureT - meanT
-
-    def l2_normalize_channelwise(self, features):
-        # Normalize on channel dimension (axis=1)
-        norms = torch.clamp(features.norm(p=2, dim=1, keepdim=True), min=1e-8)
-        features = features.div(norms)
-        return features
-
-    def calc_relative_distances(self, raw_dist, axis=1):
-        epsilon = 1e-5
-        # [0] means get the value, torch min will return the index as well
-        div = torch.min(raw_dist, dim=axis, keepdim=True)[0]
-        relative_dist = raw_dist / (div + epsilon)
-        return relative_dist
-
-    def calc_CX(self, dist, axis=1):
-        W = torch.exp((self.b - dist) / self.sigma)
-        W_sum = W.sum(dim=axis, keepdim=True)
-        return W.div(W_sum)
-
-    def _forward_impl(self, featureT, featureI):
-        '''
-        :param featureT: target
-        :param featureI: inference
-        :return:
-        '''
-
-        featureI, featureT = self.center_by_T(featureI, featureT)
-
-        featureI = self.l2_normalize_channelwise(featureI)
-        featureT = self.l2_normalize_channelwise(featureT)
-
-        N, C, H_T, W_T = featureT.shape
-        _, _, H_I, W_I = featureI.shape
-
-        featI_flat = featureI.reshape(N, C, H_I * W_I)
-        featT_flat = featureT.reshape(N, C, H_T * W_T)
-
-        # batched matrix multiplication: (N, P_T, C) x (N, C, P_I) -> (N, P_T, P_I)
-        dist = torch.bmm(featT_flat.transpose(1, 2), featI_flat).clamp(-1.0, 1.0)
-
-        raw_dist = (1. - dist) / 2.
-
-        relative_dist = self.calc_relative_distances(raw_dist, axis=1)
-
-        CX = self.calc_CX(relative_dist, axis=1)
-
-        # Take max over spatial dimensions of Inference feature map (dim=2, which is P_I)
-        CX_max = CX.max(dim=2)[0]
-        CX_mean = torch.mean(CX_max, dim=1)
-        CX_loss = torch.mean(-torch.log(CX_mean + 1e-5))
-        return CX_loss
-
-    def forward(self, featureT, featureI, target_lengths=None, input_lengths=None):
-        if target_lengths is None and input_lengths is None and self.max_tokens is None:
-            return self._forward_impl(featureT, featureI)
-        if target_lengths is None and input_lengths is None:
-            return torch.stack([
-                self._forward_impl(
-                    self._pool_valid_crop(featureT[index:index + 1]),
-                    self._pool_valid_crop(featureI[index:index + 1]),
-                )
-                for index in range(featureT.size(0))
-            ]).mean()
-        if target_lengths is None or input_lengths is None:
-            raise ValueError('target_lengths and input_lengths must be supplied together')
-        if len(target_lengths) != featureT.size(0) or len(input_lengths) != featureI.size(0):
-            raise ValueError('contextual-loss lengths must match their batch sizes')
-
-        losses = []
-        target_widths = target_lengths.detach().clamp(
-            1, featureT.size(-1)
-        ).tolist()
-        input_widths = input_lengths.detach().clamp(
-            1, featureI.size(-1)
-        ).tolist()
-        for index, (target_width, input_width) in enumerate(zip(
-            target_widths, input_widths
-        )):
-            target_width = int(target_width)
-            input_width = int(input_width)
-            target_crop = featureT[index:index + 1, :, :, :target_width]
-            input_crop = featureI[index:index + 1, :, :, :input_width]
-            # Crop padding away before pooling so invalid columns never leak
-            # into the valid feature representation.
-            losses.append(self._forward_impl(
-                self._pool_valid_crop(target_crop),
-                self._pool_valid_crop(input_crop),
-            ))
-        return torch.stack(losses).mean()
 
 
 def global_style_reconstruction_loss(

@@ -12,7 +12,13 @@ img_height: 64
 char_width: 32
 
 training:
-  use_patch_discriminator: false
+  lambda_distribution: 0.1
+  distribution_projections: 32
+  distribution_samples: 64
+  selection_metric: kid
+  lambda_recn: 0.0
+  lambda_recn_final: 0.0
+  use_patch_discriminator: true
   # Data and initialization
   dset_split: ./data/image_samples/
 
@@ -31,7 +37,7 @@ training:
   capitalize_ratio: 0.5
   blank_ratio: 0.0
 
-  # Reconstruction and style objectives
+  # Generation/style objectives; no paired pixel-copy target
   vae_mode: true
 
   # Logging, evaluation, saving and exports
@@ -39,17 +45,13 @@ training:
   ckpt_dir: ckpts
 
 valid:
-  # First GAN epoch eligible for independent CER/WER evaluation.
-  num_start_ocr: 80
   # Dataset and metric switches
   dset_name: custom
   dset_split: ./data/image_samples/
   validate_fid: false
-  validate_kid: false
+  validate_kid: true
   validate_hwd: false
   validate_cmmd: false
-  validate_cer: false
-  validate_wer: false
   validate_is_gen: false
   validate_is_org: false
   validate_psnr: false
@@ -68,18 +70,16 @@ StyBackbone:
   norm: bn
 
 EncModel:
-  # Global latent
-  style_dim: 32
+  # Single global appearance latent
+  style_dim: 128
   in_dim: 256
 
-  # Reference memory from the shared backbone's intermediate spatial features
-
-  # Contextual-loss feature maps and initialization
+  # Distribution-loss feature maps and initialization
   init: none
 
 GenModel:
-  # Global conditioning and reference retrieval
-  style_dim: 32
+  # Single global conditioning path
+  style_dim: 128
 
   # Content geometry and convolutional generator
   G_ch: 64

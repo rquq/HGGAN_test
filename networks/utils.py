@@ -338,7 +338,7 @@ def ctc_greedy_decoder(probs_seq, blank_index=0):
 
 
 def extract_stroke_patches(images, image_lens, fill_value=-1.0):
-    """Tile valid words with non-overlapping half-height squares, in row order.
+    """Cover valid words with half-height squares at half-square stride.
 
     Right/bottom remainder cells contain paper, never batch-padding pixels.
     Return one flat crop batch and counts for equal-word loss reduction.
@@ -352,15 +352,18 @@ def extract_stroke_patches(images, image_lens, fill_value=-1.0):
         raise ValueError('image_lens must contain one valid width per image')
 
     height = images.size(-2)
+    if height < 4 or height % 4:
+        raise ValueError('overlapping grid requires an image height divisible by four')
     size = height // 2
-    columns = (widths + size - 1) // size
-    counts = columns * ((height + size - 1) // size)
+    stride = height // 4
+    columns = 2 * ((widths + size - 1) // size) - 1
+    counts = columns * 3
     rows = torch.arange(images.size(0), device=images.device).repeat_interleave(counts)
     starts = counts.cumsum(0) - counts
     slots = torch.arange(rows.numel(), device=images.device) - starts[rows]
     offset = torch.arange(size, device=images.device)
-    x = (slots % columns[rows])[:, None] * size + offset
-    y = (slots // columns[rows])[:, None] * size + offset
+    x = (slots % columns[rows])[:, None] * stride + offset
+    y = (slots // columns[rows])[:, None] * stride + offset
     patches = images[
         rows[:, None, None, None],
         torch.arange(images.size(1), device=images.device)[None, :, None, None],

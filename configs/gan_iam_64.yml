@@ -59,7 +59,7 @@ training:
   rare_word_ratio: 0.15
 
   # Patch adversarial objective
-  use_patch_discriminator: false
+  use_patch_discriminator: true
   lambda_patch_adv: 0.45
 
   # OCR objectives and schedules
@@ -72,18 +72,20 @@ training:
   ctc_style_decay_start_epoch: 8
   ctc_style_decay_end_epoch: 28
 
-  # Reconstruction and style objectives
+  # Generation/style objectives; no paired pixel-copy target
   vae_mode: true
-  lambda_recn: 10.0
-  lambda_recn_final: 2.5
+  lambda_recn: 0.0
+  lambda_recn_final: 0.0
   recn_decay_start_epoch: 24
   recn_decay_end_epoch: 42
   lambda_wid: 0.25
   lambda_info: 1.0
-  lambda_style_cycle: 1.0
   lambda_content_adv: 0.02
   lambda_kl: 0.1
-  lambda_ctx: 0.1
+  lambda_distribution: 0.1
+  distribution_projections: 32
+  distribution_samples: 64
+  selection_metric: kid
   style_loss_normalization_tokens: 8
 
   # Augmentation and regularization
@@ -104,8 +106,6 @@ training:
   ckpt_dir: ckpts
 
 valid:
-  # First GAN epoch eligible for independent CER/WER evaluation.
-  num_start_ocr: 80
   # Dataset and metric switches
   dset_name: iam_word
   dset_split: test
@@ -114,8 +114,6 @@ valid:
   validate_kid: true
   validate_hwd: true
   validate_cmmd: false
-  validate_cer: true
-  validate_wer: true
   validate_is_gen: false
   validate_is_org: false
   validate_psnr: false
@@ -123,8 +121,6 @@ valid:
   validate_wier: false
 
   # Independent OCR evaluation
-  ocr_eval_every_n_epochs: 1
-  ocr_eval_batch_size: 2
 
   # Feature extraction and sampling
   batch_size: 32
@@ -161,27 +157,18 @@ StyBackbone:
   norm: bn
 
 EncModel:
-  # Global latent
-  style_dim: 32
+  # Single global appearance latent
+  style_dim: 128
   in_dim: 256
   num_style_tokens: 1
 
-  # Reference memory from the shared backbone's intermediate spatial features
-  memory_feature_index: 1
-  memory_dim: 64
-  memory_height: 4
-  memory_max_width: 32
-
-  # Contextual-loss feature maps and initialization
+  # Distribution-loss feature maps and initialization
   feature_scales: [1, 2, 4]
   init: none
 
 GenModel:
-  # Global conditioning and reference retrieval
-  style_dim: 32
-  use_reference_memory: true
-  reference_memory_dim: 64
-  reference_memory_height: 4
+  # Single global conditioning path
+  style_dim: 128
   fusion_nhead: 4
   fusion_attn_dim: 128
   fusion_ffn_dim: 360
