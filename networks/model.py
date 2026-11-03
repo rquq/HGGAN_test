@@ -600,39 +600,6 @@ class AdversarialModel(BaseModel):
                 wier = self.validate_wid(get_generator(), real_dloader=eval_dloader, split=self.opt.valid.dset_split)
                 res['wier'] = wier
 
-        # Accept the dev metric toggles while preserving the legacy
-        # ``validate_ocr`` behaviour for existing Classic configurations.
-        legacy_ocr = bool(getattr(self.opt.valid, 'validate_ocr', False))
-        validate_cer = bool(getattr(self.opt.valid, 'validate_cer', False))
-        validate_wer = bool(getattr(self.opt.valid, 'validate_wer', False))
-        ocr_epoch = kwargs.get('current_epoch')
-        start_epoch = int(getattr(self.opt.valid, 'num_start_ocr', 80))
-        if start_epoch < 0:
-            raise ValueError('num_start_ocr must be nonnegative')
-        ocr_due = ocr_epoch is None or int(ocr_epoch) >= start_epoch
-        if ocr_due and (legacy_ocr or validate_cer or validate_wer):
-            from metric.ocr_eval import IndependentOCR, evaluate_validation
-            evaluator = None
-            try:
-                # Loading the external OCR must not change GAN sampling RNG.
-                with torch.random.fork_rng(devices=[]):
-                    evaluator = IndependentOCR(self.device)
-                result = evaluate_validation(
-                    get_generator(), eval_dloader, self.label_converter, evaluator,
-                    os.path.join(self.log_root, 'ocr_eval', f'full_epoch_{kwargs.get("current_epoch", "eval")}'),
-                    int(getattr(self.opt.valid, 'ocr_eval_batch_size', 2)),
-                    {'split':self.opt.valid.dset_split, 'samples':len(eval_dloader.dataset)},
-                )
-                self.ocr_eval_metadata = {k:v for k,v in result.items() if k != 'metrics'}
-                if legacy_ocr or validate_cer:
-                    res['cer'] = result['metrics']['cer']
-                if legacy_ocr or validate_wer:
-                    res['wer'] = result['metrics']['wer']
-            except (OSError, ImportError, torch.cuda.OutOfMemoryError) as error:
-                self.print(f'Independent OCR unavailable; no training-R fallback: {error}')
-            finally:
-                del evaluator
-
         if getattr(self.opt.valid, 'validate_hwd', True):
             hwd_val = calculate_hwd_score(
                 eval_dloader, get_generator(), n_rand_repeat, self.device,
@@ -681,46 +648,6 @@ class AdversarialModel(BaseModel):
 
         torch.cuda.empty_cache()
         return res
-
-    def validate_ocr(self, dloader, n_iters):
-        self.set_mode('eval')
-        recognizer = Recognizer(**self.opt.OcrModel).to(self.device)
-        r_dict = torch.load(self.opt.training.pretrained_r)['Recognizer']
-        recognizer.load_state_dict(r_dict, self.device)
-        recognizer.eval()
-        print('load pretrained recognizer: ', self.opt.training.pretrained_r)
-        ctc_len_scale = self.models.R.len_scale
-        char_trans = 0
-        total_chars = 0
-        word_trans = 0
-        total_words = 0
-
-        with torch.no_grad():
-            for i, batch in tqdm(enumerate(dloader), total=n_iters):
-                real_imgs, real_img_lens = batch['style_imgs'].to(self.device), batch['style_img_lens'].to(self.device)
-                logits = recognizer(real_imgs, real_img_lens)
-                logits = torch.nn.functional.softmax(logits, dim=2).detach()
-
-                logits = logits.cpu().numpy()
-                word_preds = []
-                for logit, img_len in zip(logits, batch['style_img_lens'].cpu().numpy()):
-                    label = ctc_greedy_decoder(logit[:img_len // ctc_len_scale])
-                    word_preds.append(self.label_converter.decode(label))
-                word_reals = self.label_converter.decode(batch['lbs'], batch['lb_lens'])
-                for word_pred, word_real in zip(word_preds, word_reals):
-                    char_tran = levenshtein(word_pred, word_real)
-                    char_trans += char_tran
-                    total_chars += len(word_real)
-                    total_words += 1
-                    if char_tran > 0:
-                        word_trans += 1
-
-        for model in self.models.values():
-            model.train()
-        cer = char_trans * 1.0 / total_chars
-        wer = word_trans * 1.0 / total_words
-        print('CER:{:.4f}  WER:{:.4f}'.format(cer, wer))
-        return cer, wer
 
     def validate_wid(self, generator, real_dloader, split='test'):
         if split == 'test':
