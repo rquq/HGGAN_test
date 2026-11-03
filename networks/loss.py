@@ -1,14 +1,11 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import math
 
 
-def _len2mask(length, max_len=None, dtype=torch.float32):
+def _len2mask(length, max_len, dtype=torch.float32):
     assert len(length.shape) == 1, 'Length shape should be 1 dimensional.'
-    if length.numel() == 0:
-        return torch.empty((0, 0), device=length.device, dtype=dtype or torch.float32)
-    max_len = max_len or int(length.max().item())
+    max_len = max_len or length.max().item()
     mask = torch.arange(max_len, device=length.device,
                         dtype=length.dtype).expand(len(length), max_len) < length.unsqueeze(1)
     if dtype is not None:
@@ -29,68 +26,68 @@ def r1_reg(d_out, x_in):
     return reg
 
 
+def tv_loss(img, img_lens):
+    loss = (recn_l1_loss(img[:, :, 1:, :], img[:, :, :-1, :], img_lens) +
+            recn_l1_loss(img[:, :, :, 1:], img[:, :, :, :-1], img_lens - 1)) / 2
+    return loss
 
 
 def recn_l1_loss(img1, img2, img_lens):
     mask = _len2mask(img_lens, img1.size(-1)).to(img1.device)
     diff_img = (img1 - img2) * mask.view(mask.size(0), 1, 1, mask.size(1))
-    loss = diff_img.abs().sum() / (diff_img.size(1) * diff_img.size(2) * torch.clamp(img_lens.sum(), min=1))
+    loss = diff_img.abs().sum() / (diff_img.size(1) * diff_img.size(2) * img_lens.sum())
     return loss
 
 
+def calc_loss_perceptual(hout, hgt, img_lens):
+    loss = 0
+    for j in range(3):
+        scale = 2 ** (3 - j)
+        loss += recn_l1_loss(hout[j], hgt[j], img_lens // scale) / scale
+    return loss
+
+
+def gram_matrix(feat):
+    # https://github.com/pytorch/examples/blob/master/fast_neural_style/neural_style/utils.py
+    (b, ch, h, w) = feat.size()
+    feat = feat.view(b, ch, h * w)
+    feat_t = feat.transpose(1, 2)
+    gram = torch.bmm(feat, feat_t) / (ch * h * w)
+    return gram
 
 
 def KLloss(mu, logvar):
-    # Mean, rather than sum, makes this weight independent of token count and
-    # style dimension and prevents KL from abruptly dominating the generator.
-    loss = -0.5 * (1 + logvar - mu ** 2 - logvar.exp())
-    return loss.flatten(1).mean(dim=1).mean()
-
-
+    return torch.mean(-0.5 * torch.sum(1 + logvar - mu ** 2 - logvar.exp(), dim=1), dim=0)
 
 
 ##############################################################################
 # Contextual loss
 ##############################################################################
 class CXLoss(nn.Module):
-    def __init__(self, sigma=0.5, b=1.0, similarity="cosine", max_tokens=256):
+    def __init__(self, sigma=0.5, b=1.0, similarity="consine"):
         super(CXLoss, self).__init__()
-        if max_tokens is not None and (
-            isinstance(max_tokens, bool) or not isinstance(max_tokens, int) or max_tokens <= 0
-        ):
-            raise ValueError('max_tokens must be a positive int or None')
         self.similarity = similarity
         self.sigma = sigma
         self.b = b
-        self.max_tokens = max_tokens
-
-    def _pool_valid_crop(self, feature):
-        """Downsample a single already-cropped feature map when over budget."""
-        height, width = feature.shape[-2:]
-        if self.max_tokens is None or height * width <= self.max_tokens:
-            return feature
-        scale = math.sqrt(self.max_tokens / float(height * width))
-        out_height = max(1, int(height * scale))
-        out_width = max(1, int(width * scale))
-        while out_height * out_width > self.max_tokens:
-            if out_height >= out_width and out_height > 1:
-                out_height -= 1
-            elif out_width > 1:
-                out_width -= 1
-            else:
-                break
-        return F.adaptive_avg_pool2d(feature, (out_height, out_width))
 
     def center_by_T(self, featureI, featureT):
-        # Center each sample independently; a batch-wide mean couples writers.
-        meanT = featureT.mean(dim=(2, 3), keepdim=True)
+        # Calculate mean channel vector for feature map.
+        meanT = featureT.mean(0, keepdim=True).mean(2, keepdim=True).mean(3, keepdim=True)
         return featureI - meanT, featureT - meanT
 
     def l2_normalize_channelwise(self, features):
         # Normalize on channel dimension (axis=1)
-        norms = torch.clamp(features.norm(p=2, dim=1, keepdim=True), min=1e-8)
+        norms = features.norm(p=2, dim=1, keepdim=True)
         features = features.div(norms)
         return features
+
+    def patch_decomposition(self, features):
+        N, C, H, W = features.shape
+        assert N == 1
+        P = H * W
+        # NCHW --> 1x1xCXHW --> HWxCx1x1
+        patches = features.view(1, 1, C, P).permute((3, 2, 0, 1))
+        return patches
 
     def calc_relative_distances(self, raw_dist, axis=1):
         epsilon = 1e-5
@@ -104,76 +101,44 @@ class CXLoss(nn.Module):
         W_sum = W.sum(dim=axis, keepdim=True)
         return W.div(W_sum)
 
-    def _forward_impl(self, featureT, featureI):
+    def forward(self, featureT, featureI):
         '''
         :param featureT: target
         :param featureI: inference
         :return:
         '''
 
+        # print("featureT target size:", featureT.shape)
+        # print("featureI inference size:", featureI.shape)
+
         featureI, featureT = self.center_by_T(featureI, featureT)
 
         featureI = self.l2_normalize_channelwise(featureI)
         featureT = self.l2_normalize_channelwise(featureT)
 
-        N, C, H_T, W_T = featureT.shape
-        _, _, H_I, W_I = featureI.shape
+        dist = []
+        N = featureT.size()[0]
+        for i in range(N):
+            # NCHW
+            featureT_i = featureT[i, :, :, :].unsqueeze(0)
+            # NCHW
+            featureI_i = featureI[i, :, :, :].unsqueeze(0)
+            featureT_patch = self.patch_decomposition(featureT_i)
+            # Calculate cosine similarity
+            dist_i = F.conv2d(featureI_i, featureT_patch)
+            dist.append(dist_i)
 
-        featI_flat = featureI.reshape(N, C, H_I * W_I)
-        featT_flat = featureT.reshape(N, C, H_T * W_T)
-
-        # batched matrix multiplication: (N, P_T, C) x (N, C, P_I) -> (N, P_T, P_I)
-        dist = torch.bmm(featT_flat.transpose(1, 2), featI_flat).clamp(-1.0, 1.0)
+        # NCHW
+        dist = torch.cat(dist, dim=0)
 
         raw_dist = (1. - dist) / 2.
 
-        relative_dist = self.calc_relative_distances(raw_dist, axis=1)
+        relative_dist = self.calc_relative_distances(raw_dist)
 
-        CX = self.calc_CX(relative_dist, axis=1)
-
-        # Take max over spatial dimensions of Inference feature map (dim=2, which is P_I)
-        CX_max = CX.max(dim=2)[0]
-        CX_mean = torch.mean(CX_max, dim=1)
-        CX_loss = torch.mean(-torch.log(CX_mean + 1e-5))
-        return CX_loss
-
-    def forward(self, featureT, featureI, target_lengths=None, input_lengths=None):
-        if target_lengths is None and input_lengths is None and self.max_tokens is None:
-            return self._forward_impl(featureT, featureI)
-        if target_lengths is None and input_lengths is None:
-            return torch.stack([
-                self._forward_impl(
-                    self._pool_valid_crop(featureT[index:index + 1]),
-                    self._pool_valid_crop(featureI[index:index + 1]),
-                )
-                for index in range(featureT.size(0))
-            ]).mean()
-        if target_lengths is None or input_lengths is None:
-            raise ValueError('target_lengths and input_lengths must be supplied together')
-        if len(target_lengths) != featureT.size(0) or len(input_lengths) != featureI.size(0):
-            raise ValueError('contextual-loss lengths must match their batch sizes')
-
-        losses = []
-        target_widths = target_lengths.detach().clamp(
-            1, featureT.size(-1)
-        ).tolist()
-        input_widths = input_lengths.detach().clamp(
-            1, featureI.size(-1)
-        ).tolist()
-        for index, (target_width, input_width) in enumerate(zip(
-            target_widths, input_widths
-        )):
-            target_width = int(target_width)
-            input_width = int(input_width)
-            target_crop = featureT[index:index + 1, :, :, :target_width]
-            input_crop = featureI[index:index + 1, :, :, :input_width]
-            # Crop padding away before pooling so invalid columns never leak
-            # into the valid feature representation.
-            losses.append(self._forward_impl(
-                self._pool_valid_crop(target_crop),
-                self._pool_valid_crop(input_crop),
-            ))
-        return torch.stack(losses).mean()
+        CX = self.calc_CX(relative_dist)
+        CX = torch.mean(CX.max(dim=3)[0].max(dim=2)[0], dim=1)
+        CX = torch.mean(-torch.log(CX + 1e-5))
+        return CX
 
 
 
@@ -184,133 +149,25 @@ class GramStyleLoss(nn.Module):
     def __init__(self):
         super(GramStyleLoss, self).__init__()
         self.gram = GramMatrix()
+        self.criterion = nn.MSELoss()
 
     def __call__(self, input_feat, target_feat, feat_len=None):
         input_gram = self.gram(input_feat, feat_len)
         target_gram = self.gram(target_feat, feat_len)
-        # A raw Gram MSE scales with feature energy and channel count, so its
-        # magnitude can vary by orders of magnitude between backbone stages.
-        # Normalize by the detached energy of both Gram matrices to make the
-        # loss dimensionless while preserving gradients through input_gram.
-        error = (input_gram - target_gram).square().mean(dim=(1, 2))
-        energy = 0.5 * (
-            input_gram.square().mean(dim=(1, 2))
-            + target_gram.square().mean(dim=(1, 2))
-        )
-        return (error / energy.detach().clamp_min(1e-6)).mean()
+        loss = self.criterion(input_gram, target_gram)
+        return loss
 
 
 class GramMatrix(nn.Module):
     def forward(self, input, feat_len=None):
-        autocast_ctx = (
-            torch.cuda.amp.autocast(enabled=False)
-            if input.device.type == 'cuda'
-            else (
-                torch.amp.autocast(input.device.type, enabled=False)
-                if hasattr(torch, 'amp') and hasattr(torch.amp, 'autocast')
-                else torch.autograd.set_grad_enabled(torch.is_grad_enabled())
-            )
-        )
-        with autocast_ctx:
-            input = input.float()
-            a, b, c, d = input.size()
+        a, b, c, d = input.size()
 
-            if feat_len is not None:
-                # mask for varying lengths
-                mask = _len2mask(feat_len, d).view(a, 1, 1, d)
-                input = input * mask
-                denom = (c * torch.clamp(feat_len, min=1)).view(a, 1, 1) * b
-            else:
-                denom = float(b * c * d)
+        if feat_len is not None:
+            # mask for varying lengths
+            mask = _len2mask(feat_len, d).view(a, 1, 1, d)
+            input = input * mask
 
-            features = input.view(a, b, c * d)
-            G = torch.bmm(features, features.transpose(1, 2))
+        features = input.view(a * b, c * d)  # resise F_XL into \hat F_XL
+        G = torch.mm(features, features.t())  # compute the gram product
 
-            return G / denom
-
-
-def _global_style(style):
-    return style if style.dim() == 2 else style[:, 0]
-
-
-def global_style_reconstruction_loss(
-    pred: torch.Tensor, target: torch.Tensor, num_style_tokens: int
-) -> torch.Tensor:
-    """Apply the existing mean L1 to global style, retaining its all-token scale."""
-    if (
-        isinstance(num_style_tokens, bool)
-        or not isinstance(num_style_tokens, int)
-        or num_style_tokens <= 0
-    ):
-        raise ValueError('num_style_tokens must be a positive integer')
-    if (
-        pred.ndim != 3
-        or target.ndim != 3
-        or pred.shape != target.shape
-        or pred.size(0) < 1
-        or pred.size(1) not in (1, num_style_tokens)
-        or pred.size(2) < 1
-    ):
-        raise ValueError(
-            'pred and target must have matching shape (B, 1 or N, D)'
-        )
-    return F.l1_loss(pred[:, :1], target[:, :1]) / num_style_tokens
-
-
-def global_content_adversarial_loss(
-    logits: torch.Tensor, labels: torch.Tensor, num_style_tokens: int
-) -> torch.Tensor:
-    """Apply the existing bag-of-character BCE to global logits at all-token scale."""
-    if (
-        isinstance(num_style_tokens, bool)
-        or not isinstance(num_style_tokens, int)
-        or num_style_tokens <= 0
-    ):
-        raise ValueError('num_style_tokens must be a positive integer')
-    if (
-        logits.ndim != 3
-        or logits.size(0) < 1
-        or logits.size(1) != 1
-        or logits.size(2) < 1
-    ):
-        raise ValueError('logits must have shape (B, 1, C)')
-    if labels.ndim != 2 or labels.size(0) != logits.size(0):
-        raise ValueError('labels must have shape (B, L) matching logits batch size')
-
-    content_targets = torch.zeros_like(logits)
-    content_indices = labels[:, None, :].expand(-1, 1, -1)
-    content_indices = content_indices.clamp(0, logits.size(2) - 1)
-    content_targets.scatter_(2, content_indices, 1.0)
-    content_targets[..., 0] = 0.0
-    positive_fraction = content_targets.mean().detach().clamp(1e-4, 0.5)
-    positive_weight = ((1.0 - positive_fraction) / positive_fraction).clamp(max=10.0)
-    return F.binary_cross_entropy_with_logits(
-        logits, content_targets, pos_weight=positive_weight
-    ) / num_style_tokens
-
-
-
-
-def supervised_contrastive_style_loss(styles, writer_ids, temperature=0.1):
-    """Pull same-writer global style tokens together and repel other writers."""
-    features = F.normalize(_global_style(styles), dim=-1)
-    writer_ids = writer_ids.view(-1)
-    count = features.size(0)
-    if count < 2:
-        return features.sum() * 0.0
-
-    self_mask = torch.eye(count, dtype=torch.bool, device=features.device)
-    positive_mask = writer_ids[:, None].eq(writer_ids[None, :]) & ~self_mask
-    valid_anchors = positive_mask.any(dim=1)
-    if not valid_anchors.any():
-        return features.sum() * 0.0
-
-    logits = torch.matmul(features, features.t()) / temperature
-    logits = logits - logits.max(dim=1, keepdim=True).values.detach()
-    exp_logits = torch.exp(logits).masked_fill(self_mask, 0.0)
-    log_prob = logits - torch.log(exp_logits.sum(dim=1, keepdim=True).clamp_min(1e-8))
-    mean_positive_log_prob = (
-        (log_prob * positive_mask.to(log_prob.dtype)).sum(dim=1)
-        / positive_mask.sum(dim=1).clamp_min(1)
-    )
-    return -mean_positive_log_prob[valid_anchors].mean()
+        return G.div(a * b * c * d)

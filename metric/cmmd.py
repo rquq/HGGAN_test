@@ -150,33 +150,28 @@ def mmd(x, y):
 
 def preprocess_images_gpu(imgs, lens, size, device):
     batch_size = imgs.size(0)
-    
-    # Normalize on-device without CPU-GPU synchronization stalls
+    # Normalize on-device without per-batch CPU/GPU synchronization.
     imgs = torch.where(imgs < 0, (imgs + 1.0) / 2.0, imgs).clamp(0.0, 1.0)
     if imgs.size(1) == 1:
         imgs = imgs.repeat(1, 3, 1, 1)
-        
     lens_list = lens.tolist() if isinstance(lens, torch.Tensor) else list(lens)
     
     preprocessed = []
     for i in range(batch_size):
         length = int(lens_list[i])
         img = imgs[i:i+1, :, :, :length]
-        
         _, c, h, w = img.shape
         l = min(h, w)
         top = (h - l) // 2
         left = (w - l) // 2
-        cropped = img[:, :, top:top+l, left:left+l]
-        
-        resized = torch.nn.functional.interpolate(
-            cropped,
+        img = img[:, :, top:top+l, left:left+l]
+        img = torch.nn.functional.interpolate(
+            img,
             size=(size, size),
             mode='bicubic',
             align_corners=False
         )
-        preprocessed.append(resized)
-        
+        preprocessed.append(img)
     return torch.cat(preprocessed, dim=0).clamp(0.0, 1.0)
 
 

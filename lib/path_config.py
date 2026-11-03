@@ -25,6 +25,18 @@ def set_img_height(height):
     data_paths.clear()
     data_paths.update(get_data_paths(ImgHeight))
 
+
+def set_data_height(height):
+    """Select the source IAM resolution without changing Classic HiGAN+'s model.
+
+    The original Classic CNN is a 64px architecture.  This function changes
+    only which release file is read; ``Hdf5Dataset`` performs the documented
+    32px-to-64px input resize when necessary.
+    """
+    data_paths.clear()
+    data_paths.update(get_data_paths(int(height)))
+
+
 def set_source_polarity(polarity):
     """Declare source background colour; never infer it from ink or borders."""
     global SourcePolarity

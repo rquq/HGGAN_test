@@ -2,7 +2,6 @@ import os
 import argparse
 import random
 import numpy as np
-import torch
 from munch import Munch
 from lib.utils import yaml2config
 from networks import get_model
@@ -76,23 +75,13 @@ def parse_bool(val):
     raise argparse.ArgumentTypeError(f"Boolean value expected, got '{val}'.")
 
 
-def seed_everything(seed):
-    random.seed(seed)
-    os.environ['PYTHONHASHSEED'] = str(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed(seed)
-        torch.cuda.manual_seed_all(seed)
-
-
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Evaluation test script")
     parser.add_argument(
         "--config",
         nargs="?",
         type=str,
-        default="configs/gan_iam_64.yml",
+        default="configs/gan_iam.yml",
         help="Configuration file to use",
     )
 
@@ -141,13 +130,8 @@ if __name__ == '__main__':
     )
 
     args = parser.parse_args()
-    config_path = args.config if getattr(args, 'config', None) is not None else "configs/gan_iam_64.yml"
+    config_path = args.config if getattr(args, 'config', None) is not None else "configs/gan_iam.yml"
     cfg = yaml2config(config_path)
-
-    if hasattr(cfg, 'img_height') and cfg.img_height:
-        from lib.path_config import set_img_height
-        set_img_height(cfg.img_height)
-
     infer_cfg = getattr(cfg, 'inference', cfg)
 
     # Resolution order: CLI flag > config YAML (inference block or root) > fallback default
@@ -165,8 +149,6 @@ if __name__ == '__main__':
     else:
         seed = random.randint(0, 10000)
 
-    seed_everything(seed)
-
     cfg.device = device
     cfg.seed = seed
     cfg.valid.dset_split = split
@@ -175,15 +157,9 @@ if __name__ == '__main__':
     if args.all_metrics:
         cfg.valid.validate_fid = True
         cfg.valid.validate_kid = True
+        cfg.valid.validate_is = True
         cfg.valid.validate_hwd = True
         cfg.valid.validate_cmmd = True
-        cfg.valid.validate_cer = True
-        cfg.valid.validate_wer = True
-        cfg.valid.validate_is_gen = True
-        cfg.valid.validate_is_org = True
-        cfg.valid.validate_psnr = True
-        cfg.valid.validate_mssim = True
-        cfg.valid.validate_wier = True
 
     print("=" * 60)
     print("EVALUATION TEST CONFIGURATION")
@@ -195,9 +171,9 @@ if __name__ == '__main__':
     print(f" - Seed        : {seed}")
     print("=" * 60)
 
-    if not os.path.exists(ckpt):
-        raise FileNotFoundError(f"Specified checkpoint path does not exist: {ckpt}")
     model = get_model(cfg.model)(cfg)
+    if not os.path.exists(ckpt):
+        print(f"[Warning] Specified checkpoint path does not exist: {ckpt}")
     model.load(ckpt, device)
     model.set_mode('eval')
     val_results = model.validate(guided, test_stage=True)

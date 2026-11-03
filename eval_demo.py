@@ -1,17 +1,15 @@
-import os
 import argparse
-import sys
 from lib.utils import yaml2config
 from networks import get_model
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description="Evaluation demo script")
+    parser = argparse.ArgumentParser(description="config")
     parser.add_argument(
         "--config",
         nargs="?",
         type=str,
-        default="configs/gan_iam_64.yml",
+        default="configs/gan_iam.yml",
         help="Configuration file to use",
     )
 
@@ -19,62 +17,31 @@ if __name__ == '__main__':
         "--ckpt",
         nargs="?",
         type=str,
-        default=None,
-        help="checkpoint for evaluation (overrides config if set)",
+        default="./pretrained/HiGAN+.pth",
+        help="checkpoint for evaluation",
     )
 
     parser.add_argument(
         "--mode",
         nargs="?",
         type=str,
-        default=None,
-        choices=["rand", "style", "text", "interp"],
-        help="mode: [rand] [style] [text] [interp] (overrides config if set)",
-    )
-
-    parser.add_argument(
-        "--device",
-        type=str,
-        default=None,
-        help="Override compute device (e.g. cuda:0 or cpu)",
+        default="text",
+        help="mode: [rand] [style] [text] [interp]",
     )
 
     args = parser.parse_args()
-    config_path = args.config if getattr(args, 'config', None) is not None else "configs/gan_iam_64.yml"
-    cfg = yaml2config(config_path)
-    infer_cfg = getattr(cfg, 'inference', cfg)
-
-    # Resolution order: CLI flag > config YAML (inference block or root) > fallback default
-    device = args.device if args.device is not None else getattr(infer_cfg, 'device', getattr(cfg, 'device', 'cuda:0'))
-    ckpt = args.ckpt if args.ckpt is not None else getattr(infer_cfg, 'ckpt', getattr(cfg, 'ckpt', './pretrained/HiGAN+.pth'))
-    mode = args.mode if args.mode is not None else getattr(infer_cfg, 'mode', getattr(cfg, 'mode', 'text'))
-
-    cfg.device = device
-    cfg.ckpt = ckpt
-    cfg.mode = mode
-
-    print("=" * 60)
-    print("EVALUATION DEMO CONFIGURATION")
-    print(f" - Config File : {config_path}")
-    print(f" - Checkpoint  : {ckpt}")
-    print(f" - Mode        : {mode}")
-    print(f" - Device      : {device}")
-    print("=" * 60)
+    cfg = yaml2config(args.config)
 
     model = get_model(cfg.model)(cfg)
-    if not os.path.exists(ckpt):
-        print(f"[Warning] Specified checkpoint path does not exist: {ckpt}")
-    model.load(ckpt, device)
+    model.load(args.ckpt, cfg.device)
     model.set_mode('eval')
-
-    if mode == 'style':
+    if args.mode == 'style':
         model.eval_style()
-    elif mode == 'rand':
+    elif args.mode == 'rand':
         model.eval_rand()
-    elif mode == 'interp':
+    elif args.mode == 'interp':
         model.eval_interp()
-    elif mode == 'text':
+    elif args.mode == 'text':
         model.eval_text()
     else:
-        print(f"Unsupported mode: {mode} | Choose from [rand, style, text, interp]")
-        sys.exit(1)
+        print('Unsupported mode: {} | [rand] [style] [text] [interp]'.format(cfg.mode))

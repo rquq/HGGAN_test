@@ -1,63 +1,45 @@
-# Runtime
-device: cuda:0
+# x32 source data, evaluated by the unchanged 64px Classic HiGAN+ teacher.
+device: 'cuda:0'
 multi_gpu: false
 gpus: [0]
-seed: 123456
-model: recognize_model
-
-# Dataset geometry and source convention
-dataset: iam_word
+model: 'recognize_model'
+dataset: 'iam_word'
 dataset_source_polarity: white
+seed: 123456
 img_height: 32
+source_height: 32
+
+wandb:
+  key: ''
+  project: 'HiGANplus'
 
 training:
-  # Data and initialization
-  dset_name: iam_word
-  dset_split: trnval
+  dset_name: 'iam_word'
   resume: ''
-  pretrained_backbone: ''
-
-  # Batches and data loading
-  batch_size: 128
-  sort_input: true
-
-  # Optimizers and update cadence
-  lr: 0.001
-
-  # Epoch schedule
+  dset_split: 'trnval'
+  augment: true
   epochs: 100
-  lr_policy: linear
+  lr_policy: 'linear'
   start_decay_epoch: 60
   n_epochs_decay: 40
-
-  # Exponential moving averages
-  teacher_ema: true
-  teacher_ema_beta: 0.999
-
-  # Text sampling
-  n_class: 81
-
-  # Augmentation and regularization
-  augment: true
-
-  # Logging, evaluation, saving and exports
+  batch_size: 128
+  lr: 1.0e-3
   print_iter_val: 20
-  eval_epoch_val: 10
-  ckpt_dir: ckpts
-  export_recognizer: ./pretrained/ocr_iam_train32.pth
+  start_save_epoch_val: 10
+  save_epoch_val: 10
+  ckpt_dir: 'ckpts'
+  n_class: 81
+  sort_input: true
+  pretrained_backbone: ''
+  export_recognizer: './pretrained/ocr_iam_train32.pth'
 
 valid:
-  # Dataset and metric switches
-  dset_name: iam_word
-  dset_split: test
-
-  # Feature extraction and sampling
+  dset_name: 'iam_word'
+  dset_split: 'test'
   batch_size: 256
   n_class: 81
-
-  # Optional writer evaluation and CTC decoder
   ctcdecode:
-    model_path: null
+    model_path: ~
     blank_id: 0
     alpha: 1
     beta: 3
@@ -70,8 +52,8 @@ OcrModel:
   resolution: 16
   max_dim: 256
   in_channel: 1
-  norm: bn
-  init: none
+  norm: 'bn'
+  init: 'none'
   dropout: 0.2
   n_class: 81
   rnn_depth: 2

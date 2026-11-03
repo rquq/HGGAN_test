@@ -1,67 +1,53 @@
-# Runtime
-device: cuda:0
-multi_gpu: false
-gpus: [0]
-seed: 123456
-model: identifier_model
-
-# Dataset geometry and source convention
-dataset: iam_word
+device: 'cuda:0'
+model: 'identifier_model'
+dataset: 'iam_word_org'
 dataset_source_polarity: white
+seed: 123456
 img_height: 64
 finetune: false
 
+
 training:
-  # Data and initialization
-  dset_name: iam_word
-  dset_split: test
-  resume: null
-  pretrained_backbone: ./pretrained/wid_iam_train64.pth
-  frozen_backbone: true
-
-  # Batches and data loading
-  batch_size: 32
-  sort_input: true
-
-  # Optimizers and update cadence
-  lr: 0.001
-
-  # Epoch schedule
+  dset_name: 'iam_word'
+  dset_split: 'test'
   epochs: 200
-  lr_policy: linear
+  lr_policy: 'linear'
   start_decay_epoch: 120
   n_epochs_decay: 80
-
-  # Text sampling
+  batch_size: 32
+  # optimization:
+  lr: 1.0e-3
+  # sampling and saving
+  print_iter_val: 20
+  start_save_epoch_val: 20
+  save_epoch_val: 4
+  ckpt_dir: 'ckpts'
   n_class: 81
-
-  # Augmentation and regularization
+  sort_input: true
+  resume: ~
+  pretrained_backbone: './pretrained/wid_iam_new.pth'
   random_clip: true
   process_style: true
+  frozen_backbone: true
 
-  # Logging, evaluation, saving and exports
-  print_iter_val: 20
-  save_epoch_val: 4
-  start_save_epoch_val: 20
-  ckpt_dir: ckpts
-  export_writer_teacher: ./pretrained/wid_iam_test64.pth
 
 valid:
-  # Dataset and metric switches
-  dset_split: test
-
-  # Feature extraction and sampling
+  dset_split: 'test'
   batch_size: 256
+
 
 StyBackbone:
   resolution: 16
   max_dim: 256
   in_channel: 1
-  init: N02
+  init: 'N02'
   dropout: 0.2
-  norm: bn
+  norm: 'bn'
+
 
 WidModel:
-  n_writer: 161
+  pool: attentive_stats
+  attention_dim: 128
+  n_writer: 128
   in_dim: 256
-  init: none
+  init: 'none'

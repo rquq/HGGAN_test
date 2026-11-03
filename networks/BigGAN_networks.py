@@ -7,7 +7,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from . import BigGAN_layers as layers
-from .fusion import ContentContext, SpatialStyleModulation
 from networks.utils import init_weights, _len2mask
 
 # Architectures for G
@@ -16,51 +15,18 @@ from networks.utils import init_weights, _len2mask
 def G_arch(ch=64, attention='64', ksize='333333', dilation='111111'):
     arch = {}
 
-    # Keep one architecture at every supported resolution: four conditioned
-    # stages and the same channel schedule. Resolution controls geometry only.
-    # At 32px the image reaches its target after stage three, so stage four is
-    # a learned same-resolution refinement. At 64px that stage performs the
-    # final 2x upsample. There is no dataset- or metric-specific capacity path.
-    arch[32] = {'in_channels': [ch * item for item in [8, 4, 2, 1]],
-                'out_channels': [ch * item for item in [4, 2, 1, 1]],
-                'upsample': [(2, 1), (2, 2), (2, 2), None],
-                'resolution': [8, 16, 32, 32],
-                'attention': {2 ** i: (2 ** i in [int(item) for item in attention.split('_')])
-                              for i in range(2, 6)}}
-
     arch[64] = {'in_channels': [ch * item for item in [8, 4, 2, 1]],
                 'out_channels': [ch * item for item in [4, 2, 1, 1]],
-                'upsample': [(2, 1), (2, 2), (2, 2), (2, 2)],
+                'upsample': [(2,1), (2,2), (2,2), (2,2)],
                 'resolution': [8, 16, 32, 64],
                 'attention': {2 ** i: (2 ** i in [int(item) for item in attention.split('_')])
                               for i in range(2, 7)}}
+    # Native32 preserves the four original blocks/upsampling operations;
+    # its config uses a 2x2 seed rather than the native64 4x4 seed.
+    arch[32] = {**arch[64], 'resolution': [4, 8, 16, 32],
+                'attention': {2 ** i: (2 ** i in [int(item) for item in attention.split('_')])
+                              for i in range(2, 6)}}
     return arch
-
-
-class BlockSpecificStyleProjection(nn.Module):
-    """Project the explicit global style token for each GBlock."""
-
-    def __init__(self, style_dim, num_blocks=4, style_chunk_size=32,
-                 which_linear=nn.Linear):
-        super().__init__()
-        self.num_blocks = num_blocks
-        self.projections = nn.ModuleList([
-            nn.Sequential(
-                which_linear(style_dim, style_chunk_size),
-                nn.SiLU(),
-                which_linear(style_chunk_size, style_chunk_size),
-            )
-            for _ in range(num_blocks)
-        ])
-
-    def forward(self, global_style):
-        if global_style.ndim == 3:
-            if global_style.size(1) != 1:
-                raise ValueError('GBlock conditioning accepts only the global style token')
-            global_style = global_style[:, 0]
-        elif global_style.ndim != 2:
-            raise ValueError('global style must have shape (B, D) or (B, 1, D)')
-        return [projection(global_style) for projection in self.projections]
 
 
 class Generator(nn.Module):
@@ -72,10 +38,8 @@ class Generator(nn.Module):
                  G_activation=nn.ReLU(inplace=False),
                  BN_eps=1e-5, SN_eps=1e-12, G_fp16=False,
                  init='ortho', G_param='SN', norm_style='bn', bn_linear='embed', input_nc=3,
-                 embed_pad_idx=0, embed_max_norm=1.0,
-                 fusion_nhead=4, fusion_attn_dim=128, fusion_ffn_dim=None,
-                 fusion_residual_init=0.25, use_reference_memory=True,
-                 reference_memory_dim=64, reference_memory_height=4):
+                 embed_pad_idx=0, embed_max_norm=1.0
+                 ):
         super(Generator, self).__init__()
         dim_z = style_dim
         self.style_dim = style_dim
@@ -151,41 +115,30 @@ class Generator(nn.Module):
                                           norm_style=self.norm_style,
                                           eps=self.BN_eps)
 
-        self.filter_linear = self.which_linear(self.embed_dim,
+        self.filter_linear = self.which_linear(self.embed_dim + self.z_chunk_size,
                                         self.arch['in_channels'][0] * (self.bottom_width * self.bottom_height))
-        self.content_context = ContentContext(
-            self.embed_dim, nhead=fusion_nhead,
-            attn_dim=fusion_attn_dim, ffn_dim=fusion_ffn_dim,
-            residual_init=fusion_residual_init,
-        )
-        self.use_reference_memory = bool(use_reference_memory)
-        self.spatial_style = SpatialStyleModulation(
-            self.arch['out_channels'][0], memory_dim=reference_memory_dim,
-            memory_height=reference_memory_height,
-            nhead=fusion_nhead, attn_dim=fusion_attn_dim,
-            residual_init=fusion_residual_init,
-        ) if self.use_reference_memory else None
-
-        self.bssp = BlockSpecificStyleProjection(style_dim=self.style_dim, num_blocks=len(self.arch['in_channels']), style_chunk_size=self.z_chunk_size, which_linear=self.which_linear)
+        self.style_linear = self.which_linear(self.z_chunk_size,
+                                              self.z_chunk_size * len(self.arch['in_channels']))
 
         # self.blocks is a doubly-nested list of modules, the outer loop intended
         # to be over blocks at a given resolution (resblocks and/or self-attention)
         # while the inner loop is over a given block
         self.blocks = []
         for index in range(len(self.arch['out_channels'])):
-            upsample_scale = self.arch['upsample'][index]
             self.blocks += [[layers.GBlock(in_channels=self.arch['in_channels'][index],
                                            out_channels=self.arch['out_channels'][index],
                                            which_conv1=self.which_conv,
                                            which_conv2=self.which_conv,
                                            which_bn=self.which_bn,
                                            activation=self.activation,
-                                           upsample=(functools.partial(
-                                               F.interpolate,
-                                               scale_factor=upsample_scale,
-                                           ) if upsample_scale is not None else None))]]
+                                           upsample=(functools.partial(F.interpolate,
+                                                                       scale_factor=self.arch['upsample'][index])
+                                                     if index < len(self.arch['upsample']) else None))]]
 
+            # If attention on this block, attach it to the end
+            # print('index ', index, self.arch['resolution'][index])
             if self.arch['attention'][self.arch['resolution'][index]]:
+                print('Adding attention layer in G at resolution %d' % self.arch['resolution'][index])
                 self.blocks[-1] += [layers.Attention(self.arch['out_channels'][index], self.which_conv)]
 
         # Turn self.blocks into a ModuleList so that it's all properly registered.
@@ -202,33 +155,21 @@ class Generator(nn.Module):
         # Initialize weights. Optionally skip init for testing.
         if self.init != 'none':
             init_weights(self, self.init)
-        # General initialization touches fusion Linear weights; restore its
-        # identity-like nonzero residual handoffs afterwards.
-        self.content_context.reset_stability_parameters()
-        if self.spatial_style is not None:
-            self.spatial_style.reset_stability_parameters()
 
-    def forward(self, z, y, y_lens, reference_memory=None, memory_valid_mask=None):
-        # Distribution is a reusable sampler container, not an activation
-        # type. Strip its Tensor subclass at the model boundary so its custom
-        # .to() method cannot propagate through G and downstream networks.
-        if type(z) is not torch.Tensor:
-            z = z.as_subclass(torch.Tensor)
-        if z.ndim != 3 or z.size(1) != 1 or z.size(2) != self.style_dim:
-            raise ValueError('Reference-memory G expects exactly one global style token per image')
-        if self.spatial_style is None and (reference_memory is not None or memory_valid_mask is not None):
-            raise ValueError('Reference memory was passed to a generator with retrieval disabled')
+    # Note on this forward function: we pass in a y vector which has
+    # already been passed through G.shared to enable easy class-wise
+    # interpolation later. If we passed in the one-hot and then ran it through
+    # G.shared in this forward function, it would be harder to handle.
+    def forward(self, z, y, y_lens):
+        # If hierarchical, concatenate zs and ys
+        #if self.hier:
+        ys = self.style_linear(z).split(32, dim=1)
 
-        # Global style conditions every GBlock. Reference evidence is retrieved
-        # only after the first block has formed an early spatial representation.
-        ys = self.bssp(z[:, 0])
-
-        content = self.text_embedding(y).float().to(y.device)
-        y_mixed = self.content_context(content, y_lens=y_lens)
-        token_positions = torch.arange(y.size(1), device=y.device).unsqueeze(0)
-        valid_tokens = (token_positions < y_lens.unsqueeze(1)).unsqueeze(-1)
-        y_mixed = y_mixed * valid_tokens.to(y_mixed.dtype)
-        h = self.filter_linear(y_mixed) * valid_tokens.to(y_mixed.dtype)
+        # This is the change we made to the Big-GAN generator architecture.
+        # The input goes into classes go into the first layer only.
+        y = self.text_embedding(y).float().to(y.device)
+        z = torch.cat((z.unsqueeze(1).repeat(1, y.shape[1], 1), y), 2)
+        h = self.filter_linear(z)
 
         # Reshape - when y is not a single class value but rather an array of classes, the reshape is needed to create
         # a separate vertical patch for each input.
@@ -239,70 +180,25 @@ class Generator(nn.Module):
         len_scale = 1
         x_lens = y_lens * self.bottom_width
         for index, blocklist in enumerate(self.blocks):
-            stage_input_lens = (x_lens * len_scale).clamp(
-                min=1, max=h.size(-1)
-            )
-            upsample_scale = self.arch['upsample'][index]
-            width_scale = upsample_scale[1] if upsample_scale is not None else 1
-            stage_output_lens = (stage_input_lens * width_scale).clamp(
-                min=1
-            )
             # Second inner loop in case block has multiple layers
             for block in blocklist:
                 if isinstance(block, layers.Attention):
-                    h = block(h, x_len=stage_output_lens)
+                    h = block(h, x_lens=x_lens * len_scale)
                 else:
-                    h = block(
-                        h, y=ys[index], x_lens=stage_input_lens,
-                        out_x_lens=stage_output_lens,
-                    )
-            if index == 0 and self.spatial_style is not None:
-                h = self.spatial_style(
-                    h, reference_memory, memory_valid_mask,
-                    x_lens=stage_output_lens,
-                )
-            # Conditional normalization and convolutions can populate padded
-            # columns. Clear them after each stage so those activations cannot
-            # feed back across the valid word boundary in a later convolution.
-            valid_width = stage_output_lens.clamp(max=h.size(-1))
-            stage_mask = (
-                torch.arange(h.size(-1), device=h.device)[None, :]
-                < valid_width[:, None]
-            )
-            h = h * stage_mask[:, None, None, :].to(h.dtype)
-            if upsample_scale is not None:
-                len_scale *= upsample_scale[1]
+                    h = block(h, y=ys[index])
+            len_scale *= self.arch['upsample'][index][1]
 
-        # The final conditional normalization can also inject values into the
-        # right padded area. Mask before the last convolution so it cannot
-        # perturb valid edge pixels; mask its final tail as before below.
-        output_lens = torch.div(
-            y_lens * h.size(-2), 2, rounding_mode='trunc'
-        ).clamp(min=1)
-        output = self.output_layer[0](h, valid_lens=output_lens)
-        output = self.output_layer[1](output)
-        output_lens = output_lens.clamp(max=output.size(-1))
-        output_mask = _len2mask(
-            output_lens.int(), output.size(-1), torch.float32
-        ).to(output.device).unsqueeze(1).unsqueeze(1)
-        output = torch.tanh(
-            self.output_layer[2](output * output_mask.to(output.dtype))
-        )
+        # Apply batchnorm-relu-conv-tanh at output
+        output = torch.tanh(self.output_layer(h))
 
         # Mask blanks
         if not self.training:
-            mask = output_mask.detach()
+            out_lens = y_lens * output.size(-2) // 2
+            mask = _len2mask(out_lens.int(), output.size(-1), torch.float32).to(z.device).detach()
+            mask = mask.unsqueeze(1).unsqueeze(1)
             output = output * mask + (mask - 1)
 
         return output
-
-    @property
-    def fusion_scales(self):
-        scales = self.content_context.residual_scales.flatten()
-        return torch.cat((scales, self.spatial_style.reference_scale)) if self.spatial_style is not None else scales
-
-    def fusion_strength(self):
-        return self.fusion_scales.mean()
 
     def _info_attention(self):
         attn_index = -1
@@ -315,11 +211,8 @@ class Generator(nn.Module):
 
         attn_layer = self.blocks[attn_index][-1]
         out = []
-        if hasattr(attn_layer, 'attn1') and hasattr(attn_layer, 'attn2'):
-            for l in [attn_layer.attn1, attn_layer.attn2]:
-                out.append({'out': getattr(l, '_vis_out', None), 'gamma': l.gamma.item()})
-        elif hasattr(attn_layer, 'gamma'):
-            out.append({'gamma': attn_layer.gamma.item()})
+        for l in [attn_layer.attn1, attn_layer.attn2]:
+            out.append({'out': l._vis_out, 'gamma': l.gamma.item()})
         return out
 
 
@@ -349,71 +242,28 @@ def D_arch(ch=64, attention='64', input_nc=3):
     return arch
 
 
-class WidthContextMixer(nn.Module):
-    """Low-resolution width attention for whole-word visual coherence."""
-
-    def __init__(self, channels, num_heads, which_linear):
-        super().__init__()
-        if channels % num_heads != 0:
-            raise ValueError('discriminator channels must be divisible by width_heads')
-        self.num_heads = num_heads
-        self.head_dim = channels // num_heads
-        self.scale = self.head_dim ** -0.5
-        self.norm = nn.LayerNorm(channels)
-        self.qkv = which_linear(channels, channels * 3, bias=False)
-        self.proj = which_linear(channels, channels, bias=False)
-        self.residual_scale = nn.Parameter(torch.tensor(0.1))
-
-    def forward(self, tokens, valid_mask=None):
-        batch, width, channels = tokens.shape
-        qkv = self.qkv(self.norm(tokens))
-        qkv = qkv.view(
-            batch, width, 3, self.num_heads, self.head_dim
-        ).permute(2, 0, 3, 1, 4)
-        query, key, value = qkv.unbind(0)
-        # Keep this explicit instead of relying on fused SDPA: some supported
-        # PyTorch/CUDA combinations select the efficient forward kernel but do
-        # not implement its backward pass. Float32 softmax also keeps AMP
-        # attention probabilities numerically stable.
-        scores = torch.matmul(query, key.transpose(-2, -1)) * self.scale
-        if valid_mask is not None:
-            mask_value = -1e4 if scores.dtype == torch.float16 else -1e9
-            scores = scores.masked_fill(
-                ~valid_mask[:, None, None, :],
-                mask_value,
-            )
-        attention = torch.softmax(scores.float(), dim=-1).to(scores.dtype)
-        context = torch.matmul(attention, value)
-        context = context.transpose(1, 2).reshape(batch, width, channels)
-        context = self.proj(context)
-        if valid_mask is not None:
-            context = context * valid_mask.unsqueeze(-1).to(context.dtype)
-        return tokens + torch.tanh(self.residual_scale) * context
-
-
 class Discriminator(nn.Module):
     def __init__(self, D_ch=64, D_wide=True, resolution=128,
-                 D_attn='64', num_D_SVs=1, num_D_SV_itrs=1,
-                 D_activation=nn.ReLU(inplace=False), SN_eps=1e-12,
-                 output_dim=1, D_fp16=False, init='ortho', D_param='SN',
-                 input_nc=3, width_context=False, width_heads=4,
-                 pooling_gain=32.0, **kwargs):
+                 D_kernel_size=3, D_attn='64', n_class=1000,
+                 num_D_SVs=1, num_D_SV_itrs=1, D_activation=nn.ReLU(inplace=False),
+                 SN_eps=1e-12, output_dim=1, D_fp16=False,
+                 init='ortho', D_param='SN', bn_linear='embed', input_nc=3, one_hot=False):
         super(Discriminator, self).__init__()
         self.name = 'D'
-        # Shared at every resolution. A valid-area mean times this fixed gain
-        # retains the former 64px score scale (32 feature cells per character)
-        # without making score magnitude depend on input height or word length.
-        self.pooling_gain = float(pooling_gain)
-        if not 0.0 < self.pooling_gain < float('inf'):
-            raise ValueError('pooling_gain must be finite and positive')
+        # one_hot representation
+        self.one_hot = one_hot
         # Width multiplier
         self.ch = D_ch
         # Use Wide D as in BigGAN and SA-GAN or skinny D as in SN-GAN?
         self.D_wide = D_wide
         # Resolution
         self.resolution = resolution
+        # Kernel size
+        self.kernel_size = D_kernel_size
         # Attention?
         self.attention = D_attn
+        # Number of classes
+        self.n_classes = n_class
         # Activation
         self.activation = D_activation
         # Initialization style
@@ -437,9 +287,23 @@ class Discriminator(nn.Module):
             self.which_linear = functools.partial(layers.SNLinear,
                                                   num_svs=num_D_SVs, num_itrs=num_D_SV_itrs,
                                                   eps=self.SN_eps)
+            self.which_embedding = functools.partial(layers.SNEmbedding,
+                                                     num_svs=num_D_SVs, num_itrs=num_D_SV_itrs,
+                                                     eps=self.SN_eps)
+            if bn_linear=='SN':
+                self.which_embedding = functools.partial(layers.SNLinear,
+                                                         num_svs=num_D_SVs, num_itrs=num_D_SV_itrs,
+                                                         eps=self.SN_eps)
         else:
             self.which_conv = functools.partial(nn.Conv2d, kernel_size=3, padding=1)
             self.which_linear = nn.Linear
+            # We use a non-spectral-normed embedding here regardless;
+            # For some reason applying SN to G's embedding seems to randomly cripple G
+            self.which_embedding = nn.Embedding
+        if one_hot:
+            self.which_embedding = functools.partial(layers.SNLinear,
+                                                         num_svs=num_D_SVs, num_itrs=num_D_SV_itrs,
+                                                         eps=self.SN_eps)
         # Prepare model
         # self.blocks is a doubly-nested list of modules, the outer loop intended
         # to be over blocks at a given resolution (resblocks and/or self-attention)
@@ -454,41 +318,19 @@ class Discriminator(nn.Module):
                                            downsample=(nn.AvgPool2d(2) if self.arch['downsample'][index] else None))]]
 
             if self.arch['attention'][self.arch['resolution'][index]]:
+                print('Adding attention layer in D at resolution %d' % self.arch['resolution'][index])
                 self.blocks[-1] += [layers.Attention(self.arch['out_channels'][index], self.which_conv)]
         # Turn self.blocks into a ModuleList so that it's all properly registered.
         self.blocks = nn.ModuleList([nn.ModuleList(block) for block in self.blocks])
         # Linear output layer. The output dimension is typically 1, but may be
         # larger if we're e.g. turning this into a VAE with an inference output
         self.linear = self.which_linear(self.arch['out_channels'][-1], output_dim)
-        self.width_context = (
-            WidthContextMixer(
-                self.arch['out_channels'][-1], width_heads, self.which_linear
-            )
-            if width_context else None
-        )
         # Embedding for projection discrimination
         # self.embed = self.which_embedding(self.n_classes, self.arch['out_channels'][-1])
 
         # Initialize weights
         if self.init != 'none':
             self = init_weights(self, self.init)
-
-    def _pool_features(self, h, h_lens=None):
-        """Average valid spatial evidence independent of image resolution.
-
-        A per-character sum had four times as many contributions at twice
-        the input height. Pool both spatial dimensions before the readout.
-        """
-        width_tokens = h.mean(dim=2).transpose(1, 2)
-        valid_mask = None
-        if h_lens is not None:
-            h_lens = h_lens.long().clamp(min=1, max=h.size(-1))
-            valid_mask = _len2mask(h_lens, h.size(-1), torch.bool).to(h.device)
-        if self.width_context is not None:
-            width_tokens = self.width_context(width_tokens, valid_mask)
-        if valid_mask is None:
-            return width_tokens.mean(dim=1)
-        return (width_tokens * valid_mask.unsqueeze(-1)).sum(dim=1) / h_lens[:, None]
 
     def forward(self, x, x_lens=None, y_lens=None,  **kwargs):
         # Stick x into h for cleaner for loops without flow control
@@ -497,19 +339,21 @@ class Discriminator(nn.Module):
         len_scale = 1
         for index, blocklist in enumerate(self.blocks):
             for block in blocklist:
-                # Spatial attention follows this stage's downsampling block,
-                # so it receives output lengths rather than input lengths.
-                block_scale = len_scale
-                if isinstance(block, layers.Attention) and self.arch['downsample'][index]:
-                    block_scale *= 2
-                h = block(h, x_len=torch.div(x_lens, block_scale, rounding_mode='trunc') if x_lens is not None else None)
+                h = block(h, x_len=x_lens // len_scale if x_lens is not None else None)
             len_scale *= 2 if self.arch['downsample'][index] else 1
-        h = self.activation(h)
-        h_lens = torch.div(x_lens, len_scale, rounding_mode='floor') if x_lens is not None else None
-        h = self._pool_features(h, h_lens)
+        # Apply global sum pooling as in SN-GAN
+        if x_lens is None:
+            h = torch.sum(self.activation(h), [2, 3])
+        else:
+            h = self.activation(h)
+            h_lens = x_lens * h.size(-1) // (x.size(-1) + 1e-8)
+            mask = _len2mask(h_lens.int(), h.size(-1), torch.float32).to(x.device).detach()
+            mask = mask.view(mask.size(0), 1, 1, mask.size(1))
+            h = torch.sum(h * mask, [2, 3])
+            h = h / y_lens.unsqueeze(dim=-1)
 
         # Get initial class-unconditional output
-        out = self.linear(h * self.pooling_gain)
+        out = self.linear(h)
 
         return out
 
@@ -549,6 +393,7 @@ class StrokePatchBlock(nn.Module):
             h = self.downsample(h)
             residual = self.downsample(residual)
         return h + residual
+
 
 
 class PatchDiscriminator(nn.Module):
@@ -615,3 +460,65 @@ class PatchDiscriminator(nn.Module):
             h = block(h)
         h = self.activation(h)
         return self.logits(h)
+
+
+
+
+
+# Defines the PatchGAN discriminator with the specified arguments
+# https://github.com/junyanz/pytorch-CycleGAN-and-pix2pix/blob/master/models/networks.py#L538.
+class NLayerDiscriminator(nn.Module):
+    """Defines a PatchGAN discriminator"""
+
+    def __init__(self, input_nc, ndf=64, n_layers=3, kernel_size=3, norm_layer=nn.Identity, sn=True,
+                 num_D_SVs=1, num_D_SV_itrs=1, SN_eps=1e-12):
+        """Construct a PatchGAN discriminator
+        Parameters:
+            input_nc (int)  -- the number of channels in input images
+            ndf (int)       -- the number of filters in the last conv layer
+            n_layers (int)  -- the number of conv layers in the discriminator
+            norm_layer      -- normalization layer
+        """
+        super(NLayerDiscriminator, self).__init__()
+        self.sn = sn
+        self.SN_eps = SN_eps
+        if self.sn:
+            self.which_conv = functools.partial(layers.SNConv2d,
+                                                padding=1,
+                                                num_svs=num_D_SVs, num_itrs=num_D_SV_itrs,
+                                                eps=self.SN_eps)
+
+        kw = kernel_size
+        padw = 1
+        sequence = [self.which_conv(input_nc, ndf, kernel_size=kw, stride=2, padding=padw), nn.ReLU(inplace=False)]
+        nf_mult = 1
+        nf_mult_prev = 1
+        for n in range(1, n_layers):  # gradually increase the number of filters
+            nf_mult_prev = nf_mult
+            nf_mult = min(2 ** n, 8)
+            sequence += [
+                self.which_conv(ndf * nf_mult_prev, ndf * nf_mult, kernel_size=kw, stride=2, padding=padw, bias=True),
+                # norm_layer(ndf * nf_mult),
+                nn.ReLU(inplace=False)
+            ]
+
+        nf_mult_prev = nf_mult
+        # nf_mult = min(2 ** n_layers, 8)
+        # sequence += [
+        #     self.which_conv(ndf * nf_mult_prev, ndf * nf_mult, kernel_size=kw, stride=1, padding=padw, bias=True),
+        #     # norm_layer(ndf * nf_mult),
+        #     nn.ReLU(inplace=False)
+        # ]
+
+        sequence += [self.which_conv(nf_mult * ndf, 1, kernel_size=kw, stride=1, padding=padw)]  # output 1 channel prediction map
+        self.model = nn.Sequential(*sequence)
+
+    def forward(self, x, x_lens, y_lens):
+        """Standard forward."""
+        h = self.model(x)
+        h_lens = x_lens * h.size(-1) // (x.size(-1) + 1e-8)
+        mask = _len2mask(h_lens.int(), h.size(-1), torch.float32).to(x.device).detach()
+        mask = mask.view(mask.size(0), 1, 1, mask.size(1))
+        h = torch.sum(h * mask, [2, 3])
+        h = h / y_lens.unsqueeze(dim=-1)
+        return h

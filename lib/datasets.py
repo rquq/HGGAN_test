@@ -7,24 +7,15 @@ import itertools
 import glob
 
 import torch
-from torch.utils.data import Dataset, Sampler
+from torch.utils.data import Dataset
 from torchvision.transforms import Compose, Normalize, ToTensor
 from lib.alphabet import strLabelConverter
 from lib import path_config
-from lib.path_config import data_roots, data_paths, ImgHeight, CharWidth
-from lib.transforms import RandomScale, RandomClip, MildHandwritingAugment
-
+from lib.path_config import data_roots, data_paths
+from lib.transforms import RandomScale, RandomClip
 
 
 class Hdf5Dataset(Dataset):
-    """HDF5 handwriting dataset using the legacy HiGAN+ image convention.
-
-    Source IAM64 files are white paper with black ink.  The model family was
-    designed and tuned for the opposite normalized convention: ``-1`` black
-    background and ``+1`` white handwriting.  Invert once here, before every
-    resize, augmentation, encoder, discriminator, and metric path, so no
-    downstream stage needs a polarity special case.
-    """
     def __init__(self, root, split, transforms=None, alphabet_key='all', process_style=False,
                  normalize_wid=True, invert_polarity=True, source_polarity=None):
         super(Hdf5Dataset, self).__init__()
@@ -47,24 +38,20 @@ class Hdf5Dataset(Dataset):
 
     def _load_h5py(self, file_path, normalize_wid=True):
         self.file_path = file_path
-        if not os.path.exists(self.file_path):
-            raise FileNotFoundError(f"HDF5 dataset file path does not exist: {self.file_path}")
-
-        with h5py.File(self.file_path, 'r') as h5f:
+        if os.path.exists(self.file_path):
+            h5f = h5py.File(self.file_path, 'r')
             self.imgs, self.lbs = h5f['imgs'][:], h5f['lbs'][:]
             self.img_seek_idxs, self.lb_seek_idxs = h5f['img_seek_idxs'][:], h5f['lb_seek_idxs'][:]
             self.img_lens, self.lb_lens = h5f['img_lens'][:], h5f['lb_lens'][:]
-            if 'wids' in h5f:
-                self.wids = h5f['wids'][:]
-            else:
-                self.wids = np.zeros((len(self.img_lens),), dtype=np.int32)
-            if normalize_wid and len(self.wids) > 0:
+            self.wids = h5f['wids'][:]
+            if normalize_wid:
                 self.wids -= self.wids.min()
             if self._requested_source_polarity is None:
                 metadata = h5f.attrs.get('source_polarity', self.source_polarity)
                 self.source_polarity = self._validate_source_polarity(metadata)
-        if len(self.img_lens) == 0:
-            raise ValueError(f'HDF5 dataset contains no images: {self.file_path}')
+            h5f.close()
+        else:
+            raise FileNotFoundError('HDF5 dataset file does not exist: {}'.format(self.file_path))
 
     @staticmethod
     def _validate_source_polarity(value):
@@ -81,33 +68,36 @@ class Hdf5Dataset(Dataset):
         lb_seek_idx, lb_len = self.lb_seek_idxs[idx], self.lb_lens[idx]
         img = self.imgs[:, img_seek_idx : img_seek_idx + img_len]
         if self.invert_polarity:
-            # uint8 inversion: white source paper -> black model background;
-            # black source ink -> white model handwriting.
             img = 255 - img
+        # Match the explicitly configured model height; native32 stays32.
+        if img.shape[0] != path_config.ImgHeight:
+            scale = float(path_config.ImgHeight) / float(img.shape[0])
+            width = max(1, int(round(img.shape[1] * scale)))
+            interpolation = cv2.INTER_AREA if width < img.shape[1] else cv2.INTER_LINEAR
+            img = cv2.resize(img, (width, path_config.ImgHeight), interpolation=interpolation)
         text = ''.join(chr(ch) for ch in self.lbs[lb_seek_idx : lb_seek_idx + lb_len])
         data['text'] = text
         lb = self.label_converter.encode(text)
         wid = self.wids[idx]
         data['lb'], data['wid'] = lb, wid
 
-        data['org_img'] = self.org_transforms(Image.fromarray(img, mode='L'))
+        data['org_img'] = self.org_transforms(Image.fromarray(deepcopy(img), mode='L'))
 
         # style image
         if self.process_style:
             h, w = img.shape[:2]
-            char_w = h // 2
-            new_w = char_w * len(text)
-            dim = (new_w, h)
+            new_w = path_config.CharWidth * len(text)
+            dim = (new_w, path_config.ImgHeight)
             if new_w < w:
-                style_img = cv2.resize(img, dim, interpolation=cv2.INTER_AREA)
+                style_img = cv2.resize(deepcopy(img), dim, interpolation=cv2.INTER_AREA)
             else:
-                style_img = cv2.resize(img, dim, interpolation=cv2.INTER_LINEAR)
+                style_img = cv2.resize(deepcopy(img), dim, interpolation=cv2.INTER_LINEAR)
             style_img = Image.fromarray(style_img, mode='L')
 
         else:
-            style_img = Image.fromarray(img, mode='L')
+            style_img = Image.fromarray(deepcopy(img), mode='L')
 
-        data['style_img'] = self.org_transforms(style_img)
+        data['style_img'] = self.org_transforms(deepcopy(style_img))
 
         if self.transforms is not None:
             data['aug_img'] = self.transforms(style_img)
@@ -119,9 +109,7 @@ class Hdf5Dataset(Dataset):
 
     @staticmethod
     def _recalc_len(leng, scale=None):
-        if scale is None:
-            import lib.path_config as path_cfg
-            scale = path_cfg.CharWidth
+        scale = path_config.CharWidth if scale is None else scale
         tmp = leng % scale
         return leng + scale - tmp if tmp != 0 else leng
 
@@ -153,37 +141,34 @@ class Hdf5Dataset(Dataset):
 
         bdata = {}
         bz = len(lb_lens)
-        org_h = max(img.shape[-2] for img in org_imgs)
         pad_org_img_max_len = Hdf5Dataset._recalc_len(max(org_img_lens))
-        pad_org_imgs = np.full((bz, 1, org_h, pad_org_img_max_len), -1.0, dtype=np.float32)
+        pad_org_imgs = -np.ones((bz, 1, org_imgs[0].shape[-2], pad_org_img_max_len))
         for i, (org_img, org_img_len) in enumerate(zip(org_imgs, org_img_lens)):
-            pad_org_imgs[i, 0, :org_img.shape[-2], :org_img_len] = org_img
-        bdata['org_imgs'] = torch.from_numpy(pad_org_imgs)
-        bdata['org_img_lens'] = torch.tensor(org_img_lens, dtype=torch.int32)
+            pad_org_imgs[i, 0, :, :org_img_len] = org_img
+        bdata['org_imgs'] = torch.from_numpy(pad_org_imgs).float()
+        bdata['org_img_lens'] = torch.IntTensor(org_img_lens)
 
-        style_h = max(img.shape[-2] for img in style_imgs)
         pad_style_img_max_len = Hdf5Dataset._recalc_len(max(style_img_lens))
-        pad_style_imgs = np.full((bz, 1, style_h, pad_style_img_max_len), -1.0, dtype=np.float32)
+        pad_style_imgs = -np.ones((bz, 1, style_imgs[0].shape[-2], pad_style_img_max_len))
         for i, (style_img, style_img_len) in enumerate(zip(style_imgs, style_img_lens)):
-            pad_style_imgs[i, 0, :style_img.shape[-2], :style_img_len] = style_img
-        bdata['style_imgs'] = torch.from_numpy(pad_style_imgs)
-        bdata['style_img_lens'] = torch.tensor(style_img_lens, dtype=torch.int32)
+            pad_style_imgs[i, 0, :, :style_img_len] = style_img
+        bdata['style_imgs'] = torch.from_numpy(pad_style_imgs).float()
+        bdata['style_img_lens'] = torch.IntTensor(style_img_lens)
 
-        pad_lbs = np.zeros((bz, max(lb_lens)), dtype=np.int64)
+        pad_lbs = np.zeros((bz, max(lb_lens)))
         for i, (lb, lb_len) in enumerate(zip(lbs, lb_lens)):
             pad_lbs[i, :lb_len] = lb
-        bdata['lbs'] = torch.from_numpy(pad_lbs)
-        bdata['lb_lens'] = torch.tensor(lb_lens, dtype=torch.int32)
-        bdata['wids'] = torch.tensor(wids, dtype=torch.long)
+        bdata['lbs'] = torch.from_numpy(pad_lbs).long()
+        bdata['lb_lens'] = torch.Tensor(lb_lens).int()
+        bdata['wids'] = torch.Tensor(wids).long()
 
         if len(aug_imgs) > 0:
-            aug_h = max(img.shape[-2] for img in aug_imgs)
-            pad_aug_imgs = np.full((bz, 1, aug_h, max(aug_img_lens)), -1.0, dtype=np.float32)
+            pad_aug_imgs = -np.ones((bz, 1, aug_imgs[0].shape[-2], max(aug_img_lens)))
             for i, aug_img in enumerate(aug_imgs):
-                pad_aug_imgs[i, 0, :aug_img.shape[-2], :aug_img.shape[-1]] = aug_img
+                pad_aug_imgs[i, 0, :, :aug_img.shape[-1]] = aug_img
 
-            bdata['aug_imgs'] = torch.from_numpy(pad_aug_imgs)
-            bdata['aug_img_lens'] = torch.tensor(aug_img_lens, dtype=torch.int32)
+            bdata['aug_imgs'] = torch.from_numpy(pad_aug_imgs).float()
+            bdata['aug_img_lens'] = torch.IntTensor(aug_img_lens)
 
         return bdata
 
@@ -192,24 +177,22 @@ class Hdf5Dataset(Dataset):
         batch = Hdf5Dataset.collect_fn(batch)
 
         style_img_lens = batch['style_img_lens']
-        _, idx = torch.sort(style_img_lens, descending=True)
+        idx = np.argsort(style_img_lens.cpu().numpy())[::-1]
 
         for key, val in batch.items():
-            batch[key] = val[idx]
+            batch[key] = torch.stack([val[i] for i in idx]).detach()
+            # print('%15s'%key, batch[key].size(), batch[key].dim())
         return batch
 
     @staticmethod
     def sort_collect_fn_aug(batch):
         batch = Hdf5Dataset.collect_fn(batch)
 
-        if 'aug_img_lens' not in batch:
-            return batch
-
         style_img_lens = batch['aug_img_lens']
-        _, idx = torch.sort(style_img_lens, descending=True)
+        idx = np.argsort(style_img_lens.cpu().numpy())[::-1]
 
         for key, val in batch.items():
-            batch[key] = val[idx]
+            batch[key] = torch.stack([val[i] for i in idx]).detach()
         return batch
 
     @staticmethod
@@ -222,13 +205,12 @@ class Hdf5Dataset(Dataset):
         for img_key, img_len_key in [('org_imgs', 'org_img_lens'),
                                      ('style_imgs', 'style_img_lens'),
                                      ('aug_imgs', 'aug_img_lens')]:
-            if img_len_key not in batch1 or img_len_key not in batch2:
-                continue
+            if img_len_key not in batch1: continue
 
             imgs1, imgs2 =  batch1[img_key], batch2[img_key]
             img_lens1, img_lens2 = batch1[img_len_key], batch2[img_len_key]
             max_img_len = max(imgs1.size(-1), imgs2.size(-1))
-            pad_imgs = torch.full((bz1 + bz2, imgs1.size(1), imgs1.size(2), max_img_len), -1.0, dtype=torch.float32, device=device)
+            pad_imgs = -torch.ones((bz1 + bz2, imgs1.size(1), imgs1.size(2), max_img_len)).float().to(device)
             pad_imgs[:bz1, :, :, :imgs1.size(-1)] = imgs1
             pad_imgs[bz1:, :, :, :imgs2.size(-1)] = imgs2
             merge_img_lens = torch.cat([img_lens1, img_lens2]).to(device)
@@ -236,8 +218,8 @@ class Hdf5Dataset(Dataset):
             mbdata[img_key] = pad_imgs
             mbdata[img_len_key] = merge_img_lens
 
-        max_lb_len = max(lbs1.size(-1), lbs2.size(-1))
-        pad_lbs = torch.zeros((bz1 + bz2, max_lb_len), dtype=torch.long, device=device)
+        max_lb_len = max(lb_lens1.max(), lb_lens2.max()).item()
+        pad_lbs = torch.zeros((bz1 + bz2, max_lb_len)).long().to(device)
         pad_lbs[:bz1, :lbs1.size(-1)] = lbs1
         pad_lbs[bz1:, :lbs2.size(-1)] = lbs2
         mbdata['lbs'] = pad_lbs
@@ -266,31 +248,32 @@ class Hdf5Dataset(Dataset):
         save_imgs = np.concatenate(all_imgs, axis=-1)
         save_texts = list(itertools.chain(*all_texts))
         save_lbs = [ord(ch) for ch in save_texts]
-        with h5py.File(save_path, 'w') as h5f:
-            h5f.attrs['source_polarity'] = Hdf5Dataset._validate_source_polarity(source_polarity)
-            h5f.create_dataset('imgs',
-                               data=save_imgs,
-                               compression='gzip',
-                               compression_opts=4,
-                               dtype=np.uint8)
-            h5f.create_dataset('lbs',
-                               data=save_lbs,
-                               dtype=np.int32)
-            h5f.create_dataset('img_seek_idxs',
-                               data=img_seek_idxs,
-                               dtype=np.int64)
-            h5f.create_dataset('img_lens',
-                               data=img_lens,
-                               dtype=np.int32)
-            h5f.create_dataset('lb_seek_idxs',
-                               data=lb_seek_idxs,
-                               dtype=np.int64)
-            h5f.create_dataset('lb_lens',
-                               data=lb_lens,
-                               dtype=np.int16)
-            h5f.create_dataset('wids',
-                               data=all_wids,
-                               dtype=np.int16)
+        h5f = h5py.File(save_path, 'w')
+        h5f.attrs['source_polarity'] = Hdf5Dataset._validate_source_polarity(source_polarity)
+        h5f.create_dataset('imgs',
+                           data=save_imgs,
+                           compression='gzip',
+                           compression_opts=4,
+                           dtype=np.uint8)
+        h5f.create_dataset('lbs',
+                           data=save_lbs,
+                           dtype=np.int32)
+        h5f.create_dataset('img_seek_idxs',
+                           data=img_seek_idxs,
+                           dtype=np.int64)
+        h5f.create_dataset('img_lens',
+                           data=img_lens,
+                           dtype=np.int16)
+        h5f.create_dataset('lb_seek_idxs',
+                           data=lb_seek_idxs,
+                           dtype=np.int64)
+        h5f.create_dataset('lb_lens',
+                           data=lb_lens,
+                           dtype=np.int16)
+        h5f.create_dataset('wids',
+                           data=all_wids,
+                           dtype=np.int16)
+        h5f.close()
         print('save->', save_path)
 
 
@@ -301,29 +284,25 @@ class ImageDataset(Hdf5Dataset):
         super(ImageDataset, self).__init__(*args, **kwargs)
 
     def _load_h5py(self, file_path, normalize_wid=True):
-        assert os.path.exists(file_path), file_path + " does not exist!"
+        assert os.path.exists(file_path), file_path + "does not exist!"
 
+        all_imgs, all_texts = [], []
         fileExtensions = ["jpg", "jpeg", "png", "bmp", "gif"]
         listOfFiles = []
         for extension in fileExtensions:
-            listOfFiles.extend(glob.glob(os.path.join(file_path, "*." + extension)))
-            listOfFiles.extend(glob.glob(os.path.join(file_path, "*." + extension.upper())))
+            listOfFiles.extend(glob.glob(os.path.join(file_path, "*."+ extension)))
 
-        all_imgs = []
-        all_texts = []
         for fn in listOfFiles:
             img = cv2.imread(fn, cv2.IMREAD_GRAYSCALE)
-            if img is None:
-                continue
 
             # Read image labels
-            label_text = os.path.splitext(os.path.basename(fn))[0]
+            label_text = os.path.basename(fn).split('.')[0]
 
             # Normalize image-height
             h, w = img.shape[:2]
-            r = self.ImgHeight / float(h)
-            new_w = max(int(w * r), int(self.ImgHeight / 4 * len(label_text)))
-            dim = (new_w, self.ImgHeight)
+            r = path_config.ImgHeight / float(h)
+            new_w = max(int(w * r), int(path_config.ImgHeight / 4 * len(label_text)))
+            dim = (new_w, path_config.ImgHeight)
             if new_w < w:
                 resize_img = cv2.resize(img, dim, interpolation=cv2.INTER_AREA)
             else:
@@ -332,9 +311,6 @@ class ImageDataset(Hdf5Dataset):
 
             all_imgs.append(res_img)
             all_texts.append(label_text)
-
-        if len(all_imgs) == 0:
-            raise ValueError(f"No valid image files found in {file_path}")
 
         '''========prepare image dataset==========='''
         img_seek_idxs, img_lens = [], []
@@ -368,9 +344,7 @@ def get_dataset(dset_name, split, wid_aug=False, recogn_aug=False, process_style
 
     transforms = [ToTensor(), Normalize([0.5], [0.5])]
     if recogn_aug:
-        # Safe OCR-only perturbations: preserve glyph identity and writer style
-        # while covering scan/ink variation seen by the GAN recognizer loss.
-        transforms = [RandomScale(), MildHandwritingAugment()] + transforms
+        transforms = [RandomScale()] + transforms
     if wid_aug:
         transforms = [RandomClip()] + transforms
     if not recogn_aug and not wid_aug:
@@ -412,9 +386,7 @@ def get_alphabet_from_corpus(corpus_path):
 
 
 def get_max_image_width(dset):
-    if hasattr(dset, 'img_lens') and dset.img_lens is not None:
-        return int(dset.img_lens.max())
     max_image_width = 0
-    for data in dset:
-        max_image_width = max(max_image_width, data['org_img'].size(-1))
+    for img, _, _ in dset:
+        max_image_width = max(max_image_width, img.size(-1))
     return max_image_width

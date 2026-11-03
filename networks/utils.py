@@ -10,7 +10,7 @@ import torch.nn as nn
 from torch.optim import lr_scheduler
 from networks.block import AdaptiveInstanceNorm2d, Identity, AdaptiveInstanceLayerNorm2d, InstanceLayerNorm2d
 from lib.alphabet import word_capitalize
-from lib.path_config import ImgHeight, CharWidth
+from lib import path_config
 
 
 def init_weights(net, init_type='normal', init_gain=0.02):
@@ -40,6 +40,7 @@ def init_weights(net, init_type='normal', init_gain=0.02):
                 raise NotImplementedError('initialization method [%s] is not implemented' % init_type)
 
     if init_type in ['N02', 'glorot', 'xavier', 'kaiming', 'ortho']:
+        # print('initialize network {} with {}'.format(net.__class__.__name__, init_type))
         net.apply(init_func)  # apply the initialization function <init_func>
     return net
 
@@ -68,7 +69,7 @@ def get_norm_layer(norm='in', **kwargs):
     elif norm == 'none':
         def norm_layer(x): return Identity()
     else:
-        raise ValueError("Unsupported normalization: {}".format(norm))
+        assert 0, "Unsupported normalization: {}".format(norm)
     return norm_layer
 
 
@@ -89,51 +90,29 @@ def get_linear_scheduler(optimizer, start_decay_iter, n_iters_decay):
     return scheduler
 
 
-def get_scheduler(optimizer, opt, last_epoch=-1, base_lr=None):
+def get_scheduler(optimizer, opt, last_epoch=-1):
     """Return a learning rate scheduler
 
     Parameters:
         optimizer          -- the optimizer of the network
-        opt (option class) -- stores all the experiment flags; needs to be a subclass of BaseOptions．　
+        opt (option class) -- stores all the experiment flags; needs to be a subclass of BaseOptions．
                               opt.lr_policy is the name of learning rate policy: linear | step | plateau | cosine
 
     For 'linear', we keep the same learning rate for the first <opt.n_epochs> epochs
     and linearly decay the rate to zero over the next <opt.n_epochs_decay> epochs.
     For other schedulers (step, plateau, and cosine), we use the default PyTorch schedulers.
+    See https://pytorch.org/docs/stable/optim.html for more details.
     """
-    if base_lr is None:
-        base_lr = getattr(opt, 'lr', None)
+    base_lr = getattr(opt, 'lr', None)
     for group in optimizer.param_groups:
         if 'initial_lr' not in group or base_lr is not None:
             group['initial_lr'] = base_lr if base_lr is not None else group.get('lr', 1e-4)
 
     if opt.lr_policy == 'linear':
-        min_lr_ratio = float(getattr(opt, 'min_lr_ratio', 0.001))
-        start_decay_epoch = int(opt.start_decay_epoch)
-        n_epochs_decay = int(opt.n_epochs_decay)
-        if not 0.0 < min_lr_ratio <= 1.0:
-            raise ValueError('min_lr_ratio must be in (0, 1]')
-        if start_decay_epoch < 1:
-            raise ValueError('start_decay_epoch must be at least 1')
-        if n_epochs_decay < 1:
-            raise ValueError('n_epochs_decay must be at least 1')
-
-        def lambda_rule(scheduler_epoch):
-            # LambdaLR uses zero-based scheduler epochs. Convert that index to
-            # the one-based training epoch whose updates will use this LR. Thus
-            # start_decay_epoch=24 means epochs 1-24 stay at the base LR and
-            # epoch 25 is the first reduced-LR epoch.
-            training_epoch = scheduler_epoch + 1
-            progress = max(
-                0.0,
-                (training_epoch - start_decay_epoch)
-                / float(n_epochs_decay),
-            )
-            return max(min_lr_ratio, 1.0 - progress)
-
-        scheduler = lr_scheduler.LambdaLR(
-            optimizer, lr_lambda=lambda_rule, last_epoch=last_epoch
-        )
+        def lambda_rule(epoch):
+            lr_l = 1.0 - min(max(0, (epoch - opt.start_decay_epoch) / float(opt.n_epochs_decay + 1)), 0.999)
+            return lr_l
+        scheduler = lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda_rule, last_epoch=last_epoch)
     elif opt.lr_policy == 'step':
         scheduler = lr_scheduler.StepLR(optimizer, step_size=opt.lr_decay_iters, gamma=0.1, last_epoch=last_epoch)
     elif opt.lr_policy == 'plateau':
@@ -145,43 +124,9 @@ def get_scheduler(optimizer, opt, last_epoch=-1, base_lr=None):
     return scheduler
 
 
-def restore_scheduler_state(scheduler, optimizer, state_dict, base_lr,
-                            completed_epochs):
-    """Restore epoch progress while rebasing a stale checkpoint learning rate."""
-    if state_dict:
-        scheduler.load_state_dict(state_dict)
-
-    completed_epochs = max(0, int(completed_epochs))
-    base_lrs = [float(base_lr)] * len(optimizer.param_groups)
-    if hasattr(scheduler, 'lr_lambdas'):
-        last_lrs = [
-            lr * scheduler.lr_lambdas[index](completed_epochs)
-            for index, lr in enumerate(base_lrs)
-        ]
-    else:
-        old_bases = state_dict.get('base_lrs', base_lrs) if state_dict else base_lrs
-        old_lrs = state_dict.get('_last_lr', old_bases) if state_dict else old_bases
-        last_lrs = [
-            new_base * (old_lr / old_base if old_base else 1.0)
-            for new_base, old_lr, old_base in zip(base_lrs, old_lrs, old_bases)
-        ]
-
-    scheduler.base_lrs = base_lrs
-    scheduler.last_epoch = completed_epochs
-    scheduler._last_lr = last_lrs
-    if hasattr(scheduler, '_step_count'):
-        scheduler._step_count = completed_epochs + 1
-    for param_group, initial_lr, lr in zip(optimizer.param_groups, base_lrs, last_lrs):
-        param_group['initial_lr'] = initial_lr
-        param_group['lr'] = lr
-    return scheduler
-
-
-def _len2mask(length, max_len=None, dtype=torch.float32):
+def _len2mask(length, max_len, dtype=torch.float32):
     assert len(length.shape) == 1, 'Length shape should be 1 dimensional.'
-    if length.numel() == 0:
-        return torch.empty((0, 0), device=length.device, dtype=dtype or torch.float32)
-    max_len = max_len or int(length.max().item())
+    max_len = max_len or length.max().item()
     mask = torch.arange(max_len, device=length.device,
                         dtype=length.dtype).expand(len(length), max_len) < length.unsqueeze(1)
     if dtype is not None:
@@ -241,112 +186,15 @@ def set_requires_grad(nets, requires_grad=False):
                 param.requires_grad = requires_grad
 
 
-def center_style_prior(styles: torch.Tensor) -> torch.Tensor:
-    """Center local style-prior tokens while leaving the global token intact."""
-    if not isinstance(styles, torch.Tensor):
-        raise TypeError('styles must be a torch.Tensor')
-    if styles.ndim != 3 or styles.size(1) < 1:
-        raise ValueError(
-            'styles must have shape (B, N, D) with token count N >= 1'
-        )
-    if type(styles) is not torch.Tensor:
-        styles = styles.as_subclass(torch.Tensor)
-    if styles.size(1) == 1:
-        return styles
-
-    global_style = styles[:, :1]
-    local_style = styles[:, 1:]
-    centered_local_style = local_style - local_style.mean(dim=1, keepdim=True)
-    return torch.cat((global_style, centered_local_style), dim=1)
-
-
-def _rare_lexicon_sampler(lexicon):
-    """Return corpus words weighted toward genuinely rare alphabet symbols.
-
-    Fabricated punctuation/digit strings can shift the training text
-    distribution away from IAM. This sampler only reuses words in the configured
-    corpus, while inverse-square-root character weights give Q/X/Z/J and other
-    low-frequency glyphs more chances to reach the generator.
-    """
-    cache = getattr(idx_to_words, '_rare_cache', None)
-    if cache is None:
-        cache = {}
-        idx_to_words._rare_cache = cache
-    cache_key = (id(lexicon), len(lexicon))
-    if cache_key in cache and cache[cache_key][0] is lexicon:
-        return cache[cache_key][1]
-
-    counts = {}
-    for raw_word in lexicon:
-        for char in str(raw_word).casefold():
-            counts[char] = counts.get(char, 0) + 1
-    if not counts:
-        result = (np.arange(len(lexicon), dtype=np.int64), None)
-        cache[cache_key] = (lexicon, result)
-        return result
-
-    inv_sqrt = {
-        char: 1.0 / np.sqrt(float(count)) for char, count in counts.items()
-    }
-    scores = np.asarray([
-        np.mean([inv_sqrt.get(char, 1.0) for char in str(word).casefold()])
-        if str(word) else 0.0
-        for word in lexicon
-    ], dtype=np.float64)
-    valid = np.isfinite(scores) & (scores > 0)
-    if not np.any(valid):
-        result = (np.arange(len(lexicon), dtype=np.int64), None)
-    else:
-        indices = np.flatnonzero(valid)
-        weights = scores[indices]
-        weights /= weights.sum()
-        cumulative = np.cumsum(weights)
-        cumulative /= cumulative[-1]
-        result = (indices, cumulative)
-    # Keep the source alive so Python cannot reuse its id for another lexicon.
-    cache[cache_key] = (lexicon, result)
-    return result
-
-
-def idx_to_words(idx, lexicon, max_word_len=0, capitalize_ratio=0.5,
-                 blank_ratio=0., sort=True, rare_ratio=0.15,
-                 rare_lexicon=None):
-    """Decode sampled lexicon IDs with a corpus-faithful rare-word policy.
-
-    ``rare_ratio`` now controls oversampling of real rare-character words; it
-    never fabricates arbitrary symbol sequences.  Set it to zero for fixed
-    validation/sample text.
-    """
-    rare_source = lexicon if rare_lexicon is None else rare_lexicon
-    rare_indices, rare_cumulative = (
-        _rare_lexicon_sampler(rare_source) if rare_ratio > 0 else (None, None)
-    )
-    if isinstance(idx, torch.Tensor):
-        # One device-to-host copy per batch is cheaper than synchronizing once
-        # for every CUDA scalar during Python-side lexicon lookup.
-        indices = idx.detach().cpu().tolist()
-    else:
-        indices = idx
+def idx_to_words(idx, lexicon, max_word_len=0, capitize_ratio=0.5, blank_ratio=0., sort=True):
     words = []
-    for i in indices:
-        base_index = int(i)
-        word = str(lexicon[base_index])
-
-        if rare_cumulative is not None and np.random.random() < rare_ratio:
-            # Reuse the CDF instead of rebuilding it over the whole IAM corpus
-            # for each sampled word (as np.random.choice(p=...) does).
-            rare_index = rare_indices[np.searchsorted(
-                rare_cumulative, np.random.random(), side='right'
-            )]
-            word = str(rare_source[int(rare_index)])
-
-        # Capitalization is applied after rare-word selection so the sampled
-        # glyph still follows the same case policy as ordinary corpus words.
-        if np.random.random() < capitalize_ratio:
-            word = word.capitalize() if np.random.random() < 0.8 else word.upper()
+    for i in idx:
+        word = lexicon[i]
+        if np.random.random() < capitize_ratio:
+            word = word_capitalize(word)
 
         if len(word) > max_word_len >= 1:
-            pos = np.random.randint(0, len(word) - max_word_len + 1)
+            pos = np.random.randint(0, len(word) - max_word_len)
             word = word[pos: pos + max_word_len]
 
         words.append(word)
@@ -358,10 +206,7 @@ def idx_to_words(idx, lexicon, max_word_len=0, capitalize_ratio=0.5,
 
 def pil_text_img(im, text, pos, color=(255, 0, 0), textSize=25):
     img_PIL = Image.fromarray(cv2.cvtColor(im, cv2.COLOR_BGR2RGB))
-    try:
-        font = ImageFont.truetype('font/arial.ttf', textSize)
-    except OSError:
-        font = ImageFont.load_default()
+    font = ImageFont.truetype('font/arial.ttf', textSize)
     fillColor = color  # (255,0,0)
     position = pos  # (100,100)
     draw = ImageDraw.Draw(img_PIL)
@@ -372,12 +217,14 @@ def pil_text_img(im, text, pos, color=(255, 0, 0), textSize=25):
 
 
 def words_to_images(texts, img_h, img_w, n_channel=1):
-    word_imgs = np.zeros((len(texts), img_h, img_w, 3), dtype=np.uint8)
+    n_channel = 3
+    word_imgs = np.zeros((len(texts), img_h, img_w, n_channel)).astype(np.uint8)
     for i in range(len(texts)):
-        word_imgs[i] = pil_text_img(word_imgs[i], texts[i], (1, 1), textSize=25)
-    word_imgs_sum = word_imgs.sum(axis=-1, keepdims=True).astype(np.uint8)
-    word_imgs_t = torch.from_numpy(word_imgs_sum).permute([0, 3, 1, 2]).float() / 128.0 - 1.0
-    return word_imgs_t
+        # cv2.putText(word_imgs[i], texts[i], (2, 29), cv2.FONT_HERSHEY_SIMPLEX, 0.5, 255, 2)
+        word_imgs[i] = pil_text_img(word_imgs[i], texts[i], (1, 1),  textSize=25)
+    word_imgs = word_imgs.sum(axis=-1, keepdims=True).astype(np.uint8)
+    word_imgs = torch.from_numpy(word_imgs).permute([0, 3, 1, 2]).float() / 128 - 1
+    return word_imgs
 
 
 def ctc_greedy_decoder(probs_seq, blank_index=0):
@@ -399,6 +246,7 @@ def ctc_greedy_decoder(probs_seq, blank_index=0):
     # remove consecutive duplicate indexes
     index_list = [index_group[0] for index_group in groupby(max_index_list)]
     # remove blank indexes
+    # blank_index = len(vocabulary)
     index_list = [index for index in index_list if index != blank_index]
     # convert index list to string
     return index_list
@@ -425,6 +273,7 @@ class PatchSampler(object):
             rand_top_xy = np.stack([rand_x, rand_y]).transpose().astype('int')
             pos_xy.append(rand_top_xy)
             for tx, ty in rand_top_xy:
+                print(tx, ' ', ty)
                 patch = fake_imgs[bid, :, ty:ty+self.patch_size[0], tx:tx+self.patch_size[1]]
                 patches.append(patch)
 
@@ -434,204 +283,86 @@ class PatchSampler(object):
             return patches
 
 
-def adaptive_crop_count(valid_width, patch_size=32, min_crops=4, max_crops=8):
-    """Choose bounded local coverage proportional to the valid word width."""
-    if patch_size < 1 or min_crops < 1 or max_crops < min_crops:
-        raise ValueError('invalid adaptive crop configuration')
-    width_crops = (max(int(valid_width), 1) + patch_size - 1) // patch_size
-    return max(min_crops, min(max_crops, width_crops))
+def extract_patches_2d(img,patch_shape,step=[1.0,1.0],batch_first=False):
+    patch_H, patch_W = patch_shape[0], patch_shape[1]
+    if(img.size(2)<patch_H):
+        num_padded_H_Top = (patch_H - img.size(2))//2
+        num_padded_H_Bottom = patch_H - img.size(2) - num_padded_H_Top
+        padding_H = nn.ConstantPad2d((0,0,num_padded_H_Top,num_padded_H_Bottom),0)
+        img = padding_H(img)
+    if(img.size(3)<patch_W):
+        num_padded_W_Left = (patch_W - img.size(3))//2
+        num_padded_W_Right = patch_W - img.size(3) - num_padded_W_Left
+        padding_W = nn.ConstantPad2d((num_padded_W_Left,num_padded_W_Right,0,0),0)
+        img = padding_W(img)
+    step_int = [0,0]
+    step_int[0] = int(patch_H*step[0]) if(isinstance(step[0], float)) else step[0]
+    step_int[1] = int(patch_W*step[1]) if(isinstance(step[1], float)) else step[1]
+    patches_fold_H = img.unfold(2, patch_H, step_int[0])
+    if((img.size(2) - patch_H) % step_int[0] != 0):
+        patches_fold_H = torch.cat((patches_fold_H,img[:,:,-patch_H:,].permute(0,1,3,2).unsqueeze(2)),dim=2)
+    patches_fold_HW = patches_fold_H.unfold(3, patch_W, step_int[1])
+    if((img.size(3) - patch_W) % step_int[1] != 0):
+        patches_fold_HW = torch.cat((patches_fold_HW,patches_fold_H[:,:,:,-patch_W:,:].permute(0,1,2,4,3).unsqueeze(3)),dim=3)
+    patches = patches_fold_HW.permute(2,3,0,1,4,5)
+    patches = patches.reshape(-1,img.size(0),img.size(1),patch_H,patch_W)
+    if(batch_first):
+        patches = patches.permute(1,0,2,3,4)
+    return patches
 
+def extract_all_patches(org_imgs, org_img_lens, block_size=32, step=8, plot=False):
+    img_h = org_imgs.size(-2)
+    n_patch_row = (img_h - block_size) // step + 1
+    patches = extract_patches_2d(org_imgs, (block_size, block_size), step=[step, step], batch_first=True)
+    patch_lens = (org_img_lens - block_size) // step + 1
+    mask = _len2mask(patch_lens, patches.size(1) // n_patch_row).repeat(1, n_patch_row).bool()
+    patches = patches.masked_select(mask.view(*mask.size(), 1, 1, 1))
+    patches = patches.view(-1, 1, block_size, block_size)
+    if plot:
+        idx = np.random.randint(1, org_imgs.size(0))
 
-def sample_stroke_patches(
-    images, image_lens, min_crops=4, max_crops=8, fill_value=-1.0,
-):
-    """Return half-height square crop batches with per-word counts.
+        import matplotlib.pyplot as plt
+        from itertools import accumulate
+        from lib.utils import draw_image
 
-    Crop positions are stratified across valid horizontal starts and alternate
-    upper/lower bands. No character boxes, ink thresholds, or labels are used.
-    Short words are extended with the dataset padding value, never canvas pixels.
-    """
-    if images.ndim != 4 or images.size(0) == 0 or min(images.shape[-2:]) < 2:
-        raise ValueError('images must be a nonempty (B, C, H, W) batch with H/W >= 2')
-    if min_crops < 1 or max_crops < min_crops:
-        raise ValueError('invalid adaptive crop bounds')
-    widths = torch.as_tensor(image_lens, device=images.device, dtype=torch.long)
-    if (widths.ndim != 1 or widths.numel() != images.size(0)
-            or torch.any(widths < 1) or torch.any(widths > images.size(-1))):
-        raise ValueError('image_lens must contain one valid width per image')
-
-    height = images.size(-2)
-    slots = torch.arange(max_crops, device=images.device)
-    scales = []
-    for size in (max(1, height // 2),):
-        counts = ((widths + size - 1) // size).clamp(min_crops, max_crops)
-        rows, indices = (slots[None, :] < counts[:, None]).nonzero(as_tuple=True)
-        n = rows.numel()
-        # Every stratum covers a disjoint interval of feasible crop starts.
-        positions = (widths[rows] - size + 1).clamp_min(1)
-        left = torch.floor(
-            (indices + torch.rand(n, device=images.device))
-            * positions / counts[rows]
-        ).long()
-        vertical_positions = height - size + 1
-        band = indices.remainder(2)
-        lower = band * (vertical_positions // 2)
-        upper = torch.maximum((band + 1) * vertical_positions // 2, lower + 1)
-        top = lower + torch.floor(
-            torch.rand(n, device=images.device) * (upper - lower)
-        ).long()
-        offset = torch.arange(size, device=images.device)
-        x = left[:, None] + offset
-        patches = images[
-            rows[:, None, None, None],
-            torch.arange(images.size(1), device=images.device)[None, :, None, None],
-            (top[:, None] + offset)[:, None, :, None],
-            x.clamp_max(images.size(-1) - 1)[:, None, None, :],
-        ]
-        patches = patches.masked_fill(
-            (x >= widths[rows, None])[:, None, None, :], float(fill_value)
-        )
-        scales.append((patches, counts))
-    return tuple(scales)
-
-
-def run_patch_discriminator(discriminator, groups, score_transform=None):
-    """Shared critic, equal word/scale weighting, one score vector per branch.
-
-    Batch same-size crops together; different scales must remain separate.
-    Apply any hinge penalty per spatial decision before averaging maps, crops,
-    and scales. Branch averaging is owned by the GAN objective.
-    """
-    if not groups:
-        raise ValueError('at least one patch group is required')
-    branch_scores = [[] for _ in groups]
-    for scale in range(len(groups[0])):
-        batches = [group[scale] for group in groups]
-        sizes = [patches.size(0) for patches, _ in batches]
-        logits = discriminator(torch.cat([patches for patches, _ in batches], dim=0))
-        if score_transform is not None:
-            logits = score_transform(logits)
-        crop_scores = logits.flatten(1).mean(dim=1)
-        for branch, scores, (_, counts) in zip(
-            branch_scores, crop_scores.split(sizes), batches
-        ):
-            rows = torch.arange(counts.numel(), device=scores.device).repeat_interleave(counts)
-            sums = scores.new_zeros(counts.numel()).scatter_add(0, rows, scores)
-            branch.append(sums / counts.to(scores.dtype))
-    return [torch.stack(scores).mean(dim=0) for scores in branch_scores]
-
-
-def augment_word_batch(
-    images,
-    image_lens,
-    max_translation=4,
-    width_scale=0.05,
-    fill_value=-1.0,
-):
-    """Apply mild differentiable word-safe geometry to a D input batch.
-
-    The canvas and valid widths do not change.  Only horizontal scale and
-    translation are used so text content, baseline, and label lengths remain
-    valid.  Applying this same policy family to real and generated words avoids
-    teaching D an augmentation shortcut. Extend each word's boundary pixels
-    inside its valid canvas, rather than introducing constant-color paper seams.
-    Padding outside the valid word remains fill_value and is never extended.
-    """
-    if images.ndim != 4:
-        raise ValueError('images must have shape (B, C, H, W)')
-    if images.size(0) != len(image_lens):
-        raise ValueError('image_lens must contain one length per image')
-    if max_translation < 0 or not 0.0 <= width_scale < 1.0:
-        raise ValueError('invalid discriminator augmentation configuration')
-    if max_translation == 0 and width_scale == 0:
-        return images, image_lens
-
-    output = torch.full_like(images, float(fill_value))
-    lengths = image_lens.detach().cpu().long().tolist()
-    canvas_width = images.size(-1)
-    for row, raw_width in enumerate(lengths):
-        valid_width = max(1, min(int(raw_width), canvas_width))
-        word = images[row:row + 1, :, :, :valid_width]
-        if width_scale:
-            scale = 1.0 + (2.0 * torch.rand(()).item() - 1.0) * width_scale
-            scaled_width = max(1, int(round(valid_width * scale)))
-            word = F.interpolate(
-                word, size=(images.size(-2), scaled_width),
-                mode='bilinear', align_corners=False,
-            )
-        else:
-            scaled_width = valid_width
-
-        if scaled_width >= valid_width:
-            excess = scaled_width - valid_width
-            crop_left = int(torch.randint(0, excess + 1, (1,)).item()) if excess else 0
-            word = word[..., crop_left:crop_left + valid_width]
-        else:
-            pad_total = valid_width - scaled_width
-            pad_left = int(torch.randint(0, pad_total + 1, (1,)).item())
-            word = F.pad(
-                word, (pad_left, pad_total - pad_left, 0, 0),
-                mode='replicate',
-            )
-
-        shift = int(torch.randint(
-            -max_translation, max_translation + 1, (1,)
-        ).item()) if max_translation else 0
-        shift = max(-(valid_width - 1), min(shift, valid_width - 1))
-        if shift > 0:
-            word = F.pad(
-                word[..., :valid_width - shift], (shift, 0, 0, 0),
-                mode='replicate',
-            )
-        elif shift < 0:
-            amount = -shift
-            word = F.pad(
-                word[..., amount:], (0, amount, 0, 0),
-                mode='replicate',
-            )
-        output[row:row + 1, :, :, :valid_width] = word
-
-    return output, image_lens
+        plt.subplot(211)
+        plt.imshow(org_imgs[idx, 0, :, :org_img_lens[idx].cpu().detach().numpy()].cpu().detach().numpy(), cmap='binary')
+        # plt.axis('off')
+        plt.subplot(212)
+        sum_patch_lens = list(accumulate(patch_lens.cpu().detach().numpy() * n_patch_row))
+        print(sum_patch_lens)
+        patch_imgs = []
+        for i in range(sum_patch_lens[idx - 1], sum_patch_lens[idx]):
+            patch_imgs.append(patches[i])
+        img = draw_image(1 - torch.stack(patch_imgs, dim=0).repeat(1, 3, 1, 1).cpu(), nrow=patch_lens[idx],
+                         normalize=True)
+        plt.imshow(img, cmap='binary')
+        plt.axis('off')
+        plt.show()
+    return patches
 
 
 def rand_clip_images(imgs, img_lens, min_clip_width=64):
     device = imgs.device
-    min_clip_width = max(1, int(min_clip_width))
-    step = max(1, min_clip_width // 4)
-    clip_imgs = []
-    clip_img_lens = []
-
-    lens_list = img_lens.tolist() if isinstance(img_lens, torch.Tensor) else [int(l) for l in img_lens]
-
-    for i, img_len in enumerate(lens_list):
-        img_len = int(img_len)
+    imgs, img_lens = imgs.cpu().numpy(), img_lens.cpu().numpy()
+    clip_imgs, clip_img_lens = [], []
+    for img, img_len in zip(imgs, img_lens):
         if img_len <= min_clip_width:
-            clip_imgs.append(imgs[i, :, :, :img_len])
+            clip_imgs.append(img[:, :, :img_len])
             clip_img_lens.append(img_len)
         else:
-            crop_width = int(np.random.randint(min_clip_width, img_len))
-            crop_width = crop_width - crop_width % step
-            crop_width = min(img_len, max(min_clip_width, crop_width))
-
-            max_pos = img_len - crop_width
-            rand_pos = int(np.random.randint(0, max_pos)) if max_pos > 0 else 0
-            clip_img = imgs[i, :, :, rand_pos : rand_pos + crop_width]
+            crop_width = np.random.randint(min_clip_width, img_len)
+            crop_width = crop_width - crop_width % (min_clip_width // 4)
+            rand_pos = np.random.randint(0, img_len - crop_width)
+            clip_img = img[:, :, rand_pos: rand_pos + crop_width]
             clip_imgs.append(clip_img)
-            clip_img_lens.append(clip_img.size(-1))
+            clip_img_lens.append(clip_img.shape[-1])
 
     max_img_len = max(clip_img_lens)
-    pad_imgs = torch.full(
-        (imgs.size(0), imgs.size(1), imgs.size(2), max_img_len),
-        -1.0,
-        dtype=imgs.dtype,
-        device=device
-    )
-    for i, (clip_img, clip_len) in enumerate(zip(clip_imgs, clip_img_lens)):
-        pad_imgs[i, :, :, :clip_len] = clip_img
-
-    out_lens = torch.tensor(clip_img_lens, dtype=torch.int32, device=device)
-    return pad_imgs, out_lens
-
+    pad_imgs = -np.ones((imgs.shape[0], 1, imgs.shape[2], max_img_len))
+    for i, (clip_img, clip_img_len) in enumerate(zip(clip_imgs, clip_img_lens)):
+        pad_imgs[i, 0, :, :clip_img_len] = clip_img
+    return torch.from_numpy(pad_imgs).float().to(device), torch.Tensor(clip_img_lens).int().to(device)
 
 
 def _recalc_len(leng, scale):
@@ -645,18 +376,17 @@ def augment_images(imgs, img_lens, lbs, lb_lens):
     for img_len in img_lens:
         ratio = (np.random.random() - 0.5) * 2 * 0.4
         new_width = int(img_len * (1 + ratio))
-        ref_img_lens.append(_recalc_len(new_width, scale=CharWidth))
+        ref_img_lens.append(_recalc_len(new_width, scale=path_config.CharWidth))
 
-    target_idx = np.argsort(ref_img_lens)[::-1].copy()
+    target_idx = np.argsort(ref_img_lens)[::-1]
 
-    ref_img_lens = np.array(ref_img_lens, dtype=int)
-    max_ref_len = _recalc_len(int(ref_img_lens.max()), scale=CharWidth)
-    pad_imgs = -np.ones((bz, c, h, max_ref_len), dtype=np.float32)
+    ref_img_lens = np.array(ref_img_lens, dtype=np.int)
+    pad_imgs = -np.ones((bz, c, h, _recalc_len(ref_img_lens.max(), h)))
     for i, (img, img_len, ref_img_len) in enumerate(zip(imgs.detach(), img_lens, ref_img_lens)):
         mode = 'area' if img_len > ref_img_len else 'bilinear'
         align_corners = None if img_len > ref_img_len else False
         resized_img = F.interpolate(img[:, :, :img_len].unsqueeze(dim=0),
-                                    (h, int(ref_img_len)),
+                                    (h, ref_img_len),
                                     mode=mode,
                                     align_corners=align_corners)
         org_img = resized_img[0, 0].cpu().numpy()
@@ -666,28 +396,25 @@ def augment_images(imgs, img_lens, lbs, lb_lens):
     ref_img_lens = np.stack([ref_img_lens[idx] for idx in target_idx])
     resized_imgs = torch.from_numpy(pad_imgs).float().to(imgs.device).detach()
     resized_img_lens = torch.from_numpy(ref_img_lens).int().to(imgs.device).detach()
-    sort_lbs = lbs[target_idx]
-    sort_lb_lens = lb_lens[target_idx]
+    sort_lbs = torch.stack([lbs[idx] for idx in target_idx])
+    sort_lb_lens = torch.stack([lb_lens[idx] for idx in target_idx])
     return resized_imgs, resized_img_lens, sort_lbs, sort_lb_lens
 
 
 def rescale_images(imgs, img_lens, ref_img_lens):
     bz, c, h, w = imgs.size()
-    max_ref = int(torch.as_tensor(ref_img_lens).max().item())
-    pad_width = _recalc_len(max_ref, h)
-    pad_imgs = torch.full((bz, c, h, pad_width), -1.0, dtype=imgs.dtype, device=imgs.device)
+    pad_imgs = -np.ones((bz, c, h, _recalc_len(ref_img_lens.max(), h)))
     for i, (img, img_len, ref_img_len) in enumerate(zip(imgs, img_lens, ref_img_lens)):
-        i_len = int(img_len)
-        r_len = int(ref_img_len)
-        mode = 'area' if i_len > r_len else 'bilinear'
-        align_corners = None if i_len > r_len else False
-        resized_img = F.interpolate(img[:, :, :i_len].unsqueeze(dim=0),
-                                    (h, r_len),
+        mode = 'area' if img_len > ref_img_len else 'bilinear'
+        align_corners = None if img_len > ref_img_len else False
+        resized_img = F.interpolate(img[:, :, :img_len].unsqueeze(dim=0),
+                                    (h, ref_img_len),
                                     mode=mode,
                                     align_corners=align_corners)
-        pad_imgs[i, :, :, :r_len] = resized_img[0]
+        pad_imgs[i, :, :, :ref_img_len] = resized_img[0].cpu().numpy()
 
-    return pad_imgs, ref_img_lens
+    resized_imgs = torch.from_numpy(pad_imgs).float().to(imgs.device)
+    return resized_imgs, ref_img_lens
 
 
 def rescale_images2(imgs, img_lens, lb_lens, ref_img_lens, ref_lb_lens):
@@ -696,14 +423,62 @@ def rescale_images2(imgs, img_lens, lb_lens, ref_img_lens, ref_lb_lens):
     return resized_imgs, target_img_lens
 
 
-def pad_image_lengths(img_lens, scale=None):
-    if scale is None:
-        import lib.path_config as path_cfg
-        scale = path_cfg.ImgHeight
-    tmp = img_lens % scale
-    return torch.where(tmp != 0, img_lens + scale - tmp, img_lens).detach()
+def pad_image_lengths(img_lens:torch.Tensor, scale=None):
+    scale = path_config.ImgHeight if scale is None else scale
+    pad_img_lens = [_recalc_len(img_len, scale) for img_len in img_lens.detach()]
+    return torch.stack(pad_img_lens, 0).detach()
 
 
-def ensure_dim3(tensor):
-    """Ensures input tensor is 3D (B, S, D) by unsqueezing 2D (B, D) tensors."""
-    return tensor.unsqueeze(1) if tensor.dim() == 2 else tensor
+def extract_stroke_patches(images, image_lens, fill_value=-1.0):
+    """Cover valid words with half-height squares at half-square stride.
+
+    Right/bottom remainder cells contain paper, never batch-padding pixels.
+    Return one flat crop batch and counts for equal-word loss reduction.
+    """
+    if (images.ndim != 4 or images.size(0) == 0 or images.size(1) == 0
+            or images.size(-2) < 2 or images.size(-1) < 1):
+        raise ValueError('images must be a nonempty BCHW batch with H >= 2 and W >= 1')
+    widths = torch.as_tensor(image_lens, device=images.device, dtype=torch.long)
+    if (widths.ndim != 1 or widths.numel() != images.size(0)
+            or torch.any(widths < 1) or torch.any(widths > images.size(-1))):
+        raise ValueError('image_lens must contain one valid width per image')
+
+    height = images.size(-2)
+    if height < 4 or height % 4:
+        raise ValueError('overlapping grid requires an image height divisible by four')
+    size = height // 2
+    stride = height // 4
+    columns = 2 * ((widths + size - 1) // size) - 1
+    counts = columns * 3
+    rows = torch.arange(images.size(0), device=images.device).repeat_interleave(counts)
+    starts = counts.cumsum(0) - counts
+    slots = torch.arange(rows.numel(), device=images.device) - starts[rows]
+    offset = torch.arange(size, device=images.device)
+    x = (slots % columns[rows])[:, None] * stride + offset
+    y = (slots // columns[rows])[:, None] * stride + offset
+    patches = images[
+        rows[:, None, None, None],
+        torch.arange(images.size(1), device=images.device)[None, :, None, None],
+        y.clamp_max(height - 1)[:, None, :, None],
+        x.clamp_max(images.size(-1) - 1)[:, None, None, :],
+    ]
+    invalid = (x >= widths[rows, None])[:, None, None, :] | (y >= height)[:, None, :, None]
+    return patches.masked_fill(invalid, float(fill_value)), counts
+
+
+
+def run_patch_discriminator(discriminator, groups, score_transform=None):
+    """Batch equal-size grids; apply hinge before equal-word reduction."""
+    if not groups:
+        raise ValueError('at least one patch group is required')
+    sizes = [patches.size(0) for patches, _ in groups]
+    logits = discriminator(torch.cat([patches for patches, _ in groups], dim=0))
+    if score_transform is not None:
+        logits = score_transform(logits)
+    crop_scores = logits.flatten(1).mean(dim=1)
+    branch_scores = []
+    for scores, (_, counts) in zip(crop_scores.split(sizes), groups):
+        rows = torch.arange(counts.numel(), device=scores.device).repeat_interleave(counts)
+        sums = scores.new_zeros(counts.numel()).scatter_add(0, rows, scores)
+        branch_scores.append(sums / counts.to(scores.dtype))
+    return branch_scores

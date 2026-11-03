@@ -19,7 +19,7 @@ from metric.cmmd import calculate_cmmd_score, compute_real_embeddings, ClipEmbed
 from metric.mssim_psnr import calculate_mssim_psnr
 from networks.utils import pad_image_lengths
 
-# We need to wrap or subclass InceptionV3 to support masking and returning logits.
+# We need to wrap or subclass InceptionV3 to support masking and returning logits for HGGAN.
 class HGGANInceptionV3(ReferenceInceptionV3):
     def __init__(self, output_blocks=[3], resize_input=True, normalize_input=True, requires_grad=False, use_fid_inception=True):
         self.hggan_resize_input = resize_input
@@ -79,7 +79,7 @@ class HGGANInceptionV3(ReferenceInceptionV3):
         logits = self.last_fc(pooled_feat.view(pooled_feat.size(0), -1)).softmax(dim=-1)
         return pooled_feat, logits
 
-# Export CustomInceptionV3 as InceptionV3
+# Export HGGANInceptionV3 as InceptionV3
 InceptionV3 = HGGANInceptionV3
 
 class ImageListDataset(Dataset):
@@ -142,7 +142,7 @@ def get_activations(data_source, n_batches, model, dims, device, crop=False, eva
             imgs, org_img_lens = imgs.to(device, non_blocking=True), org_img_lens.to(device, non_blocking=True)
 
         # ----------------------------------------------------
-        # 1. FID/KID preprocessing
+        # 1. SpiS-GAN Preprocessing for FID/KID Activations
         # ----------------------------------------------------
         if eval_is:
             imgs_is = imgs.clone()
@@ -157,7 +157,6 @@ def get_activations(data_source, n_batches, model, dims, device, crop=False, eva
         all_neg_one_in_padding = (is_neg_one | ~padding_mask).flatten(1).all(dim=1)
         replace_mask = padding_mask & all_neg_one_in_padding.view(batch_size, 1, 1, 1)
         imgs_fid.masked_fill_(replace_mask, 1.0)
-
 
         # Normalize to [0, 1]
         imgs_fid = (imgs_fid + 1) / 2
@@ -175,7 +174,7 @@ def get_activations(data_source, n_batches, model, dims, device, crop=False, eva
             elif width > target_width:
                 imgs_fid = imgs_fid[:, :, :, :target_width]
 
-        # Resize to (299, 299) and normalize to [-1, 1]
+        # Resize to (299, 299) and normalize to [-1, 1] (matching SpiS-GAN)
         imgs_fid = torch.nn.functional.interpolate(
             imgs_fid, size=(299, 299), mode='bilinear', align_corners=False
         )
@@ -199,7 +198,7 @@ def get_activations(data_source, n_batches, model, dims, device, crop=False, eva
         pred_arr.append(pred.cpu().data.numpy().reshape(pred.size(0), -1))
 
         # ----------------------------------------------------
-        # 2. Original Baseline Preprocessing for IS Logits
+        # 2. Original HiGAN+ Preprocessing for IS Logits
         # ----------------------------------------------------
         if eval_is:
             img_lens_is = pad_image_lengths(org_img_lens_is, scale=height)
@@ -278,10 +277,8 @@ def polynomial_mmd_averages(codes_g, codes_r, n_subsets=50, subset_size=1000,
         for i in bar:
             g = codes_g[choice(len(codes_g), subset_size, replace=False)]
             r = codes_r[choice(len(codes_r), subset_size, replace=False)]
-            o = polynomial_mmd(
-                g, r, **kernel_args, var_at_m=m, ret_var=ret_var,
-                device=device,
-            )
+            o = polynomial_mmd(g, r, **kernel_args, var_at_m=m, ret_var=ret_var,
+                               device=device)
             if ret_var:
                 mmds[i], vars[i] = o
             else:
@@ -416,12 +413,8 @@ def calculate_fid_kid_is(cfg, data_loader, generator, n_rand_repeat, device, cro
     eval_fid = bool(getattr(cfg, 'validate_fid', False))
     eval_kid = bool(getattr(cfg, 'validate_kid', False))
     legacy_is = getattr(cfg, 'validate_is', None)
-    eval_is_gen = bool(getattr(
-        cfg, 'validate_is_gen', legacy_is if legacy_is is not None else False
-    ))
-    eval_is_org = bool(getattr(
-        cfg, 'validate_is_org', legacy_is if legacy_is is not None else False
-    ))
+    eval_is_gen = bool(getattr(cfg, 'validate_is_gen', legacy_is if legacy_is is not None else False))
+    eval_is_org = bool(getattr(cfg, 'validate_is_org', legacy_is if legacy_is is not None else False))
     eval_is = eval_is_gen or eval_is_org
 
     res = {}
@@ -471,10 +464,8 @@ def calculate_fid_kid_is(cfg, data_loader, generator, n_rand_repeat, device, cro
     return res
 
 # Handwriting Distance (HWD) Wrapper
-def calculate_hwd_score(
-    data_loader, generator, n_rand_repeat, device, n_batches=None,
-    real_dataset=None, real_features=None, batchsize=32,
-):
+def calculate_hwd_score(data_loader, generator, n_rand_repeat, device, n_batches=None,
+                        real_dataset=None, real_features=None, batchsize=32):
     if n_batches is None:
         n_batches = len(data_loader)
 

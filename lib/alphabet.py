@@ -5,7 +5,9 @@ import numpy as np
 #-\'.ü!"#%&()*+,/:;?
 Alphabets = {
     #'!#&():;?*%'
-    'all': '` ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789\'-"/,.+_!#&():;?*',# n_class: 81
+    # Keep the historical 80 class IDs unchanged and append ``*`` as class 80.
+    # The new IAM releases contain this character in both train and test splits.
+    'all': '` ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789\'-"/,.+_!#&():;?*', # n_class: 81
     'iam_word': '` ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789\'-"/,.+_!#&():;?*', # n_class: 81
     'iam_line': '` ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789\'-"/,.+_!#&():;?*', # n_class: 81
     'cvl_word': '` ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789\'-"/,.+_!#&():;?*', # n_class: 81
@@ -13,11 +15,6 @@ Alphabets = {
     # 'cvl_word': '` ABDEFGHILNPRSTUVWYZabcdefghiklmnopqrstuvwxyz\'-_159', # n_class: 52
     'rimes_word': '` ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789%\'-/Éàâçèéêëîïôùû' # n_class: 81
 }
-
-
-def get_alphabet_size(alphabet_key):
-    """Return the number of character classes (including blank) for a given alphabet key."""
-    return len(Alphabets[alphabet_key])
 
 
 class strLabelConverter(object):
@@ -30,16 +27,12 @@ class strLabelConverter(object):
     """
 
     def __init__(self, alphabet_key, ignore_case=False):
-        if isinstance(alphabet_key, str) and alphabet_key in Alphabets:
-            alphabet = Alphabets[alphabet_key]
-        else:
-            # Allow passing a raw alphabet string directly for custom languages
-            alphabet = alphabet_key
+        alphabet = Alphabets[alphabet_key]
+        # print(alphabet)
         self._ignore_case = ignore_case
         if self._ignore_case:
             alphabet = alphabet.lower()
         self.alphabet = alphabet
-        self.n_class = len(alphabet)
 
         self.dict = {}
         for i, char in enumerate(alphabet):
@@ -64,6 +57,9 @@ class strLabelConverter(object):
             torch.IntTensor [length_0 + length_1 + ... length_{n - 1}]: encoded texts.
             torch.IntTensor [n]: length of each text.
         """
+        if len(text) == 1:
+            text = text[0]
+
         if isinstance(text, str):
             return self._encode_word(text)
 
@@ -71,12 +67,13 @@ class strLabelConverter(object):
         result = []
         results = []
         for item in text:
+            # item = item.decode('utf-8', 'strict')
             length.append(len(item))
             result.extend(self._encode_word(item))
             results.append(result)
             result = []
 
-        labels = torch.nn.utils.rnn.pad_sequence([torch.LongTensor(seq) for seq in results], batch_first=True)
+        labels = torch.nn.utils.rnn.pad_sequence([torch.LongTensor(text) for text in results], batch_first=True)
         lengths = torch.IntTensor(length)
 
         if max_len is not None and max_len > labels.size(-1):
@@ -85,21 +82,6 @@ class strLabelConverter(object):
             labels = pad_labels
 
         return labels, lengths
-
-    def decode_labels(self, labels, lengths=None):
-        """Map literal transcript IDs to text; never apply CTC repetition collapse."""
-        if torch.is_tensor(labels):
-            labels = labels.detach().cpu().tolist()
-        if torch.is_tensor(lengths):
-            lengths = lengths.detach().cpu().tolist()
-        if not labels or not isinstance(labels[0], (list, tuple)):
-            limit = len(labels) if lengths is None else int(lengths[0] if isinstance(lengths, (list, tuple)) else lengths)
-            return ''.join(self.alphabet[int(i)] for i in labels[:limit] if int(i) != 0)
-        if lengths is None:
-            lengths = [len(row) for row in labels]
-        if len(labels) != len(lengths):
-            raise ValueError('one transcript length is required per label row')
-        return [self.decode_labels(row, int(n)) for row, n in zip(labels, lengths)]
 
     def decode(self, t, length=None, raw=False):
         """Decode encoded texts back into strs.
@@ -122,21 +104,22 @@ class strLabelConverter(object):
 
         if length.numel() == 1:
             length = length[0]
+            assert nonzero_count(t) == length, "{} text with length: {} does not match declared length: {}".\
+                                                format(t, nonzero_count(t), length)
             if raw:
-                t_indices = t.tolist() if isinstance(t, torch.Tensor) else list(t)
-                return ''.join([self.alphabet[i] for i in t_indices if 0 <= i < len(self.alphabet)])
+                return ''.join([self.alphabet[i] for i in t])
             else:
                 char_list = []
                 if t.dim() == 2:
                     t = t[0]
                 for i in range(length):
                     if t[i] != 0 and (not (i > 0 and t[i - 1] == t[i])):
-                        idx = t[i].item() if hasattr(t[i], 'item') else int(t[i])
-                        if 0 <= idx < len(self.alphabet):
-                            char_list.append(self.alphabet[idx])
+                        char_list.append(self.alphabet[t[i]])
                 return ''.join(char_list)
         else:
             # batch mode
+            assert nonzero_count(t) == length.sum(), "texts with length: {} does not match declared length: {}".\
+                                                      format(nonzero_count(t), length.sum())
             texts = []
             index = 0
             for i in range(length.numel()):
@@ -150,14 +133,7 @@ class strLabelConverter(object):
 
 def get_true_alphabet(name):
     tag = '_'.join(name.split('_')[:2])
-    if tag in Alphabets:
-        return Alphabets[tag]
-    # Fallback: try just the first token
-    first = name.split('_')[0]
-    for key in Alphabets:
-        if key.startswith(first):
-            return Alphabets[key]
-    return Alphabets.get('all', '')
+    return Alphabets[tag]
 
 
 def get_lexicon(path, true_alphabet, max_length=20, ignore_case=True):
@@ -166,7 +142,7 @@ def get_lexicon(path, true_alphabet, max_length=20, ignore_case=True):
         with open(path, 'r', encoding='utf-8') as f:
             for line in f.readlines():
                 line = line.strip()
-                if not line:
+                if len(line) < 2:
                     continue
 
                 word = ''.join(ch for ch in line if ch in true_alphabet)
@@ -181,11 +157,7 @@ def get_lexicon(path, true_alphabet, max_length=20, ignore_case=True):
 
 
 def word_capitalize(word):
-    """Capitalize the first character of a word in a Unicode-safe way.
-
-    Works correctly with any script (Latin, Cyrillic, Arabic, CJK, etc.).
-    For scripts without case distinctions the word is returned unchanged.
-    """
-    if not word:
-        return word
-    return word[0].upper() + word[1:]
+    word = list(word)
+    word[0] = unicodedata.normalize('NFKD', word[0].upper()).encode('ascii', 'ignore').decode("utf-8")
+    word = ''.join(word)
+    return word

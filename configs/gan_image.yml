@@ -1,127 +1,97 @@
-# Runtime
-device: cuda:0
-multi_gpu: false
-gpus: [0]
-seed: 123456
-model: gl_adversarial_model
+device: 'cuda:0'
+model: 'gl_adversarial_model'
 
-# Dataset geometry and source convention
-dataset: custom
+wandb:
+  enabled: true
+  key: ''
+  project: 'HiGANplus'
+  name: ~
+  resume: 'allow'
+dataset: 'custom'
 dataset_source_polarity: white
+seed: 123456
 img_height: 64
 char_width: 32
 
 training:
-  # Data and initialization
-  dset_split: ./data/image_samples/
-
-  # Batches and data loading
+  # Runtime/logging only; does not change the objective or update schedule.
+  num_workers: 4
+  eval_num_workers: 4
+  sample_num_workers: 0
+  persistent_workers: true
+  prefetch_factor: 2
+  detailed_loss_print: true
+  lambda_patch_adv: 0.45
+  dset_split: './data/image_samples/'
+  epochs: 70
   batch_size: 4
   eval_batch_size: 4
-  sort_input: true
-
-  # Epoch schedule
-  epochs: 70
-
-  # Text sampling
-  lexicon: ./data/english_words.txt
+  # optimization:
+  ckpt_dir: 'ckpts'
+  lexicon: './data/english_words.txt'
   max_word_len: 20
-  n_class: 81
+  n_class: 80
   capitalize_ratio: 0.5
-  blank_ratio: 0.0
-
-  # Reconstruction and style objectives
+  blank_ratio: 0.
+  sort_input: true
   vae_mode: true
 
-  # Logging, evaluation, saving and exports
-  val_iter: 6500
-  ckpt_dir: ckpts
-
 valid:
-  # First GAN epoch eligible for independent CER/WER evaluation.
-  num_start_ocr: 80
-  # Dataset and metric switches
-  dset_name: custom
-  dset_split: ./data/image_samples/
-  validate_fid: false
-  validate_kid: false
-  validate_hwd: false
-  validate_cmmd: false
-  validate_cer: false
-  validate_wer: false
-  validate_is_gen: false
-  validate_is_org: false
-  validate_psnr: false
-  validate_mssim: false
-  validate_wier: false
+  eval_seed: 123456
+  dset_name: 'custom'
+  dset_split: './data/image_samples/'
 
-  # Feature extraction and sampling
-  validate_cmmd_every_n_epochs: 4
+test:
+  interp_num: 7
+  nrow: 4
 
-StyBackbone:
-  resolution: 16
-  max_dim: 256
-  in_channel: 1
-  init: N02
-  dropout: 0.0
-  norm: bn
 
-EncModel:
-  # Global latent
-  style_dim: 32
-  in_dim: 256
-
-  # Reference memory from the shared backbone's intermediate spatial features
-
-  # Contextual-loss feature maps and initialization
-  init: none
-
+# network configuration
 GenModel:
-  # Global conditioning and reference retrieval
-  style_dim: 32
-
-  # Content geometry and convolutional generator
   G_ch: 64
-  embed_dim: 120
-  embed_pad_idx: 0
-  embed_max_norm: 1.0
-  n_class: 81
+  style_dim: 32
   bottom_width: 4
   bottom_height: 4
   resolution: 64
   G_kernel_size: 3
   G_attn: '0'
-  input_nc: 1
-
-  # Normalization and initialization
-  norm_style: bn
-  bn_linear: SN
-  G_param: SN
+  n_class: 80
+  embed_dim: 120
+  embed_pad_idx: 0
+  embed_max_norm: 1.0
   num_G_SVs: 1
   num_G_SV_itrs: 1
   cross_replica: false
   mybn: false
-  BN_eps: 1.0e-05
-  SN_eps: 1.0e-08
-  init: N02
+  BN_eps: 1.e-05
+  SN_eps: 1.e-08
+  init: 'N02'
+  G_param: 'SN'
+  norm_style: 'bn'
+  bn_linear: 'SN'
+  input_nc: 1
+
 
 DiscModel:
   D_ch: 64
   D_wide: true
   resolution: 64
+  D_kernel_size: 3
   D_attn: '0'
-  width_context: true
-  width_heads: 4
+  n_class: 80
   num_D_SVs: 1
   num_D_SV_itrs: 1
-  SN_eps: 1.0e-08
+  SN_eps: 1.e-08
   output_dim: 1
-  init: N02
-  D_param: SN
+  init: 'N02'
+  D_param: 'SN'
+  bn_linear: 'SN'
   input_nc: 1
+  one_hot: true
+
 
 PatchDiscModel:
-  D_ch: 32
+  D_ch: 64
   D_max_ch: 192
   D_layers: 3
   num_D_SVs: 1
@@ -136,18 +106,33 @@ OcrModel:
   resolution: 16
   max_dim: 256
   in_channel: 1
-  norm: bn
-  init: none
-  dropout: 0.0
-  n_class: 81
+  norm: 'bn'
+  init: 'none'
+  dropout: 0.
+  # ctc config
+  n_class: 80
   rnn_depth: 2
   bidirectional: true
 
+
+StyBackbone:
+  resolution: 16
+  max_dim: 256
+  in_channel: 1
+  init: 'N02'
+  dropout: 0.0
+  norm: 'bn'
+
+
+EncModel:
+  style_dim: 32
+  in_dim: 256
+  init: 'none'
+
+
 WidModel:
+  pool: attentive_stats
+  attention_dim: 128
   n_writer: 372
   in_dim: 256
-  init: none
-
-test:
-  interp_num: 7
-  nrow: 4
+  init: 'none'
