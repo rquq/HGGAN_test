@@ -1248,15 +1248,6 @@ class AdversarialModel(BaseModel):
 
             # Independent toggles supersede the old grouped flags. The grouped
             # names remain read-only fallbacks so older YAML files still evaluate.
-            legacy_ocr = getattr(self.opt.valid, 'validate_ocr', None)
-            validate_cer_enabled = bool(getattr(
-                self.opt.valid, 'validate_cer',
-                legacy_ocr if legacy_ocr is not None else False,
-            ))
-            validate_wer_enabled = bool(getattr(
-                self.opt.valid, 'validate_wer',
-                legacy_ocr if legacy_ocr is not None else False,
-            ))
             validate_psnr_enabled = bool(getattr(self.opt.valid, 'validate_psnr', False))
             validate_mssim_enabled = bool(getattr(self.opt.valid, 'validate_mssim', False))
             validate_wier_enabled = bool(getattr(self.opt.valid, 'validate_wier', False))
@@ -1404,13 +1395,6 @@ class AdversarialModel(BaseModel):
                     split=self.opt.valid.dset_split,
                 )
 
-            if validate_cer_enabled or validate_wer_enabled:
-                ocr_scores = self.validate_transfer_ocr(
-                    kwargs.get('current_epoch'), get_cached_generator(), eval_dloader
-                )
-                for key, enabled in [('cer',validate_cer_enabled), ('wer',validate_wer_enabled)]:
-                    if enabled and key in ocr_scores: res[key] = ocr_scores[key]
-
             if getattr(self.opt.valid, 'validate_hwd', False):
                 hwd_batch_size = int(getattr(
                     self.opt.valid, 'hwd_batch_size', 32
@@ -1503,60 +1487,6 @@ class AdversarialModel(BaseModel):
             self.restore_process_rng_state(training_rng_state)
 
         return res
-
-    def validate_transfer_ocr(self, epoch=None, generated_batches=None, real_batches=None):
-        """Independent OCR over the full configured validation image stream."""
-        import gc
-        from metric.ocr_eval import IndependentOCR, evaluate_validation, file_fingerprint
-        if generated_batches is None or real_batches is None:
-            raise ValueError('Full OCR requires the configured validation image streams')
-        start_epoch = int(getattr(self.opt.valid, 'num_start_ocr', 80))
-        if start_epoch < 0:
-            raise ValueError('num_start_ocr must be nonnegative')
-        if epoch is not None and int(epoch) < start_epoch:
-            return {}
-        every = int(getattr(self.opt.valid, 'ocr_eval_every_n_epochs', 1))
-        if every < 0:
-            raise ValueError('ocr_eval_every_n_epochs must be nonnegative')
-        completed = getattr(self, '_ocr_done_this_session', False)
-        if completed and (every == 0 or (epoch is not None and int(epoch) % every)):
-            return {}
-        if getattr(self, '_ocr_unavailable', False):
-            return {}
-        device = self.device
-        if device.type == 'cuda':
-            free, _ = torch.cuda.mem_get_info(device)
-            reusable = torch.cuda.memory_reserved(device) - torch.cuda.memory_allocated(device)
-            if free + reusable < 768 * 2**20:
-                device = torch.device('cpu')
-        if device.type == 'cpu' and completed:
-            return {}
-        evaluator = None
-        try:
-            evaluator = IndependentOCR(device)
-            dataset = self.eval_dloader.dataset
-            path = getattr(dataset, 'file_path', None)
-            identity = {'split':self.opt.valid.dset_split, 'samples':len(dataset),
-                        'path':os.path.realpath(path) if path else None,
-                        'sha256':file_fingerprint(path) if path else None}
-            result = evaluate_validation(
-                generated_batches, real_batches, self.label_converter, evaluator,
-                os.path.join(self.log_root, 'ocr_eval', f'full_epoch_{epoch if epoch is not None else "eval"}'),
-                int(getattr(self.opt.valid, 'ocr_eval_batch_size', 2)), identity,
-            )
-            self._ocr_done_this_session = True
-            self.ocr_eval_metadata = {k:v for k,v in result.items() if k != 'metrics'}
-            self.print(f'Full validation OCR: CER={result["metrics"]["cer"]:.4f} '
-                       f'WER={result["metrics"]["wer"]:.4f}; {result["samples"]} images; '
-                       f'split={self.opt.valid.dset_split}; protocol={result["protocol"]}')
-            return result['metrics']
-        except (OSError, ImportError, torch.cuda.OutOfMemoryError) as error:
-            self._ocr_unavailable = True
-            self.print(f'Independent OCR unavailable; CER/WER empty. No training-R fallback. {error}')
-            return {}
-        finally:
-            del evaluator
-            gc.collect()
 
     def validate_wid(self, generator, real_dloader, split='test'):
         if split == 'test':

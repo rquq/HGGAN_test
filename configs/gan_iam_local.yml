@@ -104,8 +104,6 @@ training:
   ckpt_dir: ckpts
 
 valid:
-  # First GAN epoch eligible for independent CER/WER evaluation.
-  num_start_ocr: 80
   # Dataset and metric switches
   dset_name: iam_word
   dset_split: test
@@ -114,8 +112,6 @@ valid:
   validate_kid: true
   validate_hwd: true
   validate_cmmd: false
-  validate_cer: true
-  validate_wer: true
   validate_is_gen: true
   validate_is_org: true
   validate_psnr: false
@@ -123,8 +119,6 @@ valid:
   validate_wier: false
 
   # Independent OCR evaluation
-  ocr_eval_every_n_epochs: 0
-  ocr_eval_batch_size: 1
 
   # Feature extraction and sampling
   batch_size: 8
