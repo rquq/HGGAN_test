@@ -28,13 +28,13 @@ training:
   lr_policy: 'linear'
   start_decay_epoch: 25
   n_epochs_decay: 46
-  batch_size: 4
-  eval_batch_size: 12
+  batch_size: 8
+  eval_batch_size: 8
   sample_nrow: 3
   lr: 2.0e-4
   adam_b1: 0.5
   adam_b2: 0.999
-  sample_iter_val: 200
+  sample_iter_val: 500
   print_iter_val: 20
   start_save_epoch_val: 0
   eval_epoch_val: 1
