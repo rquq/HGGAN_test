@@ -120,8 +120,6 @@ valid:
   validate_mssim: false
   validate_wier: false
 
-  # Independent OCR evaluation
-
   # Feature extraction and sampling
   batch_size: 32
   hwd_batch_size: 32
