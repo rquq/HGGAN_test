@@ -53,8 +53,8 @@ if __name__ == '__main__':
     new_state_dict = {}
     extracted_keys = []
 
-    for key in ['Generator', 'StyleEncoder', 'StyleBackbone']:
-        ema_key = f"ema_{key}"
+    for key in ['G', 'E', 'B']:
+        ema_key = key + '_EMA'
         if not args.use_raw and ema_key in state_dict:
             new_state_dict[key] = state_dict[ema_key]
             extracted_keys.append(f"{key} (from {ema_key})")
@@ -62,7 +62,7 @@ if __name__ == '__main__':
             new_state_dict[key] = state_dict[key]
             extracted_keys.append(key)
         else:
-            print(f"[Warning] Key '{key}' not found in source checkpoint {ckpt}")
+            raise KeyError(f"Required deployment module '{key}' missing from {ckpt}")
 
     os.makedirs(os.path.dirname(os.path.abspath(dst)), exist_ok=True)
     torch.save(new_state_dict, dst)

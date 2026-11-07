@@ -786,7 +786,7 @@ class BaseModel(object):
         self.restore_eval_history(ckpt_data)
 
         for name, model in self.models.items():
-            if len(modules) > 0 and model not in modules:
+            if modules and name not in modules and model not in modules:
                 continue
             if name not in ckpt_data:
                 raise KeyError(f'Checkpoint is missing required model state: {name}')
@@ -796,6 +796,8 @@ class BaseModel(object):
 
         if hasattr(self, 'models_ema') and self.models_ema:
             for name, model_ema in self.models_ema.items():
+                if modules and name not in modules and self.models[name] not in modules:
+                    continue
                 ema_key = name + '_EMA'
                 if ema_key not in ckpt_data:
                     raise KeyError(
@@ -1075,7 +1077,7 @@ class AdversarialModel(BaseModel):
                 import wandb as _wandb
                 if _wandb.run:
                     _wandb.log({'samples/generated': _wandb.Image(res_img, caption=f'iter {iteration_done}')},
-                               step=iteration_done)
+                               step=iteration_done, commit=False)
             except RuntimeError as e:
                 self.print(e)
 
@@ -2537,7 +2539,7 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                         )
                         import wandb as _wandb
                         if _wandb.run:
-                            _wandb.log(wandb_log, step=iter_count + 1)
+                            _wandb.log(wandb_log, step=iter_count + 1, commit=False)
 
                 if (iter_count + 1) % self.opt.training.sample_iter_val == 0:
                     if not self.logger:
@@ -2581,7 +2583,7 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                             valid_log.update(
                                 {'valid/' + k: v for k, v in scores.items()}
                             )
-                            _wandb.log(valid_log, step=iter_count + 1)
+                            _wandb.log(valid_log, step=iter_count + 1, commit=False)
 
                     fid_improved = (
                         'fid' in scores and scores['fid'] < best_fid
@@ -2622,6 +2624,14 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                             **current_scores
                         )
 
+                if _is_master and (
+                    iter_count % self.opt.training.print_iter_val == 0
+                    or (iter_count + 1) % self.opt.training.sample_iter_val == 0
+                    or is_eval
+                ):
+                    import wandb as _wandb
+                    if _wandb.run:
+                        _wandb.log({}, step=iter_count + 1)
                 iter_count += 1
                 if getattr(self, 'is_resumed_start', False):
                     self.is_resumed_start = False

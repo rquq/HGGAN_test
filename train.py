@@ -133,6 +133,16 @@ if __name__ == "__main__":
             result_rows = {'results_error': str(results_error)}
             print(f'[Warning] Could not write RESULTS table: {results_error}')
             write_wandb_log(f'[Warning] Could not write RESULTS table: {results_error}')
+        if wandb_run is not None:
+            try:
+                import wandb
+                if wandb.run is not None:
+                    write_wandb_log('[Shutdown] Finishing W&B run.')
+                    wandb.finish()
+            except Exception as e:
+                print(f"[Warning] WandB shutdown failed: {e}")
+        # Notebook monitors may terminate the runtime on a terminal status.
+        # Publish it only after the final W&B upload/finish has returned.
         update_job_status(
             status_path, job_status,
             job=job_name,
@@ -145,11 +155,3 @@ if __name__ == "__main__":
             metrics=result_rows,
             error=error_text.strip().splitlines()[-1] if error_text else '',
         )
-        if wandb_run is not None:
-            try:
-                import wandb
-                if wandb.run is not None:
-                    write_wandb_log('[Shutdown] Finishing W&B run.')
-                    wandb.finish()
-            except Exception as e:
-                print(f"[Warning] WandB shutdown failed: {e}")
