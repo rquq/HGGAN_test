@@ -470,7 +470,7 @@ class BaseModel(object):
         }
 
         for name, model in self.models.items():
-            if len(modules) > 0 and model not in modules:
+            if modules and name not in modules and model not in modules:
                 continue
             if name not in ckpt_data:
                 raise KeyError(f'Checkpoint is missing required model state: {name}')
@@ -609,7 +609,7 @@ class AdversarialModel(BaseModel):
             fake_imgs = F.pad(fake_imgs, [0, max_img_len - fake_imgs.size(-1), 0, 0], value=-1.)
             recn_imgs = F.pad(recn_imgs, [0, max_img_len - recn_imgs.size(-1), 0, 0], value=-1.) \
                         if recn_imgs is not None else None
-            style_imgs = F.pad(style_imgs, [0, max_img_len - recn_imgs.size(-1), 0, 0], value=-1.)
+            style_imgs = F.pad(style_imgs, [0, max_img_len - style_imgs.size(-1), 0, 0], value=-1.)
 
             real_words = self.label_converter.decode(real_lbs, real_lb_lens)
             real_labels = words_to_images(real_words, *img_shape)
@@ -663,13 +663,14 @@ class AdversarialModel(BaseModel):
                     if use_rand_corpus:
                         word_idx_sampler.sample_()
                         sampled_words = idx_to_words(word_idx_sampler[:style_imgs.size(0)],
-                                                     self.lexicon, self.opt.training.capitalize_ratio,
+                                                     self.lexicon, 0, self.opt.training.capitalize_ratio,
                                                      blank_ratio=0)
                         content_lbs, content_lb_lens = self.label_converter.encode(sampled_words)
                     else:
                         content_lbs, content_lb_lens = style_lbs, style_lb_lens
 
-                    fake_batch['lbs'], fake_batch['lb_lens'] = content_lbs.to(device), content_lb_lens.to(device)
+                    content_lbs, content_lb_lens = content_lbs.to(device), content_lb_lens.to(device)
+                    fake_batch['lbs'], fake_batch['lb_lens'] = content_lbs, content_lb_lens
 
                     if style_guided:
                         enc_z = self.models.E(style_imgs.to(device), style_img_lens.to(device), self.models.B)
@@ -814,11 +815,17 @@ class AdversarialModel(BaseModel):
                                        real_stats=real_stats, inceptionV3_model=getattr(self, 'inception_model', None))
 
         if test_stage:
-            if not self.opt.valid.use_rand_corpus:
+            paired_metrics = (
+                bool(getattr(self.opt.valid, 'validate_psnr', False))
+                or bool(getattr(self.opt.valid, 'validate_mssim', False))
+            )
+            if not self.opt.valid.use_rand_corpus and paired_metrics:
                 psnr_mssim = calculate_mssim_psnr(eval_dloader, get_generator())
-                res['psnr'] = psnr_mssim['psnr']
-                res['mssim'] = psnr_mssim['mssim']
-            if style_guided:
+                if getattr(self.opt.valid, 'validate_psnr', False):
+                    res['psnr'] = psnr_mssim['psnr']
+                if getattr(self.opt.valid, 'validate_mssim', False):
+                    res['mssim'] = psnr_mssim['mssim']
+            if style_guided and getattr(self.opt.valid, 'validate_wier', False):
                 wier = self.validate_wid(get_generator(), real_dloader=eval_dloader, split=self.opt.valid.dset_split)
                 res['wier'] = wier
 
@@ -1208,8 +1215,10 @@ class GlobalLocalAdversarialModel(AdversarialModel):
         if restored_iter is not None:
             iter_count = restored_iter + 1
             self.print(f"Resumed exact iter_count={iter_count} from checkpoint")
-            start_epoch = iter_count // len(self.train_loader) + 1
             skip_batches = iter_count % len(self.train_loader)
+            # Global iterations need not encode this loader's epoch after a
+            # batch-size/data change. Keep the saved Epoch authoritative.
+            start_epoch = max(1, int(epoch_done) + (1 if skip_batches == 0 else 0))
         elif is_resuming:
             start_epoch = epoch_done + 1
             skip_batches = 0
@@ -1555,7 +1564,7 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                     eval_epoch = global_iter / float(len(self.train_loader))
                     scores = self.validate(current_epoch=epoch)
                     self.last_eval_scores = dict(scores)
-                    self.record_eval_scores(epoch, scores)
+                    self.record_eval_scores(eval_epoch, scores)
                     if 'fid' in scores:
                         self.last_eval_fid = float(scores['fid'])
                     if _is_master:
@@ -1579,7 +1588,11 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                             current_eval_fid = self.restored_metadata.get('last_eval_fid', self.restored_metadata.get('best_fid', None))
                         self.save('last', epoch, iter_count=iter_count, best_fid=best_fid, fid=current_eval_fid)
 
-                if _is_master and wandb.run:
+                if _is_master and wandb.run and (
+                    iter_count % self.opt.training.print_iter_val == 0
+                    or (iter_count + 1) % self.opt.training.sample_iter_val == 0
+                    or is_eval
+                ):
                     # Flush once: loss, samples and validation can share this iteration.
                     wandb.log({}, step=iter_count + 1)
                 iter_count += 1
@@ -1868,7 +1881,8 @@ class WriterIdentifyModel(BaseModel):
 
         if self.opt.training.frozen_backbone:
             print('frozen_backbone')
-            self.optimizers = Munch(W=torch.optim.Adam(self.models.W.parameters()), lr=self.opt.training.lr)
+            self.optimizers = Munch(W=torch.optim.Adam(
+                self.models.W.parameters(), lr=self.opt.training.lr))
         else:
             self.optimizers = Munch(W=torch.optim.Adam(
                                         chain(self.models.W.parameters(), self.models.B.parameters()),
