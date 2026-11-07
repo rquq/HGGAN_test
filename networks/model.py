@@ -571,7 +571,7 @@ class AdversarialModel(BaseModel):
     def train(self):
         raise NotImplementedError()
 
-    def sample_images(self, iteration_done=0):
+    def sample_images(self, iteration_done=0, epoch=None):
         self.set_mode('eval')
 
         device = self.device
@@ -630,8 +630,15 @@ class AdversarialModel(BaseModel):
                 if self.writer:
                     self.writer.add_image('Image', res_img.transpose((2, 0, 1)), iteration_done)
                 if wandb.run:
-                    wandb.log({'samples/generated': wandb.Image(res_img, caption=f'iter {iteration_done}'),
-                               'train/iter': iteration_done})
+                    sample_epoch = float(epoch) if epoch is not None else (
+                        iteration_done / float(len(self.train_loader))
+                    )
+                    wandb.log({
+                        'samples/generated': wandb.Image(
+                            res_img, caption=f'epoch {sample_epoch:.2f} | iter {iteration_done}'),
+                        'samples/epoch': sample_epoch,
+                        'train/iter': iteration_done,
+                    }, step=iteration_done, commit=False)
             except RuntimeError as e:
                 print(e)
 
@@ -1516,7 +1523,8 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                             len(self.train_loader), lrs, g_updates, d_updates, opt.training,
                         ))
                         if wandb.run:
-                            wandb.log(build_gan_log(meter_vals, iter_count + 1, epoch, lrs, g_updates, d_updates))
+                            wandb.log(build_gan_log(meter_vals, iter_count + 1, epoch, lrs, g_updates, d_updates),
+                                      step=iter_count + 1, commit=False)
 
                 if (iter_count + 1) % self.opt.training.sample_iter_val == 0:
                     if not (self.logger and self.writer):
@@ -1525,7 +1533,8 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                     sample_root = os.path.join(self.log_root, self.opt.training.sample_dir)
                     if not os.path.exists(sample_root):
                         os.makedirs(sample_root) if self.local_rank < 1 else None
-                    self.sample_images(iter_count + 1) if self.local_rank < 1 else None
+                    sample_epoch = (epoch - 1) + (i + 1) / float(len(self.train_loader))
+                    self.sample_images(iter_count + 1, epoch=sample_epoch) if self.local_rank < 1 else None
 
                 eval_epoch_val = self.opt.training.get('eval_epoch_val', 0.5)
                 save_epoch_val = self.opt.training.get('save_epoch_val', 1.0)
@@ -1543,6 +1552,7 @@ class GlobalLocalAdversarialModel(AdversarialModel):
 
                 if is_eval:
                     self.print('Calculate FID_KID (iter {})'.format(iter_count + 1)) if self.local_rank < 1 else None
+                    eval_epoch = global_iter / float(len(self.train_loader))
                     scores = self.validate(current_epoch=epoch)
                     self.last_eval_scores = dict(scores)
                     self.record_eval_scores(epoch, scores)
@@ -1550,11 +1560,11 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                         self.last_eval_fid = float(scores['fid'])
                     if _is_master:
                         score_str = ", ".join([f"{k}: {v:.4f}" if isinstance(v, float) else f"{k}: {v}" for k, v in scores.items()])
-                        self.print(f"Validation metrics at iter {iter_count + 1}: {score_str}")
+                        self.print(f"Validation metrics at epoch {eval_epoch:.2f}: {score_str}")
                         if wandb.run:
                             valid_log = {'valid/' + k: v for k, v in scores.items()}
-                            valid_log['valid/epoch'] = epoch
-                            wandb.log(valid_log)
+                            valid_log['valid/epoch'] = eval_epoch
+                            wandb.log(valid_log, step=iter_count + 1, commit=False)
 
                     if 'fid' in scores and scores['fid'] < best_fid:
                         best_fid = scores['fid']
@@ -1569,6 +1579,9 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                             current_eval_fid = self.restored_metadata.get('last_eval_fid', self.restored_metadata.get('best_fid', None))
                         self.save('last', epoch, iter_count=iter_count, best_fid=best_fid, fid=current_eval_fid)
 
+                if _is_master and wandb.run:
+                    # Flush once: loss, samples and validation can share this iteration.
+                    wandb.log({}, step=iter_count + 1)
                 iter_count += 1
 
             if epoch:

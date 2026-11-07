@@ -133,8 +133,10 @@ def init_wandb_run(opt, project='HiGANplus'):
             settings=wandb.Settings(console='off' if direct_logs else 'redirect'),
         )
         wandb.define_metric('train/iter')
-        for pattern in ('loss/*', 'train/lr_*', 'train/weight_*', 'samples/*'):
+        for pattern in ('loss/*', 'train/lr_*', 'train/weight_*'):
             wandb.define_metric(pattern, step_metric='train/iter')
+        wandb.define_metric('samples/epoch')
+        wandb.define_metric('samples/*', step_metric='samples/epoch')
         wandb.define_metric('pretrain/epoch')
         wandb.define_metric('pretrain/*', step_metric='pretrain/epoch')
         wandb.define_metric('valid/epoch')
