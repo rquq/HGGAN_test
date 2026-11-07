@@ -197,7 +197,8 @@ def write_wandb_log(message):
 def init_wandb_run(opt, project='HiGANplus'):
     """Initialize W&B before model construction and enable direct text logs."""
     local_rank = int(getattr(opt, 'local_rank', -1))
-    if local_rank > 0 or bool(getattr(opt, 'no_wandb', False)):
+    if (local_rank > 0 or bool(getattr(opt, 'no_wandb', False))
+            or not bool(getattr(getattr(opt, 'wandb', {}), 'enabled', True))):
         return None
 
     try:
