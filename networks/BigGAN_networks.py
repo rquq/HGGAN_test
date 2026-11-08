@@ -8,6 +8,7 @@ import torch.nn.functional as F
 
 from . import BigGAN_layers as layers
 from networks.utils import init_weights, _len2mask
+from .fusion import ContentContext
 
 # Architectures for G
 # Attention is passed in in the format '32_64' to mean applying an attention
@@ -38,7 +39,9 @@ class Generator(nn.Module):
                  G_activation=nn.ReLU(inplace=False),
                  BN_eps=1e-5, SN_eps=1e-12, G_fp16=False,
                  init='ortho', G_param='SN', norm_style='bn', bn_linear='embed', input_nc=3,
-                 embed_pad_idx=0, embed_max_norm=1.0
+                 embed_pad_idx=0, embed_max_norm=1.0,
+                 fusion_nhead=4, fusion_attn_dim=128,
+                 fusion_ffn_dim=None, fusion_residual_init=0.25
                  ):
         super(Generator, self).__init__()
         dim_z = style_dim
@@ -155,6 +158,13 @@ class Generator(nn.Module):
         # Initialize weights. Optionally skip init for testing.
         if self.init != 'none':
             init_weights(self, self.init)
+        # Keep the baseline's shared weights and subsequent model RNG draws
+        # unchanged. The added context has its own initialization budget.
+        with torch.random.fork_rng(devices=[]):
+            self.content_context = ContentContext(
+                self.embed_dim, nhead=fusion_nhead, attn_dim=fusion_attn_dim,
+                ffn_dim=fusion_ffn_dim, residual_init=fusion_residual_init,
+            )
 
     # Note on this forward function: we pass in a y vector which has
     # already been passed through G.shared to enable easy class-wise
@@ -168,6 +178,7 @@ class Generator(nn.Module):
         # This is the change we made to the Big-GAN generator architecture.
         # The input goes into classes go into the first layer only.
         y = self.text_embedding(y).float().to(y.device)
+        y = self.content_context(y, y_lens=y_lens)
         z = torch.cat((z.unsqueeze(1).repeat(1, y.shape[1], 1), y), 2)
         h = self.filter_linear(z)
 

@@ -109,6 +109,11 @@ test:
 
 # network configuration
 GenModel:
+  # Target-text context before the original style-conditioned spatial seed.
+  fusion_nhead: 4
+  fusion_attn_dim: 128
+  fusion_ffn_dim: 360
+  fusion_residual_init: 0.25
   G_ch: 64
   style_dim: 32
   bottom_width: 4
