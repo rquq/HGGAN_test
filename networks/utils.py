@@ -243,13 +243,21 @@ def _rare_lexicon_sampler(lexicon):
 
 def idx_to_words(idx, lexicon, max_word_len=0, capitalize_ratio=0.5,
                  blank_ratio=0., sort=True, rare_ratio=0.15,
-                 rare_lexicon=None):
+                 rare_lexicon=None, uppercase_ratio=0.2):
     """Decode sampled lexicon IDs with a corpus-faithful rare-word policy.
 
     ``rare_ratio`` now controls oversampling of real rare-character words; it
     never fabricates arbitrary symbol sequences.  Set it to zero for fixed
     validation/sample text.
+
+    ``uppercase_ratio`` is conditional on case augmentation being selected:
+    the legacy default allocates 20% of that subset to full uppercase. The
+    training profile can balance title/full uppercase without changing callers
+    that rely on the legacy evaluation distribution.
     """
+    uppercase_ratio = float(uppercase_ratio)
+    if not np.isfinite(uppercase_ratio) or not 0.0 <= uppercase_ratio <= 1.0:
+        raise ValueError('uppercase_ratio must be a finite probability in [0, 1]')
     rare_source = lexicon if rare_lexicon is None else rare_lexicon
     rare_indices, rare_cumulative = (
         _rare_lexicon_sampler(rare_source) if rare_ratio > 0 else (None, None)
@@ -276,7 +284,7 @@ def idx_to_words(idx, lexicon, max_word_len=0, capitalize_ratio=0.5,
         # Capitalization is applied after rare-word selection so the sampled
         # glyph still follows the same case policy as ordinary corpus words.
         if np.random.random() < capitalize_ratio:
-            word = word.capitalize() if np.random.random() < 0.8 else word.upper()
+            word = word.capitalize() if np.random.random() < 1.0 - uppercase_ratio else word.upper()
 
         if len(word) > max_word_len >= 1:
             pos = np.random.randint(0, len(word) - max_word_len + 1)

@@ -979,7 +979,8 @@ class AdversarialModel(BaseModel):
                                          self.opt.training.capitalize_ratio,
                                          self.opt.training.blank_ratio,
                                          rare_ratio=0.0,
-                                         rare_lexicon=self.rare_lexicon)
+                                         rare_lexicon=self.rare_lexicon,
+                                         uppercase_ratio=float(getattr(self.opt.training, 'uppercase_ratio', 0.2)))
             sampled_words[-2] = sampled_words[-1]
             fake_lbs, fake_lb_lens = self.label_converter.encode(sampled_words)
             fake_lbs, fake_lb_lens = fake_lbs.to(device), fake_lb_lens.to(device)
@@ -2127,7 +2128,8 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                                                  self.opt.training.capitalize_ratio,
                                                  self.opt.training.blank_ratio,
                                                  rare_ratio=rare_word_ratio,
-                                                 rare_lexicon=self.rare_lexicon)
+                                                 rare_lexicon=self.rare_lexicon,
+                                                 uppercase_ratio=float(getattr(opt.training, 'uppercase_ratio', 0.2)))
                     fake_lbs, fake_lb_lens = self.label_converter.encode(sampled_words, max_label_len)
                     fake_lbs, fake_lb_lens = fake_lbs.to(device).detach(), fake_lb_lens.to(device).detach()
 
@@ -2256,7 +2258,8 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                                                  self.opt.training.blank_ratio,
                                                  sort=True,
                                                  rare_ratio=rare_word_ratio,
-                                                 rare_lexicon=self.rare_lexicon)
+                                                 rare_lexicon=self.rare_lexicon,
+                                                 uppercase_ratio=float(getattr(opt.training, 'uppercase_ratio', 0.2)))
 
                     fake_lbs, fake_lb_lens = self.label_converter.encode(sampled_words, max_label_len)
                     fake_lbs, fake_lb_lens = fake_lbs.to(device).detach(), fake_lb_lens.to(device).detach()
@@ -2310,8 +2313,8 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                         adv_loss_patch = -(p_fake.mean() + p_style.mean() + p_recn.mean()) / 3
 
                     ### CTC Auxiliary loss ###
-                    # Reconstruction already has an exact pixel target; reserve
-                    # OCR supervision for random generation and style transfer.
+                    # Reserve OCR supervision for random generation and transfer;
+                    # do not add another OCR objective to the same-text branch.
                     # R was pretrained on this exact normalized polarity: pass
                     # generated tensors directly.  Do not apply ``1 - image``
                     # or sign inversion here; those are display-only elsewhere.

@@ -35,6 +35,7 @@ training:
   max_word_len: 20
   n_class: 81
   capitalize_ratio: 0.5
+  uppercase_ratio: 0.5
   blank_ratio: 0.0
 
   # Generation/style objectives; no paired pixel-copy target

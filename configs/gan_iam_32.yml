@@ -55,6 +55,7 @@ training:
   max_word_len: 20
   n_class: 81
   capitalize_ratio: 0.5
+  uppercase_ratio: 0.5  # Within case augmentation: equal title/full-uppercase coverage.
   blank_ratio: 0.0
   rare_word_ratio: 0.15
 
@@ -64,11 +65,11 @@ training:
 
   # OCR objectives and schedules
   lambda_ctc_rand: 1.0
-  lambda_ctc_rand_final: 0.4
+  lambda_ctc_rand_final: 1.0
   ctc_rand_decay_start_epoch: 10
   ctc_rand_decay_end_epoch: 20
   lambda_ctc_style: 0.5
-  lambda_ctc_style_final: 0.4
+  lambda_ctc_style_final: 0.5
   ctc_style_decay_start_epoch: 8
   ctc_style_decay_end_epoch: 28
 
