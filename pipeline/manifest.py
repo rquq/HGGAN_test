@@ -13,8 +13,10 @@ from .common import atomic_json, bind_identity, digest_json, read_json, sha256_f
 from .data import IAMCorpus, validate_iam, write_iam
 
 
-def _integer(value, name, maximum):
-    if isinstance(value, bool) or not isinstance(value, int) or not 0 < value <= maximum:
+def _integer(value, name, maximum=None):
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError(f'{name} must be a positive integer')
+    if maximum is not None and value > maximum:
         raise ValueError(f'{name} must be an integer in [1,{maximum}]')
     return value
 
@@ -94,7 +96,7 @@ def _verify_existing(directory, payload):
 def prepare(cfg):
     dataset, generation = cfg['dataset'], cfg['generation']
     count = _integer(generation['count'], 'generation.count', 25000)
-    real_count = _integer(dataset['real_count'], 'dataset.real_count', 5000)
+    real_count = _integer(dataset['real_count'], 'dataset.real_count')
     height = _integer(dataset['height'], 'dataset.height', 4096)
     max_length = _integer(generation['max_text_length'], 'max_text_length', 10000)
     alphabet = generation['alphabet']
@@ -109,6 +111,8 @@ def prepare(cfg):
                    real_count=real_count, validation_fraction=fraction,
                    split_seed=cfg['split_seed'], generation_count=count,
                    generation_seed=generation['seed'], max_text_length=max_length, alphabet=alphabet)
+    if dataset.get('validation'):
+        payload['explicit_validation_writer_policy'] = 'independent-local-ids-v1'
     directory = Path(cfg['output_dir']) / 'prepared'
     if directory.exists():
         return _verify_existing(directory, payload)
@@ -127,7 +131,9 @@ def prepare(cfg):
             rng = random.Random(cfg['split_seed'])
             if explicit:
                 validation_rows = list(range(len(val)))
-                heldout_writers = set(int(w) for w in val.writers)
+                # Independent files may remap writer IDs locally. Without a
+                # supplied global mapping, numeric equality is not identity.
+                heldout_writers = set()
             else:
                 writers = sorted(set(int(w) for w in train.writers))
                 if len(writers) < 2:

@@ -17,17 +17,20 @@ _VECTORS = ('lbs', 'img_seek_idxs', 'lb_seek_idxs', 'img_lens', 'lb_lens', 'wids
 class IAMCorpus:
     def __init__(self, path):
         self.path = Path(path)
-        self._file = h5py.File(path, 'r')
+        # Retain enough decompressed chunks for a whole-height IAM window.
+        # A persistent dataset handle keeps that bounded cache across rows.
+        self._file = h5py.File(path, 'r', rdcc_nbytes=32 * 1024 * 1024, rdcc_nslots=10007)
         try:
             f = self._file
             if not {'imgs', *_VECTORS} <= set(f):
                 raise ValueError('IAM storage is missing required arrays')
-            if f['imgs'].ndim != 2 or f['imgs'].dtype != np.uint8 or f['imgs'].shape[0] <= 0:
+            self._images = f['imgs']
+            if self._images.ndim != 2 or self._images.dtype != np.uint8 or self._images.shape[0] <= 0:
                 raise ValueError('imgs must be positive-height uint8 H x total-width')
             for name in _VECTORS:
                 if f[name].ndim != 1 or f[name].dtype.kind not in 'iu':
                     raise ValueError(f'{name} must be a one-dimensional integer array')
-            self.height = f['imgs'].shape[0]
+            self.height = self._images.shape[0]
             arrays = {n: f[n][:] for n in _VECTORS}
             self.widths, self.writers = arrays['img_lens'], arrays['wids']
             self._image_starts = arrays['img_seek_idxs']
@@ -35,7 +38,7 @@ class IAMCorpus:
             if any(len(arrays[k]) != n for k in _VECTORS if k != 'lbs'):
                 raise ValueError('IAM row array lengths disagree')
             for seeks, lens, total, positive in [
-                (self._image_starts, self.widths, f['imgs'].shape[1], True),
+                (self._image_starts, self.widths, self._images.shape[1], True),
                 (arrays['lb_seek_idxs'], arrays['lb_lens'], len(arrays['lbs']), True),
             ]:
                 end = 0
@@ -60,7 +63,7 @@ class IAMCorpus:
 
     def image(self, index):
         start, width = int(self._image_starts[index]), int(self.widths[index])
-        return self._file['imgs'][:, start:start + width]
+        return self._images[:, start:start + width]
 
     def close(self):
         self._file.close()
