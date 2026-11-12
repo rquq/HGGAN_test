@@ -1,0 +1,39 @@
+# One shared native32 IAM cohort; generator-native conversion must be explicit.
+output_dir: outputs/benchmark32
+split_seed: 123456
+dataset:
+  train: data/iam32_train.hdf5
+  test: data/iam32_test.hdf5
+  validation: null
+  height: 32
+  real_count: 5000
+  validation_fraction: 0.1
+generation:
+  count: 25000
+  seed: 123456
+  max_text_length: 20
+  shard_size: 100
+  models:
+    spis_gan: configs/generators/spis_gan.yml
+    fw_gan: configs/generators/fw_gan.yml
+    higanplus: configs/generators/higanplus.yml
+ocr:
+  model_name: microsoft/trocr-small-stage1
+  revision: d94c4048159050bb51e4105bad0a45dbfd5f3a02
+  max_steps: 10000
+  micro_batch_size: 2
+  gradient_accumulation_steps: 16
+  learning_rate: 0.00005
+  weight_decay: 0.01
+  max_grad_norm: 1.0
+  warmup_ratio: 0.05
+  eval_steps: 500
+  save_steps: 500
+  max_new_tokens: 64
+  num_beams: 1
+  fp16: false
+  bf16: false
+  seeds: [123456]
+wandb:
+  mode: disabled
+  project: iam-ocr-augmentation
