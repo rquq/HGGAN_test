@@ -1,0 +1,11 @@
+model: fw_gan
+source_url: https://github.com/DAIR-Group/FW-GAN.git
+source_revision: 8ec41ce253e6208ca0575c09934401a7d25c61d8
+source_root: ../../FW-GAN
+source_config: ../../FW-GAN/configs/fw_gan_iam.yml
+checkpoint: ../../chkpoints/FW-GAN/FW-GAN.pth
+native_height: 32
+char_width: 16
+encoder_min_width: 16
+internal_polarity: white
+export_conversion: none

@@ -1,0 +1,12 @@
+model: higanplus
+source_url: https://github.com/ganji15/HiGANplus.git
+source_revision: 5d37de733f79e2a72a79c0f66e1865329ff56b4e
+source_root: ../../HiGANplus/HiGAN+
+source_config: ../../HiGANplus/HiGAN+/configs/gan_iam.yml
+checkpoint: ../../HiGANplus/HiGAN+/pretrained/deploy_HiGAN+.pth
+native_height: 64
+char_width: 32
+encoder_min_width: 32
+internal_polarity: black
+# User-approved cohort bridge; NOT native32 HiGAN+ reproduction.
+export_conversion: native64_to_export32_bilinear
