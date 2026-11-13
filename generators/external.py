@@ -174,8 +174,8 @@ def adapter_cli(model_name):
     parser.add_argument('--time-budget-seconds', type=float)
     args = parser.parse_args()
     from pipeline.config import load_config
-    from pipeline.generation import generate
+    from pipeline.generation import generation_worker
     cfg = load_config(args.config)
     if args.model_config:
         cfg['generation']['models'][model_name] = resolve_path(args.model_config)
-    print(json.dumps(generate(cfg, model_name, args.device, args.time_budget_seconds), sort_keys=True))
+    print(json.dumps(generation_worker(cfg, model_name, args.device, args.time_budget_seconds), sort_keys=True))

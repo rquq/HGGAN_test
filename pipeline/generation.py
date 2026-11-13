@@ -115,7 +115,12 @@ def _verify_portable(directory, cases, payload):
             or metadata.get('identity_payload') != payload or metadata.get('model') != payload['model']
             or metadata.get('sample_ids') != list(range(len(cases))) or metadata.get('count') != len(cases)
             or metadata.get('manifest_sha256') != payload['manifest_sha256']
-            or metadata.get('model_provenance') != payload['model_provenance']):
+            or metadata.get('model_provenance') != payload['model_provenance']
+            or metadata.get('native_height') != payload['model_provenance']['native_height']
+            or metadata.get('export_height') != payload['height']
+            or metadata.get('export_conversion') != payload['model_provenance']['export_conversion']
+            or metadata.get('precision') != 'float32'
+            or metadata.get('prepared_identity_sha256') != payload['prepared_identity_sha256']):
         raise ValueError('dataset metadata identity/count/order mismatch')
     required = {'synthetic.hdf5', 'manifest.jsonl', 'preview.png'}
     if set(metadata.get('artifact_sha256', {})) != required:
@@ -198,6 +203,21 @@ def verify_dataset(cfg, model_name, verify_model=False):
         return result
     except (OSError, KeyError, zipfile.BadZipFile) as exc:
         raise ValueError(f'incomplete/corrupt dataset: {directory}') from exc
+
+
+def generation_worker(cfg, model_name, device='cpu', time_budget_seconds=None):
+    """Shared CLI worker: console capture starts before adapter construction."""
+    from .tracking import tracking_run
+    _, _, _, payload = _context(cfg, model_name)
+    directory = Path(cfg['output_dir']) / 'datasets' / model_name
+    with tracking_run(cfg, directory, 'generation', model_name, cfg['generation']['seed'],
+                      {'identity': digest_json(payload)}) as tracking:
+        print(f'Generation {model_name}: count={payload["count"]} '
+              f'native={payload["model_provenance"]["native_height"]} '
+              f'export={payload["height"]} FP32 device={device}', flush=True)
+        result = generate(cfg, model_name, device, time_budget_seconds)
+        tracking.log({'generation/completed':result.get('count', 0)})
+        return result
 
 
 def generate(cfg, model_name, device='cpu', time_budget_seconds=None):

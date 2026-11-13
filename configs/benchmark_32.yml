@@ -2,8 +2,8 @@
 output_dir: outputs/benchmark32
 split_seed: 123456
 dataset:
-  train: data/iam32_train.hdf5
-  test: data/iam32_test.hdf5
+  train: ../../iam/iam_train_32.hdf5
+  test: ../../iam/iam_test_32.hdf5
   validation: null
   height: 32
   real_count: 5000

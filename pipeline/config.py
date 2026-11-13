@@ -7,7 +7,7 @@ import yaml
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULTS = {
     'output_dir': 'outputs/benchmark32', 'split_seed': 123456,
-    'dataset': {'train': 'data/iam32_train.hdf5', 'test': 'data/iam32_test.hdf5',
+    'dataset': {'train': '../../iam/iam_train_32.hdf5', 'test': '../../iam/iam_test_32.hdf5',
                 'validation': None, 'height': 32, 'real_count': 5000, 'validation_fraction': .1},
     'generation': {'count': 25000, 'seed': 123456, 'max_text_length': 20,
                    'alphabet': ' ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789\'-"/,.+_!#&():;?',
@@ -44,6 +44,9 @@ def load_config(path):
     if not isinstance(supplied, dict):
         raise ValueError('configuration must be a mapping')
     cfg = _merge(deepcopy(DEFAULTS), supplied)
+    # An explicit pool replaces defaults, including the native64-only cohort.
+    if 'models' in supplied.get('generation', {}):
+        cfg['generation']['models'] = dict(supplied['generation']['models'])
     cfg['output_dir'] = resolve_path(cfg['output_dir'])
     for key in ('train', 'test', 'validation'):
         if cfg['dataset'].get(key) is not None:

@@ -350,12 +350,27 @@ def _status(directory, identity, step, status, **extra):
     return result
 
 
+def _committed_step(directory, fallback):
+    """Read-only error-path scan; incomplete newest saves do not hide older ones."""
+    try:
+        steps = []
+        for path in directory.glob('checkpoint-*'):
+            try:
+                steps.append(int(_validate_checkpoint(path)['global_step']))
+            except (OSError,ValueError,KeyError,TypeError):
+                continue
+        return max(steps, default=fallback)
+    except Exception:
+        return fallback
+
+
 def train(cfg, arm, seed, device='cpu', time_budget_seconds=None):
     """Train/resume to the ORIGINAL horizon, then test the validation-only best."""
     deadline = None if time_budget_seconds is None else time.monotonic()+time_budget_seconds
     options, prepared, paths, directory, identity = _job(cfg, arm, seed)
     latest = _latest(directory)
     step = _validate_checkpoint(latest)['global_step'] if latest else 0
+    start_step = step
     if step > options['max_steps']:
         raise ValueError('checkpoint exceeds configured optimizer budget')
     prior = directory / 'status.json'
@@ -368,6 +383,10 @@ def train(cfg, arm, seed, device='cpu', time_budget_seconds=None):
             set_seed(int(seed))
             processor = load_processor(options)
             model = load_model(options)
+            print(f'OCR {arm} seed={seed}: FP32 device={device} '
+                  f'parameters={sum(p.numel() for p in model.parameters())} '
+                  f'micro_batch={options["micro_batch_size"]} '
+                  f'accumulation={options["gradient_accumulation_steps"]}',flush=True)
             _generation(model, processor, options)
             capacity = model.config.decoder.max_position_embeddings
             training = OCRDataset(paths, processor, capacity)
@@ -425,10 +444,16 @@ def train(cfg, arm, seed, device='cpu', time_budget_seconds=None):
                 torch.cuda.empty_cache()
             return _evaluate(cfg,arm,seed,device,options,directory,identity,deadline,tracking)
     except KeyboardInterrupt:
-        _status(directory,identity,step,'paused',phase='interrupted')
+        try:
+            _status(directory,identity,_committed_step(directory,start_step),'paused',phase='interrupted')
+        except Exception:
+            pass  # Preserve the original interruption even if storage is unavailable.
         raise
     except BaseException as exc:
-        _status(directory,identity,step,'failed',error=type(exc).__name__)
+        try:
+            _status(directory,identity,_committed_step(directory,start_step),'failed',error=type(exc).__name__)
+        except Exception:
+            pass  # Reporting must never replace the original training exception.
         raise
     finally:
         for dataset in data:
