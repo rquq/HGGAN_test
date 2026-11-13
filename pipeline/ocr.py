@@ -294,19 +294,58 @@ def _same_checkpoint_tree(alias, canonical):
     return signature(alias) == signature(canonical)
 
 
+def _checkpoint_number(name):
+    if not isinstance(name,str) or not name.startswith('checkpoint-'):
+        raise ValueError('invalid canonical checkpoint name')
+    value = name.removeprefix('checkpoint-')
+    if not value.isdigit() or str(int(value)) != value:
+        raise ValueError('invalid canonical checkpoint step')
+    return int(value)
+
+
 def _check_alias_representation(alias, canonical):
+    limit = _checkpoint_number(canonical.name)
     if alias.is_symlink():
-        if os.readlink(alias) != canonical.name:
+        recorded = os.readlink(alias)
+        step = _checkpoint_number(recorded)
+        if step > limit:
             raise ValueError(f'unsafe/conflicting checkpoint alias: {alias}')
-    elif alias.exists() and not _same_checkpoint_tree(alias, canonical):
-        raise ValueError(f'incomplete/conflicting checkpoint alias: {alias}')
+        prior = canonical.parent / recorded
+        if prior.is_symlink():
+            raise ValueError('canonical checkpoint must not be a symlink')
+        if prior.exists():
+            _validate_checkpoint(prior)
+        # A safe older relative link may dangle after native checkpoint rotation.
+    elif alias.exists():
+        if not alias.is_dir():
+            raise ValueError(f'conflicting checkpoint alias: {alias}')
+        try:
+            state = read_json(alias/'trainer_state.json')
+            prior = canonical.parent / f'checkpoint-{state["global_step"]}'
+            if _checkpoint_number(prior.name) > limit or not _same_checkpoint_tree(alias, prior):
+                raise ValueError(f'incomplete/conflicting checkpoint alias: {alias}')
+        except (OSError,KeyError,TypeError) as exc:
+            raise ValueError(f'incomplete/conflicting checkpoint alias: {alias}') from exc
+
+
+def _check_best_receipt(path, selected):
+    if path.is_symlink():
+        raise ValueError('best receipt must not be a symlink')
+    if not path.exists():
+        return None
+    receipt = read_json(path)
+    recorded = receipt.get('checkpoint')
+    step = _checkpoint_number(recorded)
+    if step != receipt.get('global_step') or (selected and step > _checkpoint_number(selected)):
+        raise ValueError('best checkpoint receipt conflicts with native selection')
+    return recorded
 
 
 def _checkpoint_aliases(directory):
-    """Read-only plan from canonical saves and validation-selection receipts."""
+    """Canonical native state is authoritative; aliases/receipts may lag a save."""
     checkpoints = [p for p in directory.glob('checkpoint-*') if p.is_dir() and not p.is_symlink()]
     if not checkpoints:
-        if any((directory/name).exists() or (directory/name).is_symlink() for name in ('best','last')):
+        if any((directory/name).exists() or (directory/name).is_symlink() for name in ('best','last','best.json')):
             raise ValueError('checkpoint aliases have no canonical checkpoint-N save')
         return {}
     states = {p.name:_validate_checkpoint(p) for p in checkpoints}
@@ -314,14 +353,12 @@ def _checkpoint_aliases(directory):
     plan = {'last':latest.name}
     state_best = states[latest.name].get('best_model_checkpoint')
     selected = Path(state_best).name if state_best else None
-    if (directory/'best.json').exists():
-        receipt = read_json(directory/'best.json')
-        recorded = receipt.get('checkpoint')
-        if recorded not in states or states[recorded]['global_step'] != receipt.get('global_step'):
-            raise ValueError('best checkpoint receipt is incomplete/conflicting')
-        if selected and recorded != selected:
-            raise ValueError('best checkpoint receipt conflicts with trainer state')
-        selected = recorded
+    recorded = _check_best_receipt(directory/'best.json',selected)
+    if recorded:
+        if not selected:
+            if 'best_model_checkpoint' in states[latest.name]:
+                raise ValueError('best receipt conflicts with native no-selection state')
+            selected = recorded  # Legacy canonical state without this native key.
     if selected:
         if selected not in states:
             raise ValueError('selected canonical best checkpoint is missing')
@@ -342,6 +379,12 @@ def _normalize_checkpoint_aliases(directory, plan=None):
         _check_alias_representation(directory/name, directory/canonical)
     for name, canonical in plan.items():
         _pointer(directory,name,directory/canonical)
+    if 'best' in plan:
+        state = _validate_checkpoint(directory/plan['last'])
+        atomic_json(directory/'best.json',dict(checkpoint=plan['best'],
+            global_step=_checkpoint_number(plan['best']),cer=state.get('best_metric'),
+            pair=state.get('stateful_callbacks',{}).get('BestHistoryCallback',{})
+                .get('attributes',{}).get('best_pair')))
     return plan
 
 
