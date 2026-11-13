@@ -44,7 +44,16 @@ def report(cfg):
         os.replace(temporary,output/'results.csv')
     finally:
         if os.path.exists(temporary):os.unlink(temporary)
-    print('RESULTS: arm | seed | status | step | CER% | NED% | WER% | word accuracy%')
+    print('GENERATION RESULTS: model | status | count | native→export | ZIP')
+    for name in cfg['generation']['models']:
+        directory=output/'datasets'/name
+        state=read_json(directory/'status.json') if (directory/'status.json').exists() else {}
+        meta=read_json(directory/'metadata.json') if (directory/'metadata.json').exists() else {}
+        print(' | '.join(str(value) for value in [name,state.get('status',meta.get('status','not_started')),
+            state.get('count',meta.get('count',0)),
+            f'{meta.get("native_height","—")}→{meta.get("export_height","—")}',
+            str(directory/'dataset.zip') if (directory/'dataset.zip').is_file() else '—']))
+    print('OCR RESULTS: arm | seed | status | step | CER% | NED% | WER% | word accuracy%')
     for row in rows:
         print(' | '.join(str(row.get(k,'—')) for k in ['arm','seed','status','global_step',
             'cer_percent','ned_percent','wer_percent','word_accuracy_percent']))

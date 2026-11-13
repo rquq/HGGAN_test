@@ -69,11 +69,23 @@ def restore_outputs(previous, destination):
         raise ValueError('previous prepared identity is corrupt')
     from .manifest import _verify_existing
     _verify_existing(previous/'prepared', identity['payload'])
+    alias_plans = {}
+    for directory in (previous/'ocr').glob('*/seed_*'):
+        if directory.is_dir() and not directory.is_symlink():
+            from .ocr import _checkpoint_aliases, _check_alias_representation
+            plan = _checkpoint_aliases(directory)
+            alias_plans[directory] = plan
+            target_dir = destination / directory.relative_to(previous)
+            for name,canonical in plan.items():
+                _check_alias_representation(target_dir/name,directory/canonical)
     entries = []
     allowed = ['prepared', 'datasets', 'ocr', 'logs', 'prepared.zip', 'runner_status.json',
                'results.json', 'results.csv']
     def visit(source):
         target = destination / source.relative_to(previous)
+        if source.parent in alias_plans and source.name in {'best','last'}:
+            # Canonical saves are copied once. Transport aliases are rebuilt.
+            return
         if source.is_symlink():
             relative = os.readlink(source)
             resolved = source.resolve()
@@ -119,4 +131,8 @@ def restore_outputs(previous, destination):
                 finally:
                     if os.path.exists(temporary):
                         os.unlink(temporary)
+    for directory,plan in alias_plans.items():
+        from .ocr import _normalize_checkpoint_aliases
+        target_dir = destination / directory.relative_to(previous)
+        _normalize_checkpoint_aliases(target_dir,plan)
     return dict(status='complete', restored_files=sum(k!='directory' for _,_,k in entries))

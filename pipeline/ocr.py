@@ -232,11 +232,20 @@ def _atomic_csv(path, rows):
 
 
 def _pointer(directory, name, checkpoint):
+    target = directory / name
+    if target.exists() and not target.is_symlink():
+        # A download may materialize aliases. Preserve only a verified duplicate
+        # as a recoverable backup; never remove an unrelated user's directory.
+        if not any(_same_checkpoint_tree(target, candidate)
+                   for candidate in directory.glob('checkpoint-*') if candidate.is_dir()):
+            raise ValueError(f'conflicting checkpoint alias: {target}')
+        backup = Path(tempfile.mkdtemp(prefix='.restored-alias-', dir=directory))
+        os.replace(target, backup / name)
     temporary = directory / ('.' + name)
     if temporary.is_symlink():
         temporary.unlink()
     temporary.symlink_to(Path(checkpoint).name, target_is_directory=True)
-    os.replace(temporary, directory / name)
+    os.replace(temporary, target)
 
 
 def _receipts(directory, state):
@@ -272,7 +281,72 @@ def _validate_checkpoint(path):
     return state
 
 
+def _same_checkpoint_tree(alias, canonical):
+    def signature(root):
+        if not root.is_dir() or root.is_symlink():
+            raise ValueError('checkpoint alias must be a directory')
+        result = {}
+        for path in root.rglob('*'):
+            if path.is_symlink():
+                raise ValueError('unsafe link inside materialized checkpoint')
+            result[str(path.relative_to(root))] = sha256_file(path) if path.is_file() else None
+        return result
+    return signature(alias) == signature(canonical)
+
+
+def _check_alias_representation(alias, canonical):
+    if alias.is_symlink():
+        if os.readlink(alias) != canonical.name:
+            raise ValueError(f'unsafe/conflicting checkpoint alias: {alias}')
+    elif alias.exists() and not _same_checkpoint_tree(alias, canonical):
+        raise ValueError(f'incomplete/conflicting checkpoint alias: {alias}')
+
+
+def _checkpoint_aliases(directory):
+    """Read-only plan from canonical saves and validation-selection receipts."""
+    checkpoints = [p for p in directory.glob('checkpoint-*') if p.is_dir() and not p.is_symlink()]
+    if not checkpoints:
+        if any((directory/name).exists() or (directory/name).is_symlink() for name in ('best','last')):
+            raise ValueError('checkpoint aliases have no canonical checkpoint-N save')
+        return {}
+    states = {p.name:_validate_checkpoint(p) for p in checkpoints}
+    latest = max(checkpoints, key=lambda p: states[p.name]['global_step'])
+    plan = {'last':latest.name}
+    state_best = states[latest.name].get('best_model_checkpoint')
+    selected = Path(state_best).name if state_best else None
+    if (directory/'best.json').exists():
+        receipt = read_json(directory/'best.json')
+        recorded = receipt.get('checkpoint')
+        if recorded not in states or states[recorded]['global_step'] != receipt.get('global_step'):
+            raise ValueError('best checkpoint receipt is incomplete/conflicting')
+        if selected and recorded != selected:
+            raise ValueError('best checkpoint receipt conflicts with trainer state')
+        selected = recorded
+    if selected:
+        if selected not in states:
+            raise ValueError('selected canonical best checkpoint is missing')
+        plan['best'] = selected
+    for name in ('best','last'):
+        alias = directory/name
+        if name not in plan and (alias.exists() or alias.is_symlink()):
+            raise ValueError('best alias has no authoritative validation selection')
+        if name in plan:
+            _check_alias_representation(alias, directory/plan[name])
+    return plan
+
+
+def _normalize_checkpoint_aliases(directory, plan=None):
+    plan = _checkpoint_aliases(directory) if plan is None else plan
+    # Validate every alias before changing either. Only writable output calls us.
+    for name, canonical in plan.items():
+        _check_alias_representation(directory/name, directory/canonical)
+    for name, canonical in plan.items():
+        _pointer(directory,name,directory/canonical)
+    return plan
+
+
 def _latest(directory):
+    _normalize_checkpoint_aliases(directory)
     checkpoints = [p for p in directory.glob('checkpoint-*') if p.is_dir()]
     if not checkpoints:
         return None
