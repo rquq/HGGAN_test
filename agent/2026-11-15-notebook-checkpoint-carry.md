@@ -5,8 +5,10 @@ counterpart. The workspace-root notebooks are symlinks, not separate copies.
 The Kaggle helper inspected has SHA256
 `fd25d94943993a1bbeabfe538c4b89f91da59e59838a187fdec1bed19c5bc1be`.
 
-Status: diagnosis and exact-function fixture reproduction complete; a source
-repair has been offered for approval. No notebook/model edits are claimed here.
+Status: original diagnosis below is preserved. The user subsequently approved
+ALPHA implementation and the shared notebook repair. Both monitors now retry
+pending carry; FID/KID aliases and atomic no-clobber copying are repaired.
+See `2026-11-15-alpha-bssp-runtime-implementation.md` for checks and limitations.
 
 ## Confirmed causes
 

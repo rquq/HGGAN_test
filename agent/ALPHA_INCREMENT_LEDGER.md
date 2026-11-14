@@ -17,7 +17,7 @@ tested wiring are not trained quality results.
 | C3 | `84fbab2` | Loading/export/sampling/resume bookkeeping fixes; no new model |
 | C4 | `14f6eea` | Target-only ContentContext before the original style/text seed; fresh GAN needed, teachers reusable |
 | Recordkeeping | `c70f441` | Adds the branch instruction requiring this maintained index; documentation only, no tensors, objectives or optimizer behavior change |
-| C5-BSSP32 | Proposed only | Four nonlinear stage-specific style MLPs, keeping the32D style and existing mixed seed; not implemented or trained |
+| C5-BSSP32 | `31cab5d` | Four nonlinear stage-specific style MLPs, keeping32D style/mixed seed; checkpoint/RESULTS utility repairs. Native32/64 focused checks pass; fresh GAN required, trained quality unknown. [Implementation](2026-11-15-alpha-bssp-runtime-implementation.md) |
 
 The supplied current ALPHA checkpoint at epoch69 records FID6.271029,
 KID(×100)0.265770, HWD0.118055. It is compatible with the current model but

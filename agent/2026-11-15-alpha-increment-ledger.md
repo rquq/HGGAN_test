@@ -1,8 +1,8 @@
 # ALPHA increment record and next experiment — 2026-11-15
 
-Status: existing increments audited; next architecture increment is proposed,
-not implemented. The user has been offered the narrow BSSP-only factor plus
-utility repairs for approval. No choice is inferred from a preselected UI option.
+Status: the user approved implementation in ALPHA. C5-BSSP32 and selected utility
+repairs are implemented at `31cab5d`; focused native32/64 checks pass. No trained
+quality gain is claimed. Historical proposals below remain historical records.
 
 Recordkeeping update `c70f441c4f97b6306e4dc29076bef0f30fe8416f` adds one ALPHA
 AGENTS instruction to maintain `agent/ALPHA_INCREMENT_LEDGER.md`. It was normally
