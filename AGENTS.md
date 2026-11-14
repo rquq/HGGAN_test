@@ -6,4 +6,5 @@
 - Inspect divergence before integration. Preserve unrelated edits and remote history; do not force-push, rewrite history, or mix unrelated model experiments without explicit approval.
 - Stage only task-related source, configuration, and intended documentation. Do not commit generated tests/artifacts, run outputs, datasets, checkpoint binaries, credentials, or unrelated dirty files.
 - Record dated design, implementation, verification, and limitations under the shared `HGGAN_test/agent` documentation directory. Keep reports out of model source directories.
+- Maintain shared `HGGAN_test/agent/ALPHA_INCREMENT_LEDGER.md` for every ALPHA increment. Record its base/result SHA, exact architecture/objective/protocol delta, unchanged controls, verification, checkpoint/pretrain compatibility and dated report. Separate workflow/utility changes from model contributions, and proposed/implemented/trained results; never carry retired-lineage results forward as a current ablation.
 - In the handoff, list the affected branches and verified remote commit hashes, and distinguish source checks from actual training/quality evidence.
