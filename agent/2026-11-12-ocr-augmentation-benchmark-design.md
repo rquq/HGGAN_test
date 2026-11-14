@@ -1,6 +1,19 @@
 # Paired IAM synthetic-augmentation benchmark
 
-Date: 2026-11-12. Status: proposed design; implementation has not begun.
+Date: 2026-11-12. Updated: 2026-11-14.
+Status: approved design; implementation and final review complete at source
+`f2f8498cabfac095bcc4d5e7586f1b9133a54030`. No full OCR benchmark is claimed.
+
+User amendments after approval: active generator pool is only SpiS-GAN, FW-GAN
+and HiGAN+ until own-model training finishes. Datasets must be independently
+downloadable after generation. The user selected one IAM32 comparison with an
+explicitly labeled HiGAN+ native64→export32 conversion. These decisions override
+the broader adapter inventory and native-only default described below.
+
+Version 1 scope: only the pinned `trocr-small-stage1` revision and FP32 are
+implemented. The alternate OCR bases and optional FP16 discussed below are
+deferred extensions, not available configuration options. All current arms use
+the same base and precision; no experiment silently switches either.
 
 ## Goal and decisions confirmed by the user
 
@@ -291,14 +304,14 @@ not a second copy of every GAN repository. Pin source checkouts independently.
   independent two-GPU scheduling with the user.
 - [x] Inspect local IAM schema and current generator interfaces/checkpoint keys.
 - [x] Verify paper protocol and identify unspecified details/leakage traps.
-- [ ] Approve this design and its explicit defaults.
-- [ ] Create isolated branch/folder and implementation checklist.
-- [ ] Implement matched train/validation/test boundaries and generation resume.
-- [ ] Implement/test every available adapter without discriminator loading.
-- [ ] Prove tiny end-to-end generation/export/OCR update/save/resume/evaluation.
-- [ ] Check notebook Run All control flow, process failure/clean pause handling,
+- [x] Approve this design and its explicit defaults.
+- [x] Create isolated branch/folder and implementation checklist.
+- [x] Implement matched train/validation/test boundaries and generation resume.
+- [x] Implement/test every available adapter without discriminator loading.
+- [x] Prove tiny end-to-end generation/export/OCR update/save/resume/evaluation.
+- [x] Check notebook Run All control flow, process failure/clean pause handling,
   offline W&B and experiment-identity mismatch rejection.
-- [ ] Independent review, dated verification report, scoped commit/push and fresh
+- [x] Independent review, dated verification report, scoped commit/push and fresh
   remote-SHA check.
 
 CPU tests and small available-checkpoint smokes cannot prove full 25k generation,
