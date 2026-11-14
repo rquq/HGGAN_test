@@ -29,8 +29,10 @@ def _image_sha(image):
     return digest.hexdigest()
 
 
-def _groups(corpus):
-    return [digest_json([_image_sha(corpus.image(i)), text]) for i, text in enumerate(corpus.texts)]
+def _groups(corpus, image_hashes=None):
+    if image_hashes is None:
+        image_hashes=[_image_sha(corpus.image(i)) for i in range(len(corpus))]
+    return [digest_json([image_sha,text]) for image_sha,text in zip(image_hashes,corpus.texts)]
 
 
 def _balanced(rows, writers, count, rng):
@@ -69,7 +71,9 @@ def read_cases(path):
 def _verify_existing(directory, payload):
     if not (directory / 'identity.json').exists():
         raise ValueError('incomplete prepared directory: missing identity')
-    identity = bind_identity(directory, payload)
+    identity = digest_json(payload)
+    if read_json(directory/'identity.json') != dict(sha256=identity,payload=payload):
+        raise ValueError('prepared identity mismatch')
     try:
         metadata = read_json(directory / 'metadata.json')
         if metadata['identity_sha256'] != identity or metadata['dataset_sha256'] != payload['dataset_sha256']:
@@ -93,7 +97,8 @@ def _verify_existing(directory, payload):
     return directory
 
 
-def prepare(cfg):
+def prepared_payload(cfg):
+    """Expected semantic identity, with no output writes or row selection."""
     dataset, generation = cfg['dataset'], cfg['generation']
     count = _integer(generation['count'], 'generation.count', 25000)
     real_count = _integer(dataset['real_count'], 'dataset.real_count')
@@ -113,6 +118,19 @@ def prepare(cfg):
                    generation_seed=generation['seed'], max_text_length=max_length, alphabet=alphabet)
     if dataset.get('validation'):
         payload['explicit_validation_writer_policy'] = 'independent-local-ids-v1'
+    return payload
+
+
+def verify_prepared(cfg):
+    return _verify_existing(Path(cfg['output_dir'])/'prepared',prepared_payload(cfg))
+
+
+def prepare(cfg):
+    payload=prepared_payload(cfg)
+    dataset,generation=cfg['dataset'],cfg['generation']
+    count,real_count,height=payload['generation_count'],payload['real_count'],payload['height']
+    max_length,alphabet=payload['max_text_length'],payload['alphabet']
+    fraction,hashes=payload['validation_fraction'],payload['dataset_sha256']
     directory = Path(cfg['output_dir']) / 'prepared'
     if directory.exists():
         return _verify_existing(directory, payload)
@@ -126,8 +144,11 @@ def prepare(cfg):
             val = stack.enter_context(IAMCorpus(dataset['validation'])) if explicit else train
             if any(c.height != height for c in (train, test, val)):
                 raise ValueError('all supplied IAM datasets must match declared cohort height')
-            train_groups, test_groups = _groups(train), set(_groups(test))
-            val_groups = _groups(val) if explicit else train_groups
+            train_images=[_image_sha(train.image(i)) for i in range(len(train))]
+            test_images=[_image_sha(test.image(i)) for i in range(len(test))]
+            val_images=[_image_sha(val.image(i)) for i in range(len(val))] if explicit else train_images
+            train_groups, test_groups = _groups(train,train_images), set(_groups(test,test_images))
+            val_groups = _groups(val,val_images) if explicit else train_groups
             rng = random.Random(cfg['split_seed'])
             if explicit:
                 validation_rows = list(range(len(val)))
@@ -142,12 +163,30 @@ def prepare(cfg):
                 heldout_writers = set(writers[:max(1, math.ceil(len(writers) * fraction))])
                 validation_rows = [i for i, w in enumerate(train.writers) if int(w) in heldout_writers]
             # Block ALL original validation groups, even those excluded by test collision.
-            blocked_groups = test_groups | {val_groups[i] for i in validation_rows}
+            original_validation_groups = {val_groups[i] for i in validation_rows}
+            candidate_groups=[group for group,writer in zip(train_groups,train.writers) if int(writer) not in heldout_writers]
+            audit=dict(training_exact_test_rows=sum(group in test_groups for group in candidate_groups),
+                training_exact_validation_rows=sum(group in original_validation_groups for group in candidate_groups),
+                training_exact_test_and_validation_rows=sum(group in test_groups and group in original_validation_groups for group in candidate_groups),
+                validation_exact_test_rows_removed=sum(val_groups[i] in test_groups for i in validation_rows),
+                training_heldout_writer_rows=sum(int(w) in heldout_writers for w in train.writers))
+            blocked_groups = test_groups | original_validation_groups
             validation_rows = [i for i in validation_rows if val_groups[i] not in test_groups]
             if not validation_rows:
                 raise ValueError('no validation rows remain after test collision exclusion')
             eligible = [i for i, w in enumerate(train.writers)
                         if int(w) not in heldout_writers and train_groups[i] not in blocked_groups]
+            audit['training_total_excluded_rows']=len(train)-len(eligible)
+            images={}
+            for source,corpus,hashes_ in [('train',train,train_images),('test',test,test_images)]+([('validation',val,val_images)] if explicit else []):
+                for index,(image_sha,text) in enumerate(zip(hashes_,corpus.texts)):
+                    partition=('validation' if not explicit and source=='train'
+                               and int(train.writers[index]) in heldout_writers else source)
+                    images.setdefault(image_sha,[]).append((partition,text))
+            ambiguous=[rows for rows in images.values() if len({text for _,text in rows})>1]
+            audit.update(image_only_different_transcript_groups=len(ambiguous),
+                image_only_different_transcript_rows=sum(len(rows) for rows in ambiguous),
+                image_only_different_transcript_cross_split_groups=sum(len({source for source,_ in rows})>1 for rows in ambiguous))
             selected = _balanced(eligible, train.writers, real_count, rng)
             lexicon = sorted({train.texts[i] for i in selected
                               if 0 < len(train.texts[i]) <= max_length and set(train.texts[i]) <= set(alphabet)})
@@ -156,7 +195,7 @@ def prepare(cfg):
             split = dict(train_rows=selected, validation_rows=validation_rows,
                          validation_source='validation' if explicit else 'train',
                          heldout_writers=sorted(heldout_writers), eligible_training_count=len(eligible),
-                         test_count=len(test), test_rows_unchanged=True)
+                         test_count=len(test), test_rows_unchanged=True,audit=audit)
             atomic_json(temporary / 'split.json', split)
             for name, corpus, rows in [('real_train', train, selected), ('real_val', val, validation_rows)]:
                 write_iam(temporary / f'{name}.hdf5',
@@ -183,7 +222,7 @@ def prepare(cfg):
             filenames = ('split.json', 'manifest.jsonl', 'real_train.hdf5', 'real_val.hdf5')
             artifact_hashes = {name: sha256_file(temporary / name) for name in filenames}
             atomic_json(temporary / 'metadata.json', dict(
-                status='complete', identity_sha256=identity, dataset_sha256=hashes,
+                status='complete', identity_sha256=identity, dataset_sha256=hashes,audit=audit,
                 manifest_sha256=artifact_hashes['manifest.jsonl'], artifact_sha256=artifact_hashes,
                 real_train_count=real_count, real_val_count=len(validation_rows), test_count=len(test),
                 generation_count=count, lexicon_count=len(lexicon), lexicon=lexicon,

@@ -10,3 +10,9 @@ encoder_min_width: 32
 internal_polarity: black
 # User-approved cohort bridge; NOT native32 HiGAN+ reproduction.
 export_conversion: native64_to_export32_bilinear
+upstream_provenance:
+  training_data: unknown
+  teachers: unknown
+  test_data_training: unknown
+  test_checkpoint_selection: unknown
+  evidence: unknown

@@ -21,7 +21,8 @@ from transformers import (GenerationConfig, Seq2SeqTrainer, Seq2SeqTrainingArgum
 from transformers.trainer_callback import ExportableState
 
 from .common import atomic_json, bind_identity, read_json, sha256_file
-from .config import DEFAULTS
+from .config import ocr_settings
+from .identities import ocr_payload
 from .data import IAMCorpus
 from .manifest import prepare
 from .metrics import RecognitionMetrics
@@ -29,21 +30,7 @@ from .tracking import tracking_run
 
 
 def settings(cfg):
-    result = dict(DEFAULTS['ocr'], **cfg.get('ocr', {}))
-    if (result['model_name'] != DEFAULTS['ocr']['model_name'] or
-            result['revision'] != DEFAULTS['ocr']['revision']):
-        raise ValueError('only the pinned TrOCR-small-stage1 model is supported')
-    for key in ('max_steps', 'micro_batch_size', 'gradient_accumulation_steps',
-                'eval_steps', 'save_steps', 'max_new_tokens'):
-        if isinstance(result[key], bool) or not isinstance(result[key], int) or result[key] <= 0:
-            raise ValueError(f'ocr.{key} must be a positive integer')
-    if result['save_steps'] != result['eval_steps']:
-        raise ValueError('evaluation and save intervals must be aligned')
-    if result['num_beams'] != 1 or result['fp16'] or result['bf16']:
-        raise ValueError('this benchmark requires greedy generation and FP32')
-    if not 0 <= result['warmup_ratio'] <= 1:
-        raise ValueError('invalid warmup fraction')
-    return result
+    return ocr_settings(cfg)
 
 
 def load_processor(options):
@@ -412,17 +399,13 @@ def _job(cfg, arm, seed):
     options = settings(cfg)
     prepared = prepare(cfg)
     train_paths = [prepared / 'real_train.hdf5']
-    payload = dict(arm=arm, seed=int(seed), ocr={k:v for k,v in options.items() if k != 'seeds'},
-                   prepared=read_json(prepared / 'identity.json')['sha256'],
-                   real_train=sha256_file(train_paths[0]),
-                   validation=sha256_file(prepared / 'real_val.hdf5'),
-                   test=sha256_file(cfg['dataset']['test']))
+    metadata = None
     if arm != 'real_only':
         from .generation import verify_dataset
         metadata = verify_dataset(cfg, arm, verify_model=False)
         synthetic = Path(cfg['output_dir']) / 'datasets' / arm / 'synthetic.hdf5'
-        payload['synthetic'] = dict(identity=metadata['identity_sha256'], sha256=sha256_file(synthetic))
         train_paths.append(synthetic)
+    payload = ocr_payload(cfg,arm,seed,prepared,metadata)
     directory = Path(cfg['output_dir']) / 'ocr' / arm / f'seed_{int(seed)}'
     identity = bind_identity(directory, payload)
     return options, prepared, train_paths, directory, identity

@@ -9,3 +9,9 @@ char_width: 32
 encoder_min_width: 32
 internal_polarity: black
 export_conversion: none
+upstream_provenance:
+  training_data: unknown
+  teachers: unknown
+  test_data_training: unknown
+  test_checkpoint_selection: unknown
+  evidence: unknown

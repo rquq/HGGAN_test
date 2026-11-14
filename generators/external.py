@@ -19,11 +19,35 @@ from pipeline.common import digest_json, sha256_file
 from pipeline.config import resolve_path
 
 
+def upstream_provenance(cfg):
+    """Explicit declarations, never an inferred clean-training claim."""
+    if not isinstance(cfg,dict):
+        raise ValueError('upstream provenance source must be a mapping')
+    result=dict(training_data='unknown',teachers='unknown',test_data_training='unknown',
+                test_checkpoint_selection='unknown',evidence='unknown')
+    supplied=cfg.get('upstream_provenance',{})
+    if not isinstance(supplied,dict) or set(supplied)-set(result):
+        raise ValueError('invalid upstream provenance fields')
+    result.update(supplied)
+    for key in ('test_data_training','test_checkpoint_selection'):
+        value=result[key]
+        value='yes' if value is True else 'no' if value is False else value
+        if value not in {'yes','no','unknown'}:
+            raise ValueError('test exposure declarations must be yes, no or unknown')
+        result[key]=value
+    if any(not isinstance(value,str) or not value for value in result.values()):
+        raise ValueError('upstream provenance values must be nonempty strings')
+    if result['test_data_training']=='yes':
+        raise ValueError('known test-data-trained GAN is not allowed in ordinary benchmark runs')
+    return result
+
+
 def read_model_config(path):
     with open(path, encoding='utf-8') as stream:
         cfg = yaml.safe_load(stream)
     if not isinstance(cfg, dict):
         raise ValueError('model configuration must be a mapping')
+    cfg['upstream_provenance']=upstream_provenance(cfg)
     for key in ('source_root', 'source_config', 'checkpoint'):
         cfg[key] = resolve_path(cfg[key])
     return cfg
@@ -31,6 +55,7 @@ def read_model_config(path):
 
 def provenance(cfg):
     """Machine-independent identities; paths are operational, never semantic."""
+    cfg=dict(cfg,upstream_provenance=upstream_provenance(cfg))
     root = Path(cfg['source_root'])
     try:
         revision = subprocess.check_output(['git', '-C', str(root), 'rev-parse', 'HEAD'], text=True).strip()

@@ -12,10 +12,10 @@ import numpy as np
 from PIL import Image, ImageDraw
 
 from generators import ACTIVE_MODELS
-from generators.external import provenance, read_model_config
+from generators.external import provenance, read_model_config, upstream_provenance
 from .common import atomic_json, bind_identity, digest_json, read_json, sha256_file
 from .data import IAMCorpus, validate_iam, write_iam
-from .manifest import _image_sha, prepare, read_cases
+from .manifest import _image_sha, prepare, read_cases, verify_prepared
 
 
 class _BudgetExpired(Exception):
@@ -111,6 +111,9 @@ def _verify_pixels(directory, cases, payload):
 def _verify_portable(directory, cases, payload):
     identity = digest_json(payload)
     metadata = read_json(directory / 'metadata.json')
+    upstream=upstream_provenance(payload['model_provenance'])
+    if metadata.get('upstream_provenance',upstream) != upstream:
+        raise ValueError('portable upstream provenance differs from identity payload')
     if (metadata.get('status') != 'complete' or metadata.get('identity_sha256') != identity
             or metadata.get('identity_payload') != payload or metadata.get('model') != payload['model']
             or metadata.get('sample_ids') != list(range(len(cases))) or metadata.get('count') != len(cases)
@@ -142,7 +145,7 @@ def _verify_portable(directory, cases, payload):
                         digest.update(block)
                 if digest.hexdigest() != sha256_file(directory / name):
                     raise ValueError(f'ZIP content mismatch: {name}')
-    return metadata
+    return dict(metadata,upstream_provenance=upstream)
 
 
 def _verify_complete(directory, cases, payload):
@@ -165,7 +168,7 @@ def _verify_complete(directory, cases, payload):
         raise ValueError(f'incomplete/corrupt dataset: {directory}') from exc
 
 
-def verify_dataset(cfg, model_name, verify_model=False):
+def verify_dataset(cfg, model_name, verify_model=False, read_only=False):
     """Verify a portable bundle without loading or requiring generator binaries.
 
     Generation/resume additionally recomputes current model provenance and checks
@@ -173,6 +176,9 @@ def verify_dataset(cfg, model_name, verify_model=False):
     """
     if model_name not in ACTIVE_MODELS:
         raise ValueError(f'unsupported model: {model_name}')
+    configured=cfg['generation']['models'].get(model_name)
+    if configured and Path(configured).is_file():
+        read_model_config(configured)  # Declared known test-trained inputs are never ordinary arms.
     directory = Path(cfg['output_dir']) / 'datasets' / model_name
     if verify_model:
         _, _, cases, payload = _context(cfg, model_name)
@@ -182,7 +188,7 @@ def verify_dataset(cfg, model_name, verify_model=False):
     try:
         metadata = read_json(directory / 'metadata.json')
         payload = metadata['identity_payload']
-        prepared = prepare(cfg)
+        prepared = verify_prepared(cfg) if read_only else prepare(cfg)
         prep = read_json(prepared / 'metadata.json')
         expected = dict(model=model_name, prepared_identity_sha256=prep['identity_sha256'],
                         manifest_sha256=prep['manifest_sha256'],
@@ -290,6 +296,7 @@ def generate(cfg, model_name, device='cpu', time_budget_seconds=None):
                             prepared_identity_sha256=payload['prepared_identity_sha256'],
                             model=model_name, native_height=model['native_height'], export_height=height,
                             export_conversion=model['export_conversion'], precision='float32',
+                            upstream_provenance=payload['model_provenance']['upstream_provenance'],
                             model_provenance=payload['model_provenance'], artifact_sha256=artifact_hashes)
             atomic_json(temporary / 'metadata.json', metadata)
             with zipfile.ZipFile(temporary / 'dataset.zip', 'w', compression=zipfile.ZIP_DEFLATED) as archive:

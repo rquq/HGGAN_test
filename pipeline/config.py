@@ -24,6 +24,25 @@ DEFAULTS = {
 }
 
 
+def ocr_settings(cfg):
+    """Validated semantic recipe, usable without importing model libraries."""
+    result = dict(DEFAULTS['ocr'], **cfg.get('ocr', {}))
+    if (result['model_name'] != DEFAULTS['ocr']['model_name'] or
+            result['revision'] != DEFAULTS['ocr']['revision']):
+        raise ValueError('only the pinned TrOCR-small-stage1 model is supported')
+    for key in ('max_steps', 'micro_batch_size', 'gradient_accumulation_steps',
+                'eval_steps', 'save_steps', 'max_new_tokens'):
+        if isinstance(result[key], bool) or not isinstance(result[key], int) or result[key] <= 0:
+            raise ValueError(f'ocr.{key} must be a positive integer')
+    if result['save_steps'] != result['eval_steps']:
+        raise ValueError('evaluation and save intervals must be aligned')
+    if result['num_beams'] != 1 or result['fp16'] or result['bf16']:
+        raise ValueError('this benchmark requires greedy generation and FP32')
+    if not 0 <= result['warmup_ratio'] <= 1:
+        raise ValueError('invalid warmup fraction')
+    return result
+
+
 def _merge(base, update):
     for key, value in update.items():
         if isinstance(value, dict) and isinstance(base.get(key), dict):
