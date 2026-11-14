@@ -165,7 +165,11 @@ def write_results_table(logdir, opt, model=None, status='completed', started_at=
         ('completed_epoch', getattr(model, 'completed_epoch', '')),
         ('batch_size', getattr(getattr(opt, 'training', {}), 'batch_size', '')),
         ('elapsed_seconds', round(time.time() - started_at, 2) if started_at else ''),
+        ('finished_at_utc', time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())),
+        ('eval_csv', os.path.join(os.path.abspath(logdir), 'eval_metrics.csv')),
     ]
+    if model is not None:
+        rows.append(('parameters', sum(p.numel() for module in model.models.values() for p in module.parameters())))
     for key, value in sorted(metrics.items()):
         rows.append(('last_{}'.format(str(key).lower()), value))
     if model is not None:

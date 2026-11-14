@@ -165,6 +165,18 @@ class Generator(nn.Module):
                 self.embed_dim, nhead=fusion_nhead, attn_dim=fusion_attn_dim,
                 ffn_dim=fusion_ffn_dim, residual_init=fusion_residual_init,
             )
+        # Replace only conditioning; preserve baseline construction/RNG for
+        # every shared layer and the subsequent encoder/discriminator draws.
+        with torch.random.fork_rng(devices=[]):
+            self.bssp = nn.ModuleList([
+                nn.Sequential(self.which_linear(self.z_chunk_size, self.z_chunk_size),
+                              nn.SiLU(),
+                              self.which_linear(self.z_chunk_size, self.z_chunk_size))
+                for _ in self.arch['in_channels']
+            ])
+            if self.init != 'none':
+                init_weights(self.bssp, self.init)
+        del self.style_linear
 
     # Note on this forward function: we pass in a y vector which has
     # already been passed through G.shared to enable easy class-wise
@@ -173,7 +185,7 @@ class Generator(nn.Module):
     def forward(self, z, y, y_lens):
         # If hierarchical, concatenate zs and ys
         #if self.hier:
-        ys = self.style_linear(z).split(32, dim=1)
+        ys = [projection(z) for projection in self.bssp]
 
         # This is the change we made to the Big-GAN generator architecture.
         # The input goes into classes go into the first layer only.

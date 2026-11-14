@@ -178,6 +178,20 @@ class BaseModel(object):
 
         ckpt['config_snapshot'] = self.opt.toDict()
         ckpt['eval_history'] = list(self.eval_history)
+        import csv, io
+        fields = self._eval_fields()
+        table = io.StringIO(newline='')
+        writer = csv.DictWriter(table, fieldnames=fields)
+        writer.writeheader()
+        writer.writerows(self.eval_history)
+        ckpt['eval_metric_columns'] = fields
+        ckpt['eval_metrics_csv'] = table.getvalue()
+        ckpt['checkpoint_format_version'] = 2
+        ckpt['model_manifest'] = {
+            name: {'class': type(self.unwrap_model(model)).__name__,
+                   'parameters': sum(p.numel() for p in model.parameters())}
+            for name, model in self.models.items()
+        }
         ckpt['Epoch'] = epoch_done
         if iter_count is not None:
             ckpt['iter_count'] = iter_count
@@ -297,21 +311,28 @@ class BaseModel(object):
             if os.path.exists(tmp_path):
                 os.remove(tmp_path)
 
-    def record_eval_scores(self, epoch, scores):
-        import csv
+    def _eval_fields(self):
         fields = ['epoch', 'fid', 'kid', 'hwd', 'cmmd', 'is_gen', 'is_org', 'psnr', 'mssim', 'wier']
-        row = {'epoch': float(epoch), **{key: scores.get(key, '') for key in fields[1:]}}
-        self.eval_history = [r for r in self.eval_history if float(r.get('epoch', -1)) != float(epoch)]
-        self.eval_history.append(row)
-        self.eval_history.sort(key=lambda r: float(r.get('epoch', -1)))
+        return list(dict.fromkeys(fields + [key for row in self.eval_history for key in row]))
+
+    def _export_eval_csv(self):
+        import csv
         if self.local_rank < 1:
             path = os.path.join(self.log_root, 'eval_metrics.csv')
             temporary = path + '.tmp'
             with open(temporary, 'w', newline='') as handle:
-                writer = csv.DictWriter(handle, fieldnames=fields, extrasaction='ignore')
+                writer = csv.DictWriter(handle, fieldnames=self._eval_fields())
                 writer.writeheader()
                 writer.writerows(self.eval_history)
             os.replace(temporary, path)
+
+    def record_eval_scores(self, epoch, scores):
+        row = {'epoch': float(epoch), **{key: scores.get(key, '') for key in self._eval_fields()[1:]}}
+        row.update(scores)
+        self.eval_history = [r for r in self.eval_history if float(r.get('epoch', -1)) != float(epoch)]
+        self.eval_history.append(row)
+        self.eval_history.sort(key=lambda r: float(r.get('epoch', -1)))
+        self._export_eval_csv()
 
     def restore_rng_state(self, rng=None):
         if rng is None:
@@ -429,10 +450,14 @@ class BaseModel(object):
             map_location = 'cpu'
         ckpt_data = torch.load(ckpt, map_location=map_location, weights_only=False)
 
-        if ckpt_data is None:
-            return 0
+        if not isinstance(ckpt_data, dict) or not ckpt_data:
+            raise ValueError(f'Empty or invalid checkpoint: {ckpt}')
 
         self.eval_history = list(ckpt_data.get('eval_history', []) or [])
+        if not self.eval_history and ckpt_data.get('eval_metrics_csv'):
+            import csv, io
+            self.eval_history = list(csv.DictReader(io.StringIO(ckpt_data['eval_metrics_csv'])))
+        self._export_eval_csv()
         best_fid = ckpt_data.get('best_fid', ckpt_data.get('fid', None))
         if best_fid is None:
             ckpt_dir_of_file = os.path.dirname(ckpt)
