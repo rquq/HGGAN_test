@@ -84,7 +84,7 @@ training:
   lambda_content_adv: 0.02
   lambda_kl: 0.1
   lambda_distribution: 0.1
-  distribution_projections: 32
+  distribution_projections: 64
   distribution_samples: 64
   selection_metric: kid
   style_loss_normalization_tokens: 8
