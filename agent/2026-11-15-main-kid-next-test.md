@@ -1,7 +1,8 @@
 # MAIN KID: next controlled test — 2026-11-15
 
-No MAIN architecture/config change was requested after the user's clarification;
-this is a proposal, not an implemented or measured quality improvement.
+Initially proposed; subsequently approved and implemented at MAIN `f849d9a`.
+See `2026-11-15-main-swd64-implementation.md` for verification and the strict
+checkpoint boundary. No measured KID improvement is claimed.
 
 The current best saved KID×100 is0.049210. Finish the existing80-epoch schedule
 without a simultaneous LR/loss/architecture rewrite. Keep the test-selected and
