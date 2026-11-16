@@ -1,0 +1,17 @@
+{
+  "spis_gan": {
+    "filename": "bestIAM.pth",
+    "url": "https://github.com/rquq/HGGAN_test/releases/download/ocr-benchmark-weights-v1/bestIAM.pth",
+    "sha256": "e5094b78691d7d07ad854b5fc0748e054d385dd52f48cbcfa9020294b42c6b60"
+  },
+  "higanplus": {
+    "filename": "deploy_HiGAN+.pth",
+    "url": "https://github.com/rquq/HGGAN_test/releases/download/ocr-benchmark-weights-v1/deploy_HiGAN%2B.pth",
+    "sha256": "aa2fbdad65c21dddefff5675a11eb482d51622dbc3d60fd2a8bd9d79d37029b3"
+  },
+  "fw_gan": {
+    "filename": "FW-GAN.pth",
+    "url": "https://github.com/rquq/HGGAN_test/releases/download/ocr-benchmark-weights-v1/FW-GAN.pth",
+    "sha256": "c4046f681292c261f78eb1af6f3381206653d1124ac9df54854b3f0eee426bfb"
+  }
+}
