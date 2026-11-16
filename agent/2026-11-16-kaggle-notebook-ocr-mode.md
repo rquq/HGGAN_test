@@ -1,5 +1,12 @@
 # Kaggle notebook promotion and baseline OCR mode — 2026-11-16
 
+**SUPERSEDED the same day:** the frozen-reader mode described here was the wrong
+interpretation of the requested OCR benchmark and has been removed. Use the
+separate `notebooks/kaggle_ocr_benchmark.ipynb` for saved synthetic datasets →
+independent TrOCR training → held-out real IAM evaluation. The GAN/pretraining
+notebooks contain no OCR benchmark mode. See
+`2026-11-16-augmentation-notebook-correction.md` for the correction.
+
 ## Scope
 
 Promoted the exact supplied `C:/Users/Lenovo/Downloads/higan-edits (2).ipynb`
