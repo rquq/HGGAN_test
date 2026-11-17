@@ -83,6 +83,14 @@ def run_jobs(jobs, output_dir, gpu_slots=('0','1'), budget_seconds=None, poll_se
                     row['worker_status'] = receipt
                 except (OSError,ValueError,TypeError) as exc:
                     row['error'] = 'missing/invalid worker status: '+type(exc).__name__
+                if row['status'] == 'failed':
+                    log_path = logs/(job['id']+'.log')
+                    row['log_path'] = str(log_path)
+                    with log_path.open('rb') as error_log:
+                        error_log.seek(0, os.SEEK_END)
+                        error_log.seek(max(0, error_log.tell()-8192))
+                        row['error_tail'] = '\n'.join(error_log.read().decode('utf-8',errors='replace').splitlines()[-20:])
+                    print(f"FAILED {job['id']}: see {log_path}",flush=True)
                 results[job['id']] = row
                 del active[slot]
             if pending and deadline is not None and remaining() <= 0:
