@@ -46,7 +46,7 @@ def run_jobs(jobs, output_dir, gpu_slots=('0','1'), budget_seconds=None, poll_se
                 argv = list(job['argv'])
                 if job.get('budget_arg') and budget is not None:
                     argv += ['--time-budget-seconds',str(budget)]
-                env = dict(os.environ, CUDA_VISIBLE_DEVICES=slot, OMP_NUM_THREADS='1',
+                env = dict(os.environ, CUDA_VISIBLE_DEVICES=slot, MPLBACKEND='Agg', OMP_NUM_THREADS='1',
                            MKL_NUM_THREADS='1', OPENBLAS_NUM_THREADS='1',
                            TOKENIZERS_PARALLELISM='false', PYTHONUNBUFFERED='1')
                 try:
