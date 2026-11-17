@@ -22,7 +22,7 @@ from transformers.trainer_callback import ExportableState
 
 from .common import atomic_json, bind_identity, read_json, sha256_file
 from .config import ocr_settings
-from .identities import ocr_payload
+from .identities import ocr_payload, bind_ocr_identity
 from .data import IAMCorpus
 from .manifest import prepare
 from .metrics import RecognitionMetrics
@@ -407,7 +407,7 @@ def _job(cfg, arm, seed):
         train_paths.append(synthetic)
     payload = ocr_payload(cfg,arm,seed,prepared,metadata)
     directory = Path(cfg['output_dir']) / 'ocr' / arm / f'seed_{int(seed)}'
-    identity = bind_identity(directory, payload)
+    identity = bind_ocr_identity(directory, payload)
     return options, prepared, train_paths, directory, identity
 
 

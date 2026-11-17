@@ -1,6 +1,8 @@
 """Configuration without model imports or model-file existence requirements."""
 from copy import deepcopy
 from pathlib import Path
+import json
+import math
 
 import yaml
 
@@ -27,6 +29,17 @@ DEFAULTS = {
 def ocr_settings(cfg):
     """Validated semantic recipe, usable without importing model libraries."""
     result = dict(DEFAULTS['ocr'], **cfg.get('ocr', {}))
+    for key in ('learning_rate','weight_decay','max_grad_norm','warmup_ratio'):
+        value = result[key]
+        if isinstance(value,bool) or not isinstance(value,(int,float,str)):
+            raise ValueError(f'ocr.{key} must be a finite number')
+        try:
+            value = float(value)
+        except ValueError as exc:
+            raise ValueError(f'ocr.{key} must be a finite number') from exc
+        if not math.isfinite(value) or value < 0 or (key=='learning_rate' and value==0):
+            raise ValueError(f'invalid ocr.{key}')
+        result[key] = value
     if (result['model_name'] != DEFAULTS['ocr']['model_name'] or
             result['revision'] != DEFAULTS['ocr']['revision']):
         raise ValueError('only the pinned TrOCR-small-stage1 model is supported')
@@ -59,10 +72,11 @@ def resolve_path(path):
 
 def load_config(path):
     with open(path, encoding='utf-8') as stream:
-        supplied = yaml.safe_load(stream) or {}
+        supplied = (json.load(stream) if Path(path).suffix.lower()=='.json' else yaml.safe_load(stream)) or {}
     if not isinstance(supplied, dict):
         raise ValueError('configuration must be a mapping')
     cfg = _merge(deepcopy(DEFAULTS), supplied)
+    cfg['ocr'] = ocr_settings(cfg)
     # An explicit pool replaces defaults, including the native64-only cohort.
     if 'models' in supplied.get('generation', {}):
         cfg['generation']['models'] = dict(supplied['generation']['models'])
