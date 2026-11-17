@@ -57,6 +57,9 @@ def restore_outputs(previous, destination):
     must be complete. Never follow arbitrary links.
     """
     previous, destination = Path(previous).resolve(), Path(destination).resolve()
+    if previous.is_file():
+        from .bundle import restore_archive
+        return restore_archive(previous,destination)
     if (previous == destination or previous.is_relative_to(destination)
             or destination.is_relative_to(previous)):
         raise ValueError('previous and output directories must be separate')
