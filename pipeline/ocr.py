@@ -21,7 +21,7 @@ from transformers import (GenerationConfig, Seq2SeqTrainer, Seq2SeqTrainingArgum
 from transformers.trainer_callback import ExportableState
 
 from .common import atomic_json, bind_identity, read_json, sha256_file
-from .config import ocr_settings
+from .config import ocr_settings, ocr_horizon, ocr_directory
 from .identities import ocr_payload, bind_ocr_identity
 from .data import IAMCorpus
 from .manifest import prepare
@@ -127,6 +127,7 @@ class StreamingValidation:
 
     def reset(self):
         self.metrics, self.cursor, self.limit_hits = RecognitionMetrics(), 0, 0
+        self.next_progress = 2048
 
     def __call__(self, prediction, compute_result=False):
         ids = prediction.predictions
@@ -139,6 +140,9 @@ class StreamingValidation:
             self.metrics.update(self.texts[self.cursor], text)
             self.cursor += 1
             self.limit_hits += length_limit_hit(tokens, self.max_new_tokens)
+        if self.cursor >= self.next_progress or compute_result:
+            print(f'OCR validation: {self.cursor}/{len(self.texts)} rows',flush=True)
+            self.next_progress = self.cursor + 2048
         if not compute_result:
             return {}
         if self.cursor != len(self.texts):
@@ -182,8 +186,12 @@ class BudgetCallback(TrainerCallback):
             self.paused = True
             control.should_training_stop = control.should_save = True
             control.should_evaluate = False
-        elif state.global_step >= args.max_steps:
+        elif args.max_steps > 0 and state.global_step >= state.max_steps:
             control.should_evaluate = control.should_save = True
+
+    def on_epoch_end(self, args, state, control, **kwargs):
+        if self.paused:
+            control.should_evaluate = False
 
     def on_prediction_step(self, args, state, control, **kwargs):
         if self.deadline is not None and time.monotonic() >= self.deadline:
@@ -196,7 +204,14 @@ class ReceiptCallback(TrainerCallback):
         self.directory, self.tracking = Path(directory), tracking
 
     def on_log(self, args, state, control, logs, **kwargs):
-        self.tracking.log(logs, step=state.global_step)
+        values = dict(logs)
+        if 'loss' in logs and torch.cuda.is_available() and not args.use_cpu:
+            values.update(gpu_peak_allocated_gib=torch.cuda.max_memory_allocated()/2**30,
+                          gpu_reserved_gib=torch.cuda.memory_reserved()/2**30)
+            print(f'OCR update {state.global_step}/{state.max_steps} epoch={state.epoch:.2f} '
+                  f'loss={logs["loss"]:.4f} lr={logs.get("learning_rate",0):.3g} '
+                  f'peak_allocated={values["gpu_peak_allocated_gib"]:.2f} GiB',flush=True)
+        self.tracking.log(values, step=state.global_step)
 
     def on_save(self, args, state, control, **kwargs):
         _receipts(self.directory, state)
@@ -406,8 +421,10 @@ def _job(cfg, arm, seed):
         synthetic = Path(cfg['output_dir']) / 'datasets' / arm / 'synthetic.hdf5'
         train_paths.append(synthetic)
     payload = ocr_payload(cfg,arm,seed,prepared,metadata)
-    directory = Path(cfg['output_dir']) / 'ocr' / arm / f'seed_{int(seed)}'
+    directory = ocr_directory(cfg,arm,seed)
     identity = bind_ocr_identity(directory, payload)
+    options['max_steps'] = ocr_horizon(options,cfg['dataset']['real_count'] +
+                                       (0 if metadata is None else metadata['count']))
     return options, prepared, train_paths, directory, identity
 
 
@@ -416,7 +433,7 @@ def _generation(model, processor, options):
     model.config.pad_token_id, model.config.decoder_start_token_id = pad, eos
     model.accepts_loss_kwargs = False  # VED CE ignores num_items_in_batch.
     model.generation_config = GenerationConfig(decoder_start_token_id=eos, eos_token_id=eos,
-        pad_token_id=pad, max_new_tokens=options['max_new_tokens'], num_beams=1,
+        pad_token_id=pad, max_length=options['max_new_tokens']+1, num_beams=1,
         do_sample=False, return_dict_in_generate=False, output_scores=False)
 
 
@@ -427,21 +444,26 @@ def _arguments(directory, options, seed, device):
         if not torch.cuda.is_available():
             raise ValueError('CUDA is unavailable')
         torch.cuda.set_device(torch.device(device))
-    return Seq2SeqTrainingArguments(output_dir=str(directory), max_steps=options['max_steps'],
+    epoch_mode = 'epochs' in options
+    strategy = 'epoch' if epoch_mode else 'steps'
+    return Seq2SeqTrainingArguments(output_dir=str(directory),
+        max_steps=-1 if epoch_mode else options['max_steps'],
+        num_train_epochs=options.get('epochs',3),
         per_device_train_batch_size=options['micro_batch_size'],
-        per_device_eval_batch_size=options['micro_batch_size'],
+        per_device_eval_batch_size=options.get('eval_batch_size',options['micro_batch_size']),
         gradient_accumulation_steps=options['gradient_accumulation_steps'],
         learning_rate=options['learning_rate'], weight_decay=options['weight_decay'],
-        max_grad_norm=options['max_grad_norm'], warmup_steps=options['warmup_ratio'],
-        lr_scheduler_type='linear', optim='adamw_torch', fp16=False, bf16=False,
-        eval_strategy='steps', save_strategy='steps', eval_steps=options['eval_steps'],
+        max_grad_norm=options['max_grad_norm'], warmup_steps=options.get('warmup_updates',options['warmup_ratio']),
+        lr_scheduler_type=options.get('lr_scheduler','linear'), optim='adamw_torch', fp16=False, bf16=False,
+        eval_strategy=strategy, save_strategy=strategy, eval_steps=options['eval_steps'],
         save_steps=options['save_steps'], save_total_limit=2, save_only_model=False,
         load_best_model_at_end=False, metric_for_best_model='cer', greater_is_better=False,
         restore_callback_states_from_checkpoint=True, ignore_data_skip=False,
         predict_with_generate=True, batch_eval_metrics=True, eval_accumulation_steps=1,
         report_to=[], seed=int(seed), data_seed=int(seed), use_cpu=device=='cpu',
         dataloader_num_workers=0, dataloader_pin_memory=device!='cpu',
-        logging_steps=1, remove_unused_columns=False, disable_tqdm=True)
+        logging_steps=options.get('logging_steps',1), logging_first_step=('logging_steps' in options),
+        remove_unused_columns=False, disable_tqdm=True)
 
 
 def _status(directory, identity, step, status, **extra):
@@ -486,7 +508,9 @@ def train(cfg, arm, seed, device='cpu', time_budget_seconds=None):
             print(f'OCR {arm} seed={seed}: FP32 device={device} '
                   f'parameters={sum(p.numel() for p in model.parameters())} '
                   f'micro_batch={options["micro_batch_size"]} '
-                  f'accumulation={options["gradient_accumulation_steps"]}',flush=True)
+                  f'accumulation={options["gradient_accumulation_steps"]} '
+                  f'epochs={options.get("epochs","step-based")} '
+                  f'updates={step}/{options["max_steps"]}',flush=True)
             _generation(model, processor, options)
             capacity = model.config.decoder.max_position_embeddings
             training = OCRDataset(paths, processor, capacity)
@@ -582,12 +606,13 @@ def _evaluate(cfg,arm,seed,device,options,directory,identity,deadline,tracking):
     dataset = OCRDataset([cfg['dataset']['test']],processor,model.config.decoder.max_position_embeddings)
     fd, temporary = tempfile.mkstemp(prefix='.test-predictions-',dir=directory)
     metrics, limit_hits = RecognitionMetrics(), 0
+    batch_size=options.get('eval_batch_size',options['micro_batch_size'])
     try:
         with os.fdopen(fd,'w',encoding='utf-8') as stream, torch.inference_mode():
-            for start in range(0,len(dataset),options['micro_batch_size']):
+            for start in range(0,len(dataset),batch_size):
                 if deadline is not None and time.monotonic() >= deadline:
                     return _status(directory,identity,options['max_steps'],'paused',phase='test')
-                end = min(start+options['micro_batch_size'],len(dataset))
+                end = min(start+batch_size,len(dataset))
                 batch = collate([dataset[i] for i in range(start,end)],processor.tokenizer.pad_token_id)
                 tokens = model.generate(batch['pixel_values'].to(device)).cpu().numpy()
                 predictions = processor.batch_decode(tokens,skip_special_tokens=True,clean_up_tokenization_spaces=False)
@@ -600,6 +625,8 @@ def _evaluate(cfg,arm,seed,device,options,directory,identity,deadline,tracking):
                     limit_hits+=hit
                     stream.write(json.dumps(dict(row=index,target=target,prediction=prediction,
                         length_limit_hit=hit),ensure_ascii=False)+'\n')
+                if start % (batch_size*50)==0 or end==len(dataset):
+                    print(f'OCR {arm} final test: {end}/{len(dataset)} rows',flush=True)
             stream.flush()
             os.fsync(stream.fileno())
         if metrics.samples != len(dataset):

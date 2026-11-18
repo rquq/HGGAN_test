@@ -6,7 +6,7 @@ from pathlib import Path
 import tempfile
 
 from .common import atomic_json, digest_json, read_json, sha256_file
-from .config import ocr_settings
+from .config import ocr_settings, ocr_horizon, ocr_directory, ocr_arms
 from .identities import ocr_payload
 from .manifest import verify_prepared
 
@@ -36,14 +36,16 @@ def _completed_metrics(cfg,arm,seed,directory,status):
     if saved!=dict(sha256=identity,payload=expected):
         raise ValueError('saved OCR experiment differs from current cohort/test/recipe/arm/seed')
     options=ocr_settings(cfg)
+    horizon=ocr_horizon(options,cfg['dataset']['real_count'] +
+                        (0 if arm=='real_only' else cfg['generation']['count']))
     metrics=read_json(directory/'test_metrics.json')
-    if (status.get('identity_sha256')!=identity or status.get('global_step')!=options['max_steps']
+    if (status.get('identity_sha256')!=identity or status.get('global_step')!=horizon
             or metrics.get('identity_sha256')!=identity
             or metrics.get('selection')!='validation_cer_wer'
             or sha256_file(directory/'test_predictions.jsonl')!=metrics['predictions_sha256']):
         raise ValueError('incomplete/incompatible final test receipt')
     step=metrics['checkpoint_step']
-    if (isinstance(step,bool) or not isinstance(step,int) or not 0<step<=options['max_steps']
+    if (isinstance(step,bool) or not isinstance(step,int) or not 0<step<=horizon
             or metrics['checkpoint']!=f'checkpoint-{step}'):
         raise ValueError('invalid selected checkpoint receipt')
     for key in ('cer_percent','ned_percent','wer_percent','word_accuracy_percent'):
@@ -67,9 +69,9 @@ def _upstream_fields(metadata):
 def report(cfg):
     output=Path(cfg['output_dir']);output.mkdir(parents=True,exist_ok=True)
     rows=[]
-    for arm in ['real_only',*cfg['generation']['models']]:
+    for arm in ocr_arms(cfg):
         for seed in cfg['ocr'].get('seeds',[123456]):
-            directory=output/'ocr'/arm/f'seed_{seed}'
+            directory=ocr_directory(cfg,arm,seed)
             row=dict(arm=arm,seed=int(seed),status='not_started',global_step=0,
                      real_count=cfg['dataset']['real_count'],synthetic_count=0 if arm=='real_only' else cfg['generation']['count'],
                      split_seed=cfg['split_seed'],generation_seed=cfg['generation']['seed'],

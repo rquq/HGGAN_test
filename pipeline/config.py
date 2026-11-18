@@ -3,6 +3,7 @@ from copy import deepcopy
 from pathlib import Path
 import json
 import math
+import re
 
 import yaml
 
@@ -53,7 +54,30 @@ def ocr_settings(cfg):
         raise ValueError('this benchmark requires greedy generation and FP32')
     if not 0 <= result['warmup_ratio'] <= 1:
         raise ValueError('invalid warmup fraction')
+    for key in ('epochs','eval_batch_size','logging_steps','warmup_updates'):
+        if key in result and (type(result[key]) is not int or result[key] < (0 if key=='warmup_updates' else 1)):
+            raise ValueError(f'invalid ocr.{key}')
+    if result.get('lr_scheduler','linear') not in ('linear','inverse_sqrt'):
+        raise ValueError('unsupported ocr.lr_scheduler')
     return result
+
+
+def ocr_horizon(options, samples):
+    if 'epochs' not in options:
+        return options['max_steps']
+    batch = options['micro_batch_size'] * options['gradient_accumulation_steps']
+    return options['epochs'] * ((samples + batch - 1) // batch)
+
+
+def ocr_directory(cfg, arm, seed):
+    name = cfg.get('ocr_run_name', '')
+    if not isinstance(name,str) or (name and not re.fullmatch(r'[a-zA-Z0-9_-]+',name)):
+        raise ValueError('Invalid ocr_run_name')
+    return Path(cfg['output_dir'])/'ocr'/arm/(f'seed_{int(seed)}'+('_'+name if name else ''))
+
+
+def ocr_arms(cfg):
+    return (['real_only'] if cfg.get('run_real_only', True) else []) + list(cfg['generation']['models'])
 
 
 def _merge(base, update):

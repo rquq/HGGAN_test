@@ -114,6 +114,7 @@ def run_jobs(jobs, output_dir, gpu_slots=('0','1'), budget_seconds=None, poll_se
 
 
 def run_pipeline(cfg, config_path, stage='generation', gpu_slots=('0','1'), budget_seconds=None):
+    from .config import ocr_arms
     from .preflight import check, export_prepared
     from .report import report
     started = time.monotonic()
@@ -143,7 +144,7 @@ def run_pipeline(cfg, config_path, stage='generation', gpu_slots=('0','1'), budg
             return receipt
     if stage in {'ocr','all'}:
         jobs=[job('train',arm,int(seed)) for seed in cfg['ocr'].get('seeds',[123456])
-              for arm in ['real_only',*cfg['generation']['models']]]
+              for arm in ocr_arms(cfg)]
         receipts.append(run_jobs(jobs,cfg['output_dir'],gpu_slots,remaining()))
     report(cfg)
     result=dict(status=receipts[-1]['status'] if receipts else 'complete',stage=stage,stages=receipts)
