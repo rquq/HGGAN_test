@@ -3,14 +3,15 @@ import argparse
 import json
 
 from pipeline.config import load_config
+from generators import ACTIVE_MODELS
 
 
 def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('command',choices=['prepare','generate','train','evaluate','report','preflight','run'])
     parser.add_argument('--config',default='configs/benchmark_32.yml')
-    parser.add_argument('--model',choices=['spis_gan','fw_gan','higanplus'])
-    parser.add_argument('--arm',choices=['real_only','spis_gan','fw_gan','higanplus'])
+    parser.add_argument('--model',choices=ACTIVE_MODELS)
+    parser.add_argument('--arm',choices=('real_only', *ACTIVE_MODELS))
     parser.add_argument('--seed',type=int,default=123456)
     parser.add_argument('--device',default='cpu')
     parser.add_argument('--time-budget-seconds',type=float)

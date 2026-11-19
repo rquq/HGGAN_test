@@ -1,0 +1,17 @@
+model: main
+source_url: https://github.com/rquq/HGGAN_test.git
+source_revision: f849d9a35e3928b9f9aaa37066d7d3ad11a36cae
+source_root: ../main
+source_config: ../main/configs/gan_iam_32.yml
+checkpoint: ../../chkpoints/20_11_2026/last_kid_0.072698_main.pth
+expected_checkpoint_sha256: 052465338af6ea5e79763fd38fea27883cb3ed14ed20ac6589627066d8c9226c
+native_height: 32
+char_width: 16
+internal_polarity: black
+export_conversion: none
+upstream_provenance:
+  training_data: IAM32 training split per checkpoint config
+  teachers: Frozen IAM32 OCR and writer/style backbone per checkpoint config
+  test_data_training: unknown
+  test_checkpoint_selection: unknown
+  evidence: Fixed supplied last epoch 76 checkpoint; the GAN run monitored IAM32 test FID/KID/HWD, not an upstream blind-test protocol.

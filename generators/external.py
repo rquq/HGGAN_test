@@ -68,8 +68,11 @@ def provenance(cfg):
                     for p in sorted((root / folder).rglob('*.py'))}
     if not source_files:
         raise ValueError('missing generator source files')
+    checkpoint_hash = sha256_file(cfg['checkpoint'])
+    if cfg.get('expected_checkpoint_sha256', checkpoint_hash) != checkpoint_hash:
+        raise ValueError('generator checkpoint SHA-256 does not match the pinned checkpoint')
     semantic = {k: v for k, v in cfg.items() if k not in ('source_root', 'source_config', 'checkpoint')}
-    semantic.update(checkpoint_sha256=sha256_file(cfg['checkpoint']),
+    semantic.update(checkpoint_sha256=checkpoint_hash,
                     source_config_sha256=sha256_file(cfg['source_config']),
                     effective_source_sha256=digest_json(source_files))
     return dict(model_config_sha256=digest_json(semantic), **semantic,
@@ -99,12 +102,17 @@ def bounded_namespace(name, path):
     importlib.invalidate_caches()
 
 
-def load_weights(path):
+def load_weights(path, *, allow_rng=False):
     """Legacy released FID scalars, narrowly allowlisted without arbitrary pickle."""
     import torch
     from numpy._core.multiarray import scalar
     safe = [(scalar, 'numpy._core.multiarray.scalar'), (scalar, 'numpy.core.multiarray.scalar'),
             np.dtype, type(np.dtype(np.float64)), type(np.dtype(np.float32))]
+    if allow_rng:
+        from numpy._core.multiarray import _reconstruct
+        # MAIN's training checkpoint includes NumPy RNG metadata. It is never
+        # used by the adapter, but must deserialize under weights_only=True.
+        safe += [_reconstruct, np.ndarray, type(np.dtype(np.uint32))]
     with torch.serialization.safe_globals(safe):
         return torch.load(path, map_location='cpu', weights_only=True, mmap=True)
 
@@ -116,9 +124,10 @@ class GeneratorAdapter:
         self.cfg, self.device = cfg, torch.device(device)
         self.metadata = provenance(cfg)
         native = 64 if family == 'higanplus' else 32
+        uses_style_backbone = family in ('higanplus', 'main')
         if cfg['model'] != family or cfg['native_height'] != native or cfg['char_width'] != native // 2:
             raise ValueError('adapter family/native geometry mismatch')
-        if cfg['internal_polarity'] != ('black' if family == 'higanplus' else 'white'):
+        if cfg['internal_polarity'] != ('black' if uses_style_backbone else 'white'):
             raise ValueError('wrong checkpoint pixel polarity')
         self.native_height, self.char_width = native, native // 2
         root = Path(cfg['source_root'])
@@ -129,24 +138,33 @@ class GeneratorAdapter:
         self.alphabet = importlib.import_module('lib.alphabet').Alphabets['all']
         with open(cfg['source_config'], encoding='utf-8') as stream:
             model = yaml.safe_load(stream)
-        backbone_key = 'StyBackbone' if family == 'higanplus' else 'SharedBackbone'
+        backbone_key = 'StyBackbone' if uses_style_backbone else 'SharedBackbone'
         if model['img_height'] != native or model['GenModel']['resolution'] != native:
             raise ValueError('source config does not describe native checkpoint geometry')
         if model['GenModel']['n_class'] != len(self.alphabet):
             raise ValueError('source alphabet/config mismatch')
-        self.generator = networks.Generator(**model['GenModel'])
-        self.encoder = module.StyleEncoder(**model['EncModel'])
-        self.backbone = getattr(module, 'StyleBackbone' if family == 'higanplus' else 'SharedBackbone')(**model[backbone_key])
         # Memory-map CPU storage; never deserialize arbitrary pickle objects or
         # transfer unused D/R/W/P checkpoint tensors to the accelerator.
-        checkpoint = load_weights(cfg['checkpoint'])
-        required = ('Generator', 'StyleEncoder', 'StyleBackbone' if family == 'higanplus' else 'SharedBackbone')
+        checkpoint = load_weights(cfg['checkpoint'], allow_rng=family == 'main')
+        backbone_options = model[backbone_key]
+        if family == 'main':
+            snapshot = checkpoint['config_snapshot']
+            if snapshot['img_height'] != native or any(
+                    snapshot[key] != model[key] for key in ('GenModel', 'EncModel', backbone_key)):
+                raise ValueError('MAIN source architecture differs from checkpoint snapshot')
+            backbone_options = dict(backbone_options, img_height=native)
+            required = ('G_EMA', 'E_EMA', 'B')
+        else:
+            required = ('Generator', 'StyleEncoder', 'StyleBackbone' if uses_style_backbone else 'SharedBackbone')
+        self.generator = networks.Generator(**model['GenModel'])
+        self.encoder = module.StyleEncoder(**model['EncModel'])
+        self.backbone = getattr(module, 'StyleBackbone' if uses_style_backbone else 'SharedBackbone')(**backbone_options)
         for network, key in zip((self.generator, self.encoder, self.backbone), required):
             network.load_state_dict(checkpoint[key], strict=True)
             network.to(self.device, dtype=torch.float32).eval().requires_grad_(False)
         del checkpoint
         self.noise_dim = model['GenModel']['style_dim'] - model['EncModel']['style_dim']
-        if self.noise_dim != (0 if family == 'higanplus' else 32):
+        if self.noise_dim != (0 if uses_style_backbone else 32):
             raise ValueError('unexpected native latent dimensions')
         self.metadata.update(native_height=native, char_width=self.char_width,
                              latent_policy='mean_style' if not self.noise_dim else 'cpu_seeded_noise32_then_mean_style96',
@@ -162,11 +180,17 @@ class GeneratorAdapter:
             raise ValueError('reference and target text must be nonempty')
         if any(c not in self.alphabet for c in target_text):
             raise ValueError('target contains unsupported model alphabet character')
-        # Native style geometry is transcript-length based, not source width.
-        # All symbols share the same encoder geometry floor (no special cases).
-        width = max(len(reference_text) * self.char_width, int(self.cfg['encoder_min_width']))
+        # MAIN is trained on original-width references (org_imgs). Do not
+        # warp them to transcript-derived widths or condition on that text.
+        if self.cfg['model'] == 'main':
+            if reference_uint8.shape[0] != self.native_height:
+                raise ValueError('MAIN expects a native32 reference')
+            width = reference_uint8.shape[1]
+        else:
+            width = max(len(reference_text) * self.char_width, int(self.cfg['encoder_min_width']))
         image = torch.from_numpy(reference_uint8.copy()).float()[None, None] / 127.5 - 1
-        image = functional.interpolate(image, size=(self.native_height, width), mode='bilinear', align_corners=False)
+        if image.shape[-2:] != (self.native_height, width):
+            image = functional.interpolate(image, size=(self.native_height, width), mode='bilinear', align_corners=False)
         if self.cfg['internal_polarity'] == 'black':
             image = -image
         image = image.to(self.device)

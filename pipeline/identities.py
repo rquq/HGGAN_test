@@ -3,6 +3,7 @@ from pathlib import Path
 
 from .common import read_json, sha256_file, bind_identity, digest_json, atomic_json
 from .config import ocr_settings
+from generators import ACTIVE_MODELS
 
 
 def bind_ocr_identity(directory, payload):
@@ -30,7 +31,7 @@ def bind_ocr_identity(directory, payload):
 
 
 def ocr_payload(cfg, arm, seed, prepared, synthetic_metadata=None):
-    if arm not in {'real_only','spis_gan','fw_gan','higanplus'}:
+    if arm not in ('real_only', *ACTIVE_MODELS):
         raise ValueError(f'unknown OCR arm: {arm}')
     prepared=Path(prepared)
     options=ocr_settings(cfg)

@@ -27,6 +27,7 @@ from .data import IAMCorpus
 from .manifest import prepare
 from .metrics import RecognitionMetrics, SCORE_NAMES
 from .tracking import tracking_run
+from generators import ACTIVE_MODELS
 
 
 def settings(cfg):
@@ -419,7 +420,7 @@ def _latest(directory):
 
 
 def _job(cfg, arm, seed):
-    if arm not in {'real_only', 'spis_gan', 'fw_gan', 'higanplus'}:
+    if arm not in ('real_only', *ACTIVE_MODELS):
         raise ValueError(f'unknown OCR arm: {arm}')
     options = settings(cfg)
     prepared = prepare(cfg)
