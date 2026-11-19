@@ -16,6 +16,9 @@ class TrackingRun:
     def log(self, values, step=None):
         self._run.log(values, step=step)
 
+    def set_summary(self, values):
+        self._run.summary.update(values)
+
 
 @contextmanager
 def tracking_run(cfg, directory, stage, arm, seed, metadata=None):
@@ -38,12 +41,15 @@ def tracking_run(cfg, directory, stage, arm, seed, metadata=None):
     run_id = digest_json(dict(stage=stage, arm=arm, seed=int(seed), metadata=safe))[:24]
     atomic_json(directory / f'wandb_{stage}.json',
                 dict(id=run_id, mode=mode, stage=stage, arm=arm, seed=int(seed)))
+    ocr_stage = stage in {'train', 'evaluate'}
+    recipe = cfg.get('ocr_run_name') if ocr_stage else None
+    name = f'{stage}-{arm}-{seed}' + (f'-{recipe}' if recipe else '')
     run = wandb.init(project=options.get('project', 'iam-ocr-augmentation'),
                      entity=options.get('entity'), mode=mode, id=run_id,
                      resume='allow' if mode == 'online' else None,
-                     name=f'{stage}-{arm}-{seed}', dir=str(directory),
+                     name=name, dir=str(directory),
                      config=dict(stage=stage, arm=arm, seed=int(seed), **safe),
-                     settings=wandb.Settings(console='auto'))
+                     settings=wandb.Settings(console='off' if ocr_stage else 'auto'))
     try:
         yield TrackingRun(run, run_id)
     except BaseException:

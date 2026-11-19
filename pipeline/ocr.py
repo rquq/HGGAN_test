@@ -18,14 +18,14 @@ import torch
 from transformers import (GenerationConfig, Seq2SeqTrainer, Seq2SeqTrainingArguments,
                           TrainerCallback, TrainerState, TrOCRProcessor,
                           VisionEncoderDecoderModel, set_seed)
-from transformers.trainer_callback import ExportableState
+from transformers.trainer_callback import ExportableState, PrinterCallback
 
 from .common import atomic_json, bind_identity, read_json, sha256_file
 from .config import ocr_settings, ocr_horizon, ocr_directory
 from .identities import ocr_payload, bind_ocr_identity
 from .data import IAMCorpus
 from .manifest import prepare
-from .metrics import RecognitionMetrics
+from .metrics import RecognitionMetrics, SCORE_NAMES
 from .tracking import tracking_run
 
 
@@ -147,7 +147,9 @@ class StreamingValidation:
             return {}
         if self.cursor != len(self.texts):
             raise ValueError('validation prediction order/count mismatch')
-        result = dict(self.metrics.compute(), length_limit_hits=self.limit_hits)
+        scores = self.metrics.compute()
+        result = {name: scores[name] for name in (*SCORE_NAMES, 'char_edits', 'target_chars')}
+        result['length_limit_hits'] = self.limit_hits
         self.reset()
         return result
 
@@ -204,13 +206,21 @@ class ReceiptCallback(TrainerCallback):
         self.directory, self.tracking = Path(directory), tracking
 
     def on_log(self, args, state, control, logs, **kwargs):
-        values = dict(logs)
-        if 'loss' in logs and torch.cuda.is_available() and not args.use_cpu:
-            values.update(gpu_peak_allocated_gib=torch.cuda.max_memory_allocated()/2**30,
-                          gpu_reserved_gib=torch.cuda.memory_reserved()/2**30)
+        if 'loss' in logs:
+            values = {'train/loss': logs['loss']}
+            if 'learning_rate' in logs:
+                values['train/lr'] = logs['learning_rate']
+            memory = ''
+            if not args.use_cpu and torch.cuda.is_available():
+                memory = f' peak_allocated={torch.cuda.max_memory_allocated()/2**30:.2f} GiB'
             print(f'OCR update {state.global_step}/{state.max_steps} epoch={state.epoch:.2f} '
-                  f'loss={logs["loss"]:.4f} lr={logs.get("learning_rate",0):.3g} '
-                  f'peak_allocated={values["gpu_peak_allocated_gib"]:.2f} GiB',flush=True)
+                  f'loss={logs["loss"]:.4f} lr={logs.get("learning_rate",0):.3g}{memory}',flush=True)
+        elif all(f'eval_{name}' in logs for name in SCORE_NAMES):
+            values = {f'val/{name}_pct': 100*logs[f'eval_{name}'] for name in SCORE_NAMES}
+            scores = ' '.join(f'{name.upper()}={values[f"val/{name}_pct"]:.3f}%' for name in SCORE_NAMES)
+            print(f'OCR validation epoch={state.epoch:.2f}: {scores}',flush=True)
+        else:
+            return
         self.tracking.log(values, step=state.global_step)
 
     def on_save(self, args, state, control, **kwargs):
@@ -497,8 +507,7 @@ def train(cfg, arm, seed, device='cpu', time_budget_seconds=None):
         raise ValueError('checkpoint exceeds configured optimizer budget')
     prior = directory / 'status.json'
     if prior.exists() and read_json(prior).get('status') == 'complete':
-        _verify_final(directory, identity)
-        return read_json(prior)
+        return dict(read_json(prior), metrics=_verify_final(directory, identity))
     data = []
     try:
         with tracking_run(cfg, directory, 'train', arm, seed, {'identity':identity}) as tracking:
@@ -523,6 +532,7 @@ def train(cfg, arm, seed, device='cpu', time_budget_seconds=None):
                 data_collator=partial(collate,pad_token_id=processor.tokenizer.pad_token_id),
                 compute_metrics=StreamingValidation(processor,validation.texts,options['max_new_tokens']),
                 callbacks=[BestHistoryCallback(),budget,ReceiptCallback(directory,tracking)])
+            trainer.remove_callback(PrinterCallback)
             if step < options['max_steps']:
                 try:
                     trainer.train(resume_from_checkpoint=str(latest) if latest else None)
@@ -584,11 +594,16 @@ def train(cfg, arm, seed, device='cpu', time_budget_seconds=None):
             dataset.close()
 
 
+def _reported_scores(scores):
+    return {key: value for key, value in scores.items()
+            if key not in ('word_accuracy', 'word_accuracy_percent')}
+
+
 def _verify_final(directory, identity):
     receipt = read_json(directory/'test_metrics.json')
     if receipt['identity_sha256'] != identity or sha256_file(directory/'test_predictions.jsonl') != receipt['predictions_sha256']:
         raise ValueError('final test artifact identity/hash mismatch')
-    return receipt
+    return _reported_scores(receipt)
 
 
 def _evaluate(cfg,arm,seed,device,options,directory,identity,deadline,tracking):
@@ -634,11 +649,11 @@ def _evaluate(cfg,arm,seed,device,options,directory,identity,deadline,tracking):
         # Full supplied test completed. No partial metrics/predictions published.
         prediction_path=directory/'test_predictions.jsonl'
         os.replace(temporary,prediction_path)
-        result=dict(metrics.compute(),identity_sha256=identity,selection='validation_cer_wer',
+        result=dict(_reported_scores(metrics.compute()),identity_sha256=identity,selection='validation_cer_wer',
                     checkpoint=best.resolve().name,checkpoint_step=state['global_step'],
                     length_limit_hits=limit_hits,predictions_sha256=sha256_file(prediction_path))
         atomic_json(directory/'test_metrics.json',result)
-        tracking.log({'test/'+k:v for k,v in result.items() if isinstance(v,(int,float))})
+        tracking.set_summary({f'test/{name}_pct':result[f'{name}_percent'] for name in SCORE_NAMES})
         return _status(directory,identity,options['max_steps'],'complete',metrics=result)
     finally:
         dataset.close()

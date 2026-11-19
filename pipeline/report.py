@@ -9,6 +9,10 @@ from .common import atomic_json, digest_json, read_json, sha256_file
 from .config import ocr_settings, ocr_horizon, ocr_directory, ocr_arms
 from .identities import ocr_payload
 from .manifest import verify_prepared
+from .metrics import SCORE_NAMES
+
+
+SCORE_COLUMNS = tuple(f'{name}_percent' for name in SCORE_NAMES)
 
 
 def _receipt(path):
@@ -48,7 +52,7 @@ def _completed_metrics(cfg,arm,seed,directory,status):
     if (isinstance(step,bool) or not isinstance(step,int) or not 0<step<=horizon
             or metrics['checkpoint']!=f'checkpoint-{step}'):
         raise ValueError('invalid selected checkpoint receipt')
-    for key in ('cer_percent','ned_percent','wer_percent','word_accuracy_percent'):
+    for key in SCORE_COLUMNS:
         if isinstance(metrics[key],bool) or not isinstance(metrics[key],(int,float)) or not math.isfinite(metrics[key]):
             raise ValueError('invalid final metric')
     if metrics.get('samples')!=read_json(prepared/'metadata.json')['test_count']:
@@ -84,7 +88,7 @@ def report(cfg):
                 if row['status']=='complete':
                     try:
                         metrics,metadata=_completed_metrics(cfg,arm,int(seed),directory,status)
-                        for key in ['cer_percent','ned_percent','wer_percent','word_accuracy_percent','samples']:
+                        for key in (*SCORE_COLUMNS,'samples'):
                             row[key]=metrics[key]
                         row.update(selected_checkpoint=metrics['checkpoint'],selected_update=metrics['checkpoint_step'])
                     except (OSError,KeyError,ValueError,TypeError) as exc:
@@ -113,10 +117,10 @@ def report(cfg):
     for row in rows:
         if row['arm']!='real_only' and row['status']=='complete' and row['seed'] in controls:
             control=controls[row['seed']]
-            for key in ('cer','ned','wer','word_accuracy'):
+            for key in SCORE_NAMES:
                 row[key+'_delta_pp_vs_real_only']=row[key+'_percent']-control[key+'_percent']
     atomic_json(output/'results.json',dict(rows=rows))
-    keys=list(dict.fromkeys(key for row in rows for key in row))
+    keys=list(dict.fromkeys([*(key for row in rows for key in row), *SCORE_COLUMNS]))
     fd,temporary=tempfile.mkstemp(prefix='.results-',dir=output)
     try:
         with os.fdopen(fd,'w',encoding='utf-8',newline='') as stream:
@@ -133,8 +137,8 @@ def report(cfg):
             state.get('count',meta.get('count',0)),
             f'{meta.get("native_height","—")}→{meta.get("export_height","—")}',
             str(directory/'dataset.zip') if (directory/'dataset.zip').is_file() else '—']))
-    print('OCR RESULTS: arm | seed | status | step | CER% | NED% | WER% | word accuracy%')
+    print('OCR RESULTS: arm | seed | status | step | WER% | CER% | NED%')
     for row in rows:
-        print(' | '.join(str(row.get(k,'—')) for k in ['arm','seed','status','global_step',
-            'cer_percent','ned_percent','wer_percent','word_accuracy_percent']))
+        print(' | '.join('—' if row.get(k) is None else str(row[k])
+            for k in ('arm','seed','status','global_step',*SCORE_COLUMNS)))
     return dict(status='complete',rows=rows)

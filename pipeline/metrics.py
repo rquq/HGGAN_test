@@ -1,5 +1,7 @@
 """Literal corpus CER/WER and mean normalized edit distance (no CTC collapse)."""
 
+SCORE_NAMES = ('wer', 'cer', 'ned')
+
 
 def _distance(a, b):
     previous = list(range(len(b) + 1))
