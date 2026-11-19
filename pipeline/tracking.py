@@ -9,12 +9,21 @@ from pathlib import Path
 from .common import atomic_json, digest_json
 
 
+_OCR_UPDATE = 'ocr_update'
+
+
 class TrackingRun:
-    def __init__(self, run, run_id):
+    def __init__(self, run, run_id, *, ocr_training=False):
         self._run, self.id = run, run_id
+        self._ocr_training = ocr_training
 
     def log(self, values, step=None):
-        self._run.log(values, step=step)
+        if self._ocr_training and step is not None:
+            # A restored optimizer checkpoint can be behind the cloud run.
+            # Keep the true optimizer update as data, not W&B's append index.
+            self._run.log({**values, _OCR_UPDATE: step})
+        else:
+            self._run.log(values, step=step)
 
     def set_summary(self, values):
         self._run.summary.update(values)
@@ -28,6 +37,7 @@ def tracking_run(cfg, directory, stage, arm, seed, metadata=None):
     generation_seed, {'identity': content_sha}). Enter around generate(), not
     after adapter construction. Online resumes the same job; offline retains the
     stable ID in separate local invocation records for subsequent wandb sync.
+    For OCR training, `step` is the optimizer-update coordinate, not W&B's step.
     """
     import wandb
     options = cfg.get('wandb', {})
@@ -51,7 +61,14 @@ def tracking_run(cfg, directory, stage, arm, seed, metadata=None):
                      config=dict(stage=stage, arm=arm, seed=int(seed), **safe),
                      settings=wandb.Settings(console='off' if ocr_stage else 'auto'))
     try:
-        yield TrackingRun(run, run_id)
+        if stage == 'train' and mode != 'disabled':
+            run.define_metric(_OCR_UPDATE, hidden=True)
+            run.define_metric('train/*', step_metric=_OCR_UPDATE)
+            run.define_metric('val/*', step_metric=_OCR_UPDATE)
+        if ocr_stage:
+            url = run.url if mode == 'online' else None
+            print(f'W&B {name}: {mode}' + (f' | {url}' if url else ''), flush=True)
+        yield TrackingRun(run, run_id, ocr_training=stage == 'train')
     except BaseException:
         run.finish(exit_code=1)
         raise
