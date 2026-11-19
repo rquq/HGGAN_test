@@ -606,24 +606,26 @@ class AdversarialModel(BaseModel):
 
         real_imgs, real_img_lens = batch['style_imgs'].to(device, non_blocking=True), batch['style_img_lens'].to(device, non_blocking=True)
         real_lbs, real_lb_lens = batch['lbs'].to(device, non_blocking=True), batch['lb_lens'].to(device, non_blocking=True)
+        batch_size = real_lbs.size(0)
 
         with torch.no_grad():
             self.eval_z.sample_()
+            eval_z_in = self.eval_z[:batch_size]
             recn_imgs = None
             if 'E' in self.models:
                 enc_z = self.models.E(real_imgs, real_img_lens, self.models.B)
                 recn_imgs = self.models.G(enc_z, real_lbs, real_lb_lens)
 
-            fake_real_imgs = self.models.G(self.eval_z, real_lbs, real_lb_lens)
+            fake_real_imgs = self.models.G(eval_z_in, real_lbs, real_lb_lens)
 
             self.eval_y.sample_()
-            sampled_words = idx_to_words(self.eval_y, self.lexicon,
+            sampled_words = idx_to_words(self.eval_y[:batch_size], self.lexicon, 0,
                                          self.opt.training.capitalize_ratio,
-                                         self.opt.training.blank_ratio)
-            sampled_words[-2] = sampled_words[-1]
+                                         self.opt.training.blank_ratio,
+                                         sort=False)
             fake_lbs, fake_lb_lens = self.label_converter.encode(sampled_words)
             fake_lbs, fake_lb_lens = fake_lbs.to(device), fake_lb_lens.to(device)
-            fake_imgs = self.models.G(self.eval_z, fake_lbs, fake_lb_lens)
+            fake_imgs = self.models.G(eval_z_in, fake_lbs, fake_lb_lens)
             style_imgs = self.models.G(enc_z, fake_lbs, fake_lb_lens)
 
             max_img_len = max([real_imgs.size(-1), fake_real_imgs.size(-1), fake_imgs.size(-1)])
@@ -1333,7 +1335,8 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                     self.y.sample_()
                     sampled_words = idx_to_words(self.y, self.lexicon, max_label_len,
                                                  self.opt.training.capitalize_ratio,
-                                                 self.opt.training.blank_ratio)
+                                                 self.opt.training.blank_ratio,
+                                                 sort=False)
                     fake_lbs, fake_lb_lens = self.label_converter.encode(sampled_words, max_label_len)
                     fake_lbs, fake_lb_lens = fake_lbs.to(device).detach(), fake_lb_lens.to(device).detach()
 
@@ -1405,7 +1408,7 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                     sampled_words = idx_to_words(self.y, self.lexicon, max_label_len,
                                                  self.opt.training.capitalize_ratio,
                                                  self.opt.training.blank_ratio,
-                                                 sort=True)
+                                                 sort=False)
 
                     fake_lbs, fake_lb_lens = self.label_converter.encode(sampled_words, max_label_len)
                     fake_lbs, fake_lb_lens = fake_lbs.to(device).detach(), fake_lb_lens.to(device).detach()
