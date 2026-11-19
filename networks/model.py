@@ -951,16 +951,18 @@ class AdversarialModel(BaseModel):
         batchB = next(iter(self.tst_loader2))
         batch = Hdf5Dataset.merge_batch(batchA, batchB, device)
 
-        real_imgs, real_img_lens = batch['style_imgs'], batch['style_img_lens']
         style_refs, style_ref_lens = batch['org_imgs'], batch['org_img_lens']
+        # Show the exact image E received, not the transcript-width warped D input.
+        real_imgs = style_refs
         real_lbs, real_lb_lens = batch['lbs'], batch['lb_lens']
+        batch_size = real_lbs.size(0)
         use_ema = getattr(self, 'use_ema', False)
         generator = self.models_ema.G if use_ema else self.models.G
         encoder = self.models_ema.E if use_ema else self.models.E
 
         with torch.no_grad():
             self.eval_z.sample_()
-            eval_z_in = center_style_prior(self.eval_z)
+            eval_z_in = center_style_prior(self.eval_z[:batch_size])
 
             recn_imgs = None
             if 'E' in self.models:
@@ -975,13 +977,13 @@ class AdversarialModel(BaseModel):
             fake_real_imgs = generator(eval_z_in, real_lbs, real_lb_lens)
 
             self.eval_y.sample_()
-            sampled_words = idx_to_words(self.eval_y, self.lexicon, 0,
+            sampled_words = idx_to_words(self.eval_y[:batch_size], self.lexicon, 0,
                                          self.opt.training.capitalize_ratio,
                                          self.opt.training.blank_ratio,
+                                         sort=False,
                                          rare_ratio=0.0,
                                          rare_lexicon=self.rare_lexicon,
                                          uppercase_ratio=float(getattr(self.opt.training, 'uppercase_ratio', 0.2)))
-            sampled_words[-2] = sampled_words[-1]
             fake_lbs, fake_lb_lens = self.label_converter.encode(sampled_words)
             fake_lbs, fake_lb_lens = fake_lbs.to(device), fake_lb_lens.to(device)
             fake_imgs = generator(eval_z_in, fake_lbs, fake_lb_lens)
@@ -1003,7 +1005,7 @@ class AdversarialModel(BaseModel):
                         if recn_imgs is not None else None
             style_imgs = F.pad(style_imgs, [0, max_img_len - style_imgs.size(-1), 0, 0], value=-1.)
 
-            real_words = self.label_converter.decode(real_lbs, real_lb_lens)
+            real_words = self.label_converter.decode_labels(real_lbs, real_lb_lens)
             real_labels = words_to_images(real_words, *img_shape)
             rand_labels = words_to_images(sampled_words, *img_shape)
 
@@ -1022,7 +1024,10 @@ class AdversarialModel(BaseModel):
 
                 import wandb as _wandb
                 if _wandb.run:
-                    _wandb.log({'samples/generated': _wandb.Image(res_img, caption=f'iter {iteration_done}')},
+                    caption = (f'iter {iteration_done} | ref text / ref image / '
+                               f'{"same text + ref style / " if recn_imgs is not None else ""}'
+                               'same text + prior / new text + prior / new text + ref style / target text')
+                    _wandb.log({'samples/generated': _wandb.Image(res_img, caption=caption)},
                                step=iteration_done, commit=False)
             except RuntimeError as e:
                 self.print(e)
@@ -2127,6 +2132,9 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                     sampled_words = idx_to_words(self.y, self.lexicon, max_label_len,
                                                  self.opt.training.capitalize_ratio,
                                                  self.opt.training.blank_ratio,
+                                                 # Reference batches are already sorted by width.
+                                                 # Never couple target and reference length ranks.
+                                                 sort=False,
                                                  rare_ratio=rare_word_ratio,
                                                  rare_lexicon=self.rare_lexicon,
                                                  uppercase_ratio=float(getattr(opt.training, 'uppercase_ratio', 0.2)))
@@ -2256,7 +2264,7 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                     sampled_words = idx_to_words(self.y, self.lexicon, max_label_len,
                                                  self.opt.training.capitalize_ratio,
                                                  self.opt.training.blank_ratio,
-                                                 sort=True,
+                                                 sort=False,
                                                  rare_ratio=rare_word_ratio,
                                                  rare_lexicon=self.rare_lexicon,
                                                  uppercase_ratio=float(getattr(opt.training, 'uppercase_ratio', 0.2)))
