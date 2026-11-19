@@ -47,7 +47,7 @@ def download_checkpoint(name, cache, manifest=None):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--model', required=True, choices=['spis_gan','higanplus','fw_gan'])
+    parser.add_argument('--model', required=True, choices=['spis_gan','higanplus','fw_gan','main'])
     parser.add_argument('--cache', required=True)
     parser.add_argument('--manifest')
     args = parser.parse_args()

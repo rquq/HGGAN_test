@@ -1,4 +1,9 @@
 {
+  "main": {
+    "filename": "last_kid_0.072698_main.pth",
+    "url": "https://github.com/rquq/HGGAN_test/releases/download/ocr-benchmark-weights-v1/last_kid_0.072698_main.pth",
+    "sha256": "052465338af6ea5e79763fd38fea27883cb3ed14ed20ac6589627066d8c9226c"
+  },
   "spis_gan": {
     "filename": "bestIAM.pth",
     "url": "https://github.com/rquq/HGGAN_test/releases/download/ocr-benchmark-weights-v1/bestIAM.pth",
