@@ -68,8 +68,8 @@ training:
   lambda_ctc_rand_final: 1.0
   ctc_rand_decay_start_epoch: 10
   ctc_rand_decay_end_epoch: 20
-  lambda_ctc_style: 0.5
-  lambda_ctc_style_final: 0.5
+  lambda_ctc_style: 1.0
+  lambda_ctc_style_final: 1.0
   ctc_style_decay_start_epoch: 8
   ctc_style_decay_end_epoch: 28
 

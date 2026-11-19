@@ -873,13 +873,15 @@ class AdversarialModel(BaseModel):
         # distribution and gives genuinely rare glyphs real image/text pairs.
         self.rare_lexicon = []
         if all(hasattr(dataset, name) for name in ('lbs', 'lb_seek_idxs', 'lb_lens')):
+            seen_rare = set()
             for seek, length in zip(dataset.lb_seek_idxs, dataset.lb_lens):
                 raw = dataset.lbs[int(seek): int(seek) + int(length)]
                 try:
                     word = ''.join(chr(int(char)) for char in raw)
                 except (TypeError, ValueError):
                     word = ''
-                if word:
+                if word and word not in seen_rare:
+                    seen_rare.add(word)
                     self.rare_lexicon.append(word)
         if not self.rare_lexicon:
             self.rare_lexicon = self.lexicon
@@ -1818,6 +1820,10 @@ class GlobalLocalAdversarialModel(AdversarialModel):
         }
         if distribution_weight > 0:
             wandb_log['loss/g_distribution'] = meter_vals['g_distribution']
+        if 'enc_z_rms' in meter_vals:
+            wandb_log['style/enc_z_rms'] = meter_vals['enc_z_rms']
+        if 'enc_mu_abs_max' in meter_vals:
+            wandb_log['style/enc_mu_abs_max'] = meter_vals['enc_mu_abs_max']
         if lr_p is None:
             for key in ('train/lr_p', 'loss/g_adv_patch', 'loss/d_real_patch', 'loss/d_fake_patch'):
                 wandb_log.pop(key, None)
@@ -1985,6 +1991,7 @@ class GlobalLocalAdversarialModel(AdversarialModel):
             'd_real', 'd_fake', 'd_real_patch', 'd_fake_patch',
             'g_adv_global', 'g_adv_patch', 'g_ctc_rand', 'g_ctc_style',
             'g_info', 'g_content_adv',
+            'enc_z_rms', 'enc_mu_abs_max',
         ])
         device = self.device
 
@@ -2382,8 +2389,10 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                             [fake_lengths[i].clamp(1, f.size(-1)) for i, f in zip(encoder.feature_indices, style_img_feats)],
                         )
 
+                    # KLloss already computes the mean across style dimensions;
+                    # do not divide again by the legacy multi-token denominator.
                     kl_loss = (
-                        KLloss(mu[:, :1], logvar[:, :1]) / style_loss_normalization_tokens
+                        KLloss(mu[:, :1], logvar[:, :1])
                         if self.vae_mode else torch.tensor(0.0, device=self.device)
                     )
 
@@ -2431,6 +2440,8 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                         'g_content_adv': content_adv_loss,
                         'g_distribution': g_distribution,
                         'g_kl': g_kl,
+                        'enc_z_rms': enc_z.detach().square().mean().sqrt(),
+                        'enc_mu_abs_max': real_style_for_loss.detach().mean(dim=0).abs().max(),
                     })
                     self.optimizers.G.step()
                     if self.use_ema:
