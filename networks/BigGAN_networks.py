@@ -74,8 +74,7 @@ class Generator(nn.Module):
                  init='ortho', G_param='SN', norm_style='bn', bn_linear='embed', input_nc=3,
                  embed_pad_idx=0, embed_max_norm=1.0,
                  fusion_nhead=4, fusion_attn_dim=128, fusion_ffn_dim=None,
-                 fusion_residual_init=0.25,
-                 block_type='style_wave', wave_levels=2, wave_residual_init=0.1):
+                 fusion_residual_init=0.25):
         super(Generator, self).__init__()
         dim_z = style_dim
         self.style_dim = style_dim
@@ -131,23 +130,12 @@ class Generator(nn.Module):
                                                 kernel_size=3, padding=1,
                                                 num_svs=num_G_SVs, num_itrs=num_G_SV_itrs,
                                                 eps=self.SN_eps)
-            self.which_depthwise = functools.partial(layers.SNDepthwiseConv2d,
-                                                     eps=self.SN_eps)
             self.which_linear = functools.partial(layers.SNLinear,
                                                   num_svs=num_G_SVs, num_itrs=num_G_SV_itrs,
                                                   eps=self.SN_eps)
         else:
             self.which_conv = functools.partial(nn.Conv2d, kernel_size=3, padding=1)
-            self.which_depthwise = lambda channels, **kw: nn.Conv2d(
-                channels, channels, groups=channels, **kw
-            )
             self.which_linear = nn.Linear
-
-        self.block_type = str(block_type).lower()
-        if self.block_type not in ('style_wave', 'classic'):
-            raise ValueError("GenModel.block_type must be 'style_wave' or 'classic'")
-        self.wave_levels = int(wave_levels)
-        self.wave_residual_init = float(wave_residual_init)
 
         if self.bn_linear=='SN':
             bn_linear = functools.partial(self.which_linear, bias=False)
@@ -177,38 +165,16 @@ class Generator(nn.Module):
         self.blocks = []
         for index in range(len(self.arch['out_channels'])):
             upsample_scale = self.arch['upsample'][index]
-            upsample_fn = (
-                functools.partial(F.interpolate, scale_factor=upsample_scale)
-                if upsample_scale is not None else None
-            )
-            if self.block_type == 'style_wave':
-                stage_res = self.arch['resolution'][index]
-                stage_levels = 1 if stage_res < 16 else self.wave_levels
-                block = layers.StyleWaveGBlock(
-                    in_channels=self.arch['in_channels'][index],
-                    out_channels=self.arch['out_channels'][index],
-                    style_dim=self.z_chunk_size,
-                    which_conv1=self.which_conv,
-                    which_conv2=self.which_conv,
-                    which_bn=self.which_bn,
-                    which_depthwise=self.which_depthwise,
-                    which_linear=self.which_linear,
-                    activation=self.activation,
-                    upsample=upsample_fn,
-                    wt_levels=stage_levels,
-                    wave_residual_init=self.wave_residual_init,
-                )
-            else:
-                block = layers.GBlock(
-                    in_channels=self.arch['in_channels'][index],
-                    out_channels=self.arch['out_channels'][index],
-                    which_conv1=self.which_conv,
-                    which_conv2=self.which_conv,
-                    which_bn=self.which_bn,
-                    activation=self.activation,
-                    upsample=upsample_fn,
-                )
-            self.blocks += [[block]]
+            self.blocks += [[layers.GBlock(in_channels=self.arch['in_channels'][index],
+                                           out_channels=self.arch['out_channels'][index],
+                                           which_conv1=self.which_conv,
+                                           which_conv2=self.which_conv,
+                                           which_bn=self.which_bn,
+                                           activation=self.activation,
+                                           upsample=(functools.partial(
+                                               F.interpolate,
+                                               scale_factor=upsample_scale,
+                                           ) if upsample_scale is not None else None))]]
 
             if self.arch['attention'][self.arch['resolution'][index]]:
                 self.blocks[-1] += [layers.Attention(self.arch['out_channels'][index], self.which_conv)]
@@ -227,13 +193,9 @@ class Generator(nn.Module):
         # Initialize weights. Optionally skip init for testing.
         if self.init != 'none':
             init_weights(self, self.init)
-        # General initialization touches fusion/wavelet Linear weights; restore
+        # General initialization touches fusion Linear weights; restore its
         # identity-like nonzero residual handoffs afterwards.
         self.content_context.reset_stability_parameters()
-        for blocklist in self.blocks:
-            for block in blocklist:
-                if hasattr(block, 'reset_stability_parameters'):
-                    block.reset_stability_parameters()
 
     def forward(self, z, y, y_lens):
         # Distribution is a reusable sampler container, not an activation

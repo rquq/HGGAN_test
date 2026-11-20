@@ -81,11 +81,8 @@ EncModel:
   init: none
 
 GenModel:
-  # Single global conditioning path + WaveStroke generator block
+  # Single global conditioning path
   style_dim: 64
-  block_type: style_wave
-  wave_levels: 2
-  wave_residual_init: 0.1
 
   # Content geometry and convolutional generator
   G_ch: 64
