@@ -519,6 +519,185 @@ class GBlock(nn.Module):
         return _mask_valid_width(h + x, valid_lens, mask_cache)
 
 
+def _make_haar_2d_kernel():
+    """Orthonormal 2x2 Haar DWT filter bank: (LL, LH, HL, HH)."""
+    ll = torch.tensor([[0.5, 0.5], [0.5, 0.5]], dtype=torch.float32)
+    lh = torch.tensor([[0.5, 0.5], [-0.5, -0.5]], dtype=torch.float32)
+    hl = torch.tensor([[0.5, -0.5], [0.5, -0.5]], dtype=torch.float32)
+    hh = torch.tensor([[0.5, -0.5], [-0.5, 0.5]], dtype=torch.float32)
+    return torch.stack((ll, lh, hl, hh), dim=0).unsqueeze(1)  # (4, 1, 2, 2)
+
+
+def haar_dwt2d(x, haar_kernel):
+    """2D orthonormal Haar DWT supporting odd spatial dimensions via right/bottom zero pad."""
+    b, c, h, w = x.shape
+    pad_h = h & 1
+    pad_w = w & 1
+    if pad_h or pad_w:
+        x = F.pad(x, (0, pad_w, 0, pad_h), mode='constant', value=0.0)
+    weight = haar_kernel.to(device=x.device, dtype=x.dtype).repeat(c, 1, 1, 1)
+    y = F.conv2d(x, weight, stride=2, groups=c)
+    return y.view(b, c, 4, y.size(-2), y.size(-1))
+
+
+def haar_iwt2d(subbands, haar_kernel, out_hw):
+    """Inverse 2D orthonormal Haar DWT restoring exact target (H, W)."""
+    b, c, _, hw, ww = subbands.shape
+    weight = haar_kernel.to(device=subbands.device, dtype=subbands.dtype).repeat(c, 1, 1, 1)
+    x = F.conv_transpose2d(subbands.reshape(b, 4 * c, hw, ww), weight, stride=2, groups=c)
+    return x[:, :, :out_hw[0], :out_hw[1]]
+
+
+class StyleWaveletStrokeMixer(nn.Module):
+    """Style-modulated multi-level Haar wavelet + gated CNN stroke mixer.
+
+    Combines multi-scale Haar wavelet convolutions (WTConv, ECCV 2024),
+    gated CNN multiplicative fusion (MambaOut, CVPR 2025), and per-stage
+    style subband modulation over (LL, LH, HL, HH) so writer style directly
+    steers horizontal, vertical, diagonal, and structural stroke energy while
+    preserving exact valid-width padding invariance.
+    """
+
+    def __init__(self, channels, style_dim, wt_levels=2,
+                 which_conv=SNConv2d, which_depthwise=SNDepthwiseConv2d,
+                 which_linear=SNLinear, residual_init=0.1):
+        super().__init__()
+        if wt_levels < 1:
+            raise ValueError('wt_levels must be at least 1')
+        self.channels = int(channels)
+        self.style_dim = int(style_dim)
+        self.wt_levels = int(wt_levels)
+        self.residual_init = float(residual_init)
+
+        self.register_buffer('haar_kernel', _make_haar_2d_kernel())
+        self.wave_in = which_conv(channels, channels, kernel_size=1, padding=0)
+        self.gate_proj = which_conv(channels, channels, kernel_size=1, padding=0)
+        self.wave_convs = nn.ModuleList([
+            which_depthwise(4 * channels, kernel_size=3, padding=1)
+            for _ in range(self.wt_levels)
+        ])
+        self.style_band_gates = nn.ModuleList([
+            which_linear(style_dim, 4 * channels)
+            for _ in range(self.wt_levels)
+        ])
+        self.out_proj = which_conv(channels, channels, kernel_size=1, padding=0)
+        self.residual_scale = nn.Parameter(
+            torch.full((1, channels, 1, 1), self.residual_init)
+        )
+
+    def reset_stability_parameters(self):
+        with torch.no_grad():
+            self.residual_scale.fill_(self.residual_init)
+            for gate in self.style_band_gates:
+                if gate.bias is not None:
+                    gate.bias.zero_()
+
+    def forward(self, x, y, valid_lens=None, mask_cache=None):
+        x_masked = _mask_valid_width(x, valid_lens, mask_cache)
+        gate = F.silu(self.gate_proj(x_masked))
+        curr_ll = _mask_valid_width(self.wave_in(x_masked), valid_lens, mask_cache)
+        curr_lens = valid_lens
+
+        ll_outputs = []
+        high_outputs = []
+        shapes = []
+        lens_stack = []
+
+        for level in range(self.wt_levels):
+            if curr_ll.size(-2) < 2 or curr_ll.size(-1) < 2:
+                break
+            shapes.append((curr_ll.size(-2), curr_ll.size(-1)))
+            lens_stack.append(curr_lens)
+            subbands = haar_dwt2d(curr_ll, self.haar_kernel)
+            next_lens = (
+                torch.div(curr_lens + 1, 2, rounding_mode='floor')
+                if curr_lens is not None else None
+            )
+            b, c, _, hw, ww = subbands.shape
+            flat = _mask_valid_width(subbands.reshape(b, 4 * c, hw, ww), next_lens)
+            conv_out = _mask_valid_width(self.wave_convs[level](flat), next_lens)
+            # Bounded per-subband style gain in (0.5, 1.5) over (LL, LH, HL, HH).
+            band_scale = (
+                1.0 + 0.5 * torch.tanh(self.style_band_gates[level](y))
+            ).view(b, 4 * c, 1, 1)
+            mod_out = (conv_out * band_scale).view(b, c, 4, hw, ww)
+            ll_outputs.append(mod_out[:, :, 0])
+            high_outputs.append(mod_out[:, :, 1:])
+            curr_ll = _mask_valid_width(subbands[:, :, 0], next_lens)
+            curr_lens = next_lens
+
+        reconstructed = None
+        for level in reversed(range(len(ll_outputs))):
+            ll = (
+                ll_outputs[level]
+                if reconstructed is None else (ll_outputs[level] + reconstructed)
+            )
+            combined = torch.cat((ll.unsqueeze(2), high_outputs[level]), dim=2)
+            reconstructed = haar_iwt2d(combined, self.haar_kernel, shapes[level])
+            reconstructed = _mask_valid_width(reconstructed, lens_stack[level])
+
+        wave_feat = curr_ll if reconstructed is None else reconstructed
+        mixed = self.out_proj(
+            _mask_valid_width(wave_feat * gate, valid_lens, mask_cache)
+        )
+        return _mask_valid_width(x_masked + self.residual_scale * mixed, valid_lens, mask_cache)
+
+
+class StyleWaveGBlock(GBlock):
+    """WaveStroke Generator block: BigGAN CBN residual + StyleWaveletStrokeMixer."""
+
+    def __init__(self, in_channels, out_channels, style_dim,
+                 which_conv1=nn.Conv2d, which_conv2=nn.Conv2d, which_bn=bn,
+                 which_depthwise=SNDepthwiseConv2d, which_linear=SNLinear,
+                 activation=None, upsample=None, wt_levels=2,
+                 wave_residual_init=0.1):
+        super().__init__(
+            in_channels=in_channels,
+            out_channels=out_channels,
+            which_conv1=which_conv1,
+            which_conv2=which_conv2,
+            which_bn=which_bn,
+            activation=activation,
+            upsample=upsample,
+        )
+        self.wave_mixer = StyleWaveletStrokeMixer(
+            channels=out_channels,
+            style_dim=style_dim,
+            wt_levels=wt_levels,
+            which_conv=which_conv2,
+            which_depthwise=which_depthwise,
+            which_linear=which_linear,
+            residual_init=wave_residual_init,
+        )
+
+    def reset_stability_parameters(self):
+        self.wave_mixer.reset_stability_parameters()
+
+    def forward(self, x, y, x_lens=None, out_x_lens=None, **kwargs):
+        mask_cache = {}
+        h = self.activation(self.bn1(x, y, valid_lens=x_lens))
+        h = _mask_valid_width(h, x_lens, mask_cache)
+        x = _mask_valid_width(x, x_lens, mask_cache)
+        if self.upsample:
+            input_width = x.size(-1)
+            h = self.upsample(h)
+            x = self.upsample(x)
+            if out_x_lens is None and x_lens is not None:
+                out_x_lens = torch.div(
+                    x_lens * x.size(-1), input_width, rounding_mode='floor'
+                )
+        valid_lens = out_x_lens if out_x_lens is not None else x_lens
+        h = _mask_valid_width(h, valid_lens, mask_cache)
+        x = _mask_valid_width(x, valid_lens, mask_cache)
+        h = self.conv1(h)
+        h = self.activation(self.bn2(h, y, valid_lens=valid_lens))
+        h = self.wave_mixer(h, y, valid_lens=valid_lens, mask_cache=mask_cache)
+        h = self.conv2(h)
+        if self.learnable_sc:
+            x = self.conv_sc(x)
+        return _mask_valid_width(h + x, valid_lens, mask_cache)
+
+
 # Residual block for the discriminator
 class DBlock(nn.Module):
     def __init__(self, in_channels, out_channels, which_conv=SNConv2d, wide=True,
