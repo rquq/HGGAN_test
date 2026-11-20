@@ -13,11 +13,13 @@ char_width: 32
 
 training:
   lambda_distribution: 0.1
-  distribution_projections: 64
+  distribution_projections: 32
   distribution_samples: 64
   selection_metric: kid
-  lambda_recn: 0.0
-  lambda_recn_final: 0.0
+  lambda_recn: 10.0
+  lambda_recn_final: 2.5
+  recn_decay_start_epoch: 24
+  recn_decay_end_epoch: 42
   use_patch_discriminator: true
   # Data and initialization
   dset_split: ./data/image_samples/
@@ -38,7 +40,7 @@ training:
   uppercase_ratio: 0.5
   blank_ratio: 0.0
 
-  # Generation/style objectives; no paired pixel-copy target
+  # Generation/style objectives; paired pixel L1 active with decay
   vae_mode: true
 
   # Logging, evaluation, saving and exports
@@ -72,7 +74,7 @@ StyBackbone:
 
 EncModel:
   # Single global appearance latent
-  style_dim: 128
+  style_dim: 64
   in_dim: 256
 
   # Distribution-loss feature maps and initialization
@@ -80,7 +82,7 @@ EncModel:
 
 GenModel:
   # Single global conditioning path
-  style_dim: 128
+  style_dim: 64
 
   # Content geometry and convolutional generator
   G_ch: 64

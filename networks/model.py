@@ -1818,6 +1818,8 @@ class GlobalLocalAdversarialModel(AdversarialModel):
             'loss/d_real_patch': meter_vals['d_real_patch'],
             'loss/d_fake_patch': meter_vals['d_fake_patch'],
         }
+        if 'g_recn_raw' in meter_vals:
+            wandb_log['loss/g_reconstruction_raw'] = meter_vals['g_recn_raw']
         if distribution_weight > 0:
             wandb_log['loss/g_distribution'] = meter_vals['g_distribution']
         if 'enc_z_rms' in meter_vals:
@@ -1986,7 +1988,7 @@ class GlobalLocalAdversarialModel(AdversarialModel):
 
         self.averager_meters = AverageMeterManager([
             'g_total', 'd_total', 'g_adv', 'g_ctc', 'g_writer',
-            'g_recn', 'g_style', 'g_distribution', 'g_kl',
+            'g_recn', 'g_recn_raw', 'g_style', 'g_distribution', 'g_kl',
             'r1_loss',
             'd_real', 'd_fake', 'd_real_patch', 'd_fake_patch',
             'g_adv_global', 'g_adv_patch', 'g_ctc_rand', 'g_ctc_style',
@@ -2435,6 +2437,7 @@ class GlobalLocalAdversarialModel(AdversarialModel):
                         'g_ctc_style': fake_ctc_loss_style,
                         'g_writer': g_writer,
                         'g_recn': g_recn,
+                        'g_recn_raw': recn_loss,
                         'g_style': g_style,
                         'g_info': info_loss,
                         'g_content_adv': content_adv_loss,
