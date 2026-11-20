@@ -7,7 +7,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from . import BigGAN_layers as layers
-from .fusion import ContentContext, SpatialStyleRefinement
+from .fusion import ContentContext
 from networks.utils import init_weights, _len2mask
 
 # Architectures for G
@@ -64,7 +64,7 @@ class BlockSpecificStyleProjection(nn.Module):
 
 
 class Generator(nn.Module):
-    def __init__(self, G_ch=64, style_dim=32, embed_dim=120,
+    def __init__(self, G_ch=64, style_dim=128, embed_dim=120,
                  bottom_width=4, bottom_height=4, resolution=128,
                  G_kernel_size=3, G_attn='64', n_class=1000,
                  num_G_SVs=1, num_G_SV_itrs=1,
@@ -74,8 +74,7 @@ class Generator(nn.Module):
                  init='ortho', G_param='SN', norm_style='bn', bn_linear='embed', input_nc=3,
                  embed_pad_idx=0, embed_max_norm=1.0,
                  fusion_nhead=4, fusion_attn_dim=128, fusion_ffn_dim=None,
-                 fusion_residual_init=0.25, use_reference_memory=True,
-                 reference_memory_dim=64, reference_memory_height=4):
+                 fusion_residual_init=0.25):
         super(Generator, self).__init__()
         dim_z = style_dim
         self.style_dim = style_dim
@@ -158,14 +157,6 @@ class Generator(nn.Module):
             attn_dim=fusion_attn_dim, ffn_dim=fusion_ffn_dim,
             residual_init=fusion_residual_init,
         )
-        self.use_reference_memory = bool(use_reference_memory)
-        self.spatial_style = SpatialStyleRefinement(
-            self.arch['out_channels'][0], memory_dim=reference_memory_dim,
-            memory_height=reference_memory_height,
-            nhead=fusion_nhead, attn_dim=fusion_attn_dim,
-            residual_init=fusion_residual_init,
-        ) if self.use_reference_memory else None
-
         self.bssp = BlockSpecificStyleProjection(style_dim=self.style_dim, num_blocks=len(self.arch['in_channels']), style_chunk_size=self.z_chunk_size, which_linear=self.which_linear)
 
         # self.blocks is a doubly-nested list of modules, the outer loop intended
@@ -205,22 +196,16 @@ class Generator(nn.Module):
         # General initialization touches fusion Linear weights; restore its
         # identity-like nonzero residual handoffs afterwards.
         self.content_context.reset_stability_parameters()
-        if self.spatial_style is not None:
-            self.spatial_style.reset_stability_parameters()
 
-    def forward(self, z, y, y_lens, reference_memory=None, memory_valid_mask=None):
+    def forward(self, z, y, y_lens):
         # Distribution is a reusable sampler container, not an activation
         # type. Strip its Tensor subclass at the model boundary so its custom
         # .to() method cannot propagate through G and downstream networks.
         if type(z) is not torch.Tensor:
             z = z.as_subclass(torch.Tensor)
         if z.ndim != 3 or z.size(1) != 1 or z.size(2) != self.style_dim:
-            raise ValueError('DEV G expects exactly one global style token per image')
-        if self.spatial_style is None and (reference_memory is not None or memory_valid_mask is not None):
-            raise ValueError('Reference memory was passed to a generator with retrieval disabled')
-
-        # Global style conditions every GBlock. Reference evidence is retrieved
-        # only after the first block has formed an early spatial representation.
+            raise ValueError('G expects one global style code per image')
+        # One global code conditions every synthesis stage.
         ys = self.bssp(z[:, 0])
 
         content = self.text_embedding(y).float().to(y.device)
@@ -256,11 +241,6 @@ class Generator(nn.Module):
                         h, y=ys[index], x_lens=stage_input_lens,
                         out_x_lens=stage_output_lens,
                     )
-            if index == 0 and self.spatial_style is not None:
-                h = self.spatial_style(
-                    h, reference_memory, memory_valid_mask,
-                    x_lens=stage_output_lens,
-                )
             # Conditional normalization and convolutions can populate padded
             # columns. Clear them after each stage so those activations cannot
             # feed back across the valid word boundary in a later convolution.
@@ -299,7 +279,7 @@ class Generator(nn.Module):
     @property
     def fusion_scales(self):
         scales = self.content_context.residual_scales.flatten()
-        return torch.cat((scales, self.spatial_style.reference_scale)) if self.spatial_style is not None else scales
+        return scales
 
     def fusion_strength(self):
         return self.fusion_scales.mean()

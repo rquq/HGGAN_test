@@ -130,6 +130,7 @@ def write_results_table(logdir, opt, model=None, status='completed',
         ('batch_size', getattr(cfg_training, 'batch_size', '')),
         ('elapsed_seconds', elapsed),
         ('run_directory', os.path.abspath(logdir)),
+        ('selection_metric', getattr(cfg_training, 'selection_metric', 'fid')),
         ('eval_csv', os.path.join(os.path.abspath(logdir), 'eval_metrics.csv')),
     ]
     if model is not None:
@@ -145,6 +146,10 @@ def write_results_table(logdir, opt, model=None, status='completed',
     if checkpoint_candidates:
         latest_checkpoint = max(checkpoint_candidates, key=os.path.getmtime)
         rows.append(('latest_checkpoint', os.path.abspath(latest_checkpoint)))
+        selected = getattr(cfg_training, 'selection_metric', 'fid')
+        best_paths = glob.glob(os.path.join(checkpoint_dir, f'best_{selected}_*.pth'))
+        if best_paths:
+            rows.append(('best_checkpoint', os.path.abspath(max(best_paths, key=os.path.getmtime))))
 
     if error:
         rows.append(('error', str(error).strip().splitlines()[-1]))

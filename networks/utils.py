@@ -243,13 +243,21 @@ def _rare_lexicon_sampler(lexicon):
 
 def idx_to_words(idx, lexicon, max_word_len=0, capitalize_ratio=0.5,
                  blank_ratio=0., sort=True, rare_ratio=0.15,
-                 rare_lexicon=None):
+                 rare_lexicon=None, uppercase_ratio=0.2):
     """Decode sampled lexicon IDs with a corpus-faithful rare-word policy.
 
     ``rare_ratio`` now controls oversampling of real rare-character words; it
     never fabricates arbitrary symbol sequences.  Set it to zero for fixed
     validation/sample text.
+
+    ``uppercase_ratio`` is conditional on case augmentation being selected:
+    the legacy default allocates 20% of that subset to full uppercase. The
+    training profile can balance title/full uppercase without changing callers
+    that rely on the legacy evaluation distribution.
     """
+    uppercase_ratio = float(uppercase_ratio)
+    if not np.isfinite(uppercase_ratio) or not 0.0 <= uppercase_ratio <= 1.0:
+        raise ValueError('uppercase_ratio must be a finite probability in [0, 1]')
     rare_source = lexicon if rare_lexicon is None else rare_lexicon
     rare_indices, rare_cumulative = (
         _rare_lexicon_sampler(rare_source) if rare_ratio > 0 else (None, None)
@@ -276,7 +284,7 @@ def idx_to_words(idx, lexicon, max_word_len=0, capitalize_ratio=0.5,
         # Capitalization is applied after rare-word selection so the sampled
         # glyph still follows the same case policy as ordinary corpus words.
         if np.random.random() < capitalize_ratio:
-            word = word.capitalize() if np.random.random() < 0.8 else word.upper()
+            word = word.capitalize() if np.random.random() < 1.0 - uppercase_ratio else word.upper()
 
         if len(word) > max_word_len >= 1:
             pos = np.random.randint(0, len(word) - max_word_len + 1)
@@ -338,7 +346,7 @@ def ctc_greedy_decoder(probs_seq, blank_index=0):
 
 
 def extract_stroke_patches(images, image_lens, fill_value=-1.0):
-    """Tile valid words with non-overlapping half-height squares, in row order.
+    """Cover valid words with half-height squares at half-square stride.
 
     Right/bottom remainder cells contain paper, never batch-padding pixels.
     Return one flat crop batch and counts for equal-word loss reduction.
@@ -352,15 +360,18 @@ def extract_stroke_patches(images, image_lens, fill_value=-1.0):
         raise ValueError('image_lens must contain one valid width per image')
 
     height = images.size(-2)
+    if height < 4 or height % 4:
+        raise ValueError('overlapping grid requires an image height divisible by four')
     size = height // 2
-    columns = (widths + size - 1) // size
-    counts = columns * ((height + size - 1) // size)
+    stride = height // 4
+    columns = 2 * ((widths + size - 1) // size) - 1
+    counts = columns * 3
     rows = torch.arange(images.size(0), device=images.device).repeat_interleave(counts)
     starts = counts.cumsum(0) - counts
     slots = torch.arange(rows.numel(), device=images.device) - starts[rows]
     offset = torch.arange(size, device=images.device)
-    x = (slots % columns[rows])[:, None] * size + offset
-    y = (slots // columns[rows])[:, None] * size + offset
+    x = (slots % columns[rows])[:, None] * stride + offset
+    y = (slots // columns[rows])[:, None] * stride + offset
     patches = images[
         rows[:, None, None, None],
         torch.arange(images.size(1), device=images.device)[None, :, None, None],

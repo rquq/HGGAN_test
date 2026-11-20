@@ -55,6 +55,7 @@ training:
   max_word_len: 20
   n_class: 81
   capitalize_ratio: 0.5
+  uppercase_ratio: 0.5  # Within case augmentation: equal title/full-uppercase coverage.
   blank_ratio: 0.0
   rare_word_ratio: 0.15
 
@@ -64,15 +65,15 @@ training:
 
   # OCR objectives and schedules
   lambda_ctc_rand: 1.0
-  lambda_ctc_rand_final: 0.4
+  lambda_ctc_rand_final: 1.0
   ctc_rand_decay_start_epoch: 10
   ctc_rand_decay_end_epoch: 20
-  lambda_ctc_style: 0.5
-  lambda_ctc_style_final: 0.4
+  lambda_ctc_style: 1.0
+  lambda_ctc_style_final: 1.0
   ctc_style_decay_start_epoch: 8
   ctc_style_decay_end_epoch: 28
 
-  # Reconstruction and style objectives
+  # Generation/style objectives; paired pixel L1 active with decay
   vae_mode: true
   lambda_recn: 10.0
   lambda_recn_final: 2.5
@@ -80,10 +81,12 @@ training:
   recn_decay_end_epoch: 42
   lambda_wid: 0.25
   lambda_info: 1.0
-  lambda_style_cycle: 0.0
   lambda_content_adv: 0.02
   lambda_kl: 0.1
-  lambda_ctx: 0.1
+  lambda_distribution: 0.1
+  distribution_projections: 32
+  distribution_samples: 64
+  selection_metric: kid
   style_loss_normalization_tokens: 8
 
   # Augmentation and regularization
@@ -117,8 +120,6 @@ valid:
   validate_psnr: false
   validate_mssim: false
   validate_wier: false
-
-  # Independent OCR evaluation
 
   # Feature extraction and sampling
   batch_size: 32
@@ -155,27 +156,18 @@ StyBackbone:
   norm: bn
 
 EncModel:
-  # Global latent
-  style_dim: 32
+  # Single global appearance latent
+  style_dim: 64
   in_dim: 256
   num_style_tokens: 1
 
-  # Reference memory from the shared backbone's intermediate spatial features
-  memory_feature_index: 1
-  memory_dim: 64
-  memory_height: 4
-  memory_max_width: 32
-
-  # Contextual-loss feature maps and initialization
+  # Distribution-loss feature maps and initialization
   feature_scales: [1, 2, 4]
   init: none
 
 GenModel:
-  # Global conditioning and reference retrieval
-  style_dim: 32
-  use_reference_memory: true
-  reference_memory_dim: 64
-  reference_memory_height: 4
+  # Single global conditioning path
+  style_dim: 64
   fusion_nhead: 4
   fusion_attn_dim: 128
   fusion_ffn_dim: 360

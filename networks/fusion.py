@@ -2,7 +2,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .module import get_2d_sinusoidal_embeddings
 
 
 def _mask_tokens(sequence, mask):
@@ -59,103 +58,6 @@ class ContentSelfAttention(nn.Module):
         return _mask_tokens(self.attn_out(attended), mask)
 
 
-class SpatialStyleRefinement(nn.Module):
-    """Retrieve spatial reference evidence for early generator features."""
-
-    def __init__(self, d_model, memory_dim=64, memory_height=4,
-                 nhead=4, attn_dim=128, residual_init=0.25):
-        super().__init__()
-        if nhead < 1 or attn_dim < 1 or attn_dim % nhead:
-            raise ValueError('attn_dim must be positive and divisible by nhead')
-        if min(d_model, memory_dim, memory_height) < 1 or residual_init <= 0:
-            raise ValueError('Feature/memory dimensions and residual_init must be positive')
-        self.d_model = d_model
-        self.memory_dim = memory_dim
-        self.memory_height = memory_height
-        self.residual_init = float(residual_init)
-        self.nhead = nhead
-        self.head_dim = attn_dim // nhead
-        self.feature_norm = nn.LayerNorm(d_model, elementwise_affine=False)
-        self.memory_norm = nn.LayerNorm(memory_dim, elementwise_affine=False)
-        self.q_proj = nn.Linear(d_model, attn_dim, bias=False)
-        self.k_proj = nn.Linear(memory_dim, attn_dim, bias=False)
-        self.v_proj = nn.Linear(memory_dim, attn_dim, bias=False)
-        self.out_proj = nn.Linear(attn_dim, d_model, bias=False)
-        self.reference_scale = nn.Parameter(torch.full((d_model,), self.residual_init))
-        self.reset_stability_parameters()
-
-    def reset_stability_parameters(self):
-        for layer in (self.q_proj, self.k_proj, self.v_proj, self.out_proj):
-            nn.init.xavier_uniform_(layer.weight)
-        with torch.no_grad():
-            self.reference_scale.fill_(self.residual_init)
-
-    def forward(self, feature, reference_memory=None, memory_valid_mask=None,
-                x_lens=None):
-        if feature.ndim != 4 or feature.size(1) != self.d_model:
-            raise ValueError('Spatial retrieval requires BCHW features with matching channels')
-        if reference_memory is None:
-            if memory_valid_mask is not None:
-                raise ValueError('A memory mask requires reference memory')
-            return feature
-        if (reference_memory.ndim != 3
-                or reference_memory.size(0) != feature.size(0)
-                or reference_memory.size(2) != self.memory_dim
-                or reference_memory.size(1) < self.memory_height
-                or reference_memory.size(1) % self.memory_height):
-            raise ValueError('Reference memory must be B x (height * width) x memory_dim')
-        if (memory_valid_mask is None or memory_valid_mask.dtype != torch.bool
-                or memory_valid_mask.shape != reference_memory.shape[:2]
-                or memory_valid_mask.device != feature.device
-                or reference_memory.device != feature.device):
-            raise ValueError('Reference memory requires a matching boolean validity mask')
-
-        # Random-style rows bypass retrieval entirely: never run an all-masked
-        # softmax, and never invent reference features from Gaussian latents.
-        active = memory_valid_mask.any(dim=1).nonzero(as_tuple=True)[0]
-        if active.numel() == 0:
-            return feature
-        selected = feature.index_select(0, active)
-        memory = reference_memory.index_select(0, active)
-        valid_memory = memory_valid_mask.index_select(0, active)
-        memory = memory.masked_fill(~valid_memory.unsqueeze(-1), 0.0)
-        batch_size, channels, height, width = selected.shape
-        sequence = selected.flatten(2).transpose(1, 2)
-        query_mask = None
-        if x_lens is not None:
-            lengths = x_lens.to(feature.device).index_select(0, active).long().clamp(1, width)
-            query_mask = (
-                torch.arange(width, device=feature.device)[None, None, :]
-                < lengths[:, None, None]
-            ).expand(-1, height, -1).reshape(batch_size, -1)
-        sequence = _mask_tokens(sequence, query_mask)
-
-        # Position influences selection only; values remain visual evidence.
-        position = get_2d_sinusoidal_embeddings(
-            self.memory_height, memory.size(1) // self.memory_height,
-            self.memory_dim, memory.device,
-        ).reshape(1, memory.size(1), self.memory_dim).to(memory.dtype)
-        keys = self.memory_norm(memory) + position
-        query = self.q_proj(self.feature_norm(sequence)).view(
-            batch_size, sequence.size(1), self.nhead, self.head_dim,
-        ).transpose(1, 2)
-        key = self.k_proj(keys).view(
-            batch_size, memory.size(1), self.nhead, self.head_dim,
-        ).transpose(1, 2)
-        value = self.v_proj(memory).view(
-            batch_size, memory.size(1), self.nhead, self.head_dim,
-        ).transpose(1, 2)
-        attended = F.scaled_dot_product_attention(
-            query, key, value,
-            attn_mask=valid_memory[:, None, None, :],
-            dropout_p=0.0, is_causal=False,
-        )
-        attended = attended.transpose(1, 2).reshape(batch_size, sequence.size(1), -1)
-        refined = _mask_tokens(
-            sequence + self.reference_scale * self.out_proj(attended), query_mask,
-        )
-        refined = refined.transpose(1, 2).reshape(batch_size, channels, height, width)
-        return feature.index_copy(0, active, refined)
 
 
 class LocalGatedFeedForward(nn.Module):
