@@ -30,6 +30,8 @@ from networks.loss import recn_l1_loss, SlicedWassersteinLoss, KLloss, r1_reg, g
 
 
 class EMA(object):
+    _BN_STAT_NAMES = ('stored_mean', 'stored_var', 'running_mean', 'running_var')
+
     def __init__(self, beta):
         super().__init__()
         self.beta = beta
@@ -41,11 +43,16 @@ class EMA(object):
         ema_parameters = dict(ma_model.named_parameters())
         for name, parameter in current.named_parameters():
             ema_parameters[name].mul_(beta).add_(parameter, alpha=1.0 - beta)
-        # Running means, variances, spectral-norm buffers, and counters must match
-        # the current model; parameter-only EMA left these buffers stale.
+        # Smooth floating-point BatchNorm running statistics at the EMA horizon
+        # so validation does not swing on the last ~10 training batches; copy
+        # spectral-norm vectors, constant filters, and integer counters directly.
         ema_buffers = dict(ma_model.named_buffers())
         for name, buffer in current.named_buffers():
-            ema_buffers[name].copy_(buffer)
+            leaf = name.rsplit('.', 1)[-1]
+            if buffer.is_floating_point() and leaf in self._BN_STAT_NAMES:
+                ema_buffers[name].mul_(beta).add_(buffer, alpha=1.0 - beta)
+            else:
+                ema_buffers[name].copy_(buffer)
 
     def step_ema(self, ema_model, model, step_start_ema=0):
         if self.step < step_start_ema:
