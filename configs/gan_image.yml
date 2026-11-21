@@ -20,7 +20,7 @@ training:
   lambda_recn_final: 0.5
   recn_decay_start_epoch: 10
   recn_decay_end_epoch: 24
-  use_patch_discriminator: true
+  lambda_info: 0.125
   # Data and initialization
   dset_split: ./data/image_samples/
 
@@ -81,13 +81,10 @@ EncModel:
   init: none
 
 GenModel:
-  # Single global conditioning path + WaveStroke generator block
+  # Global style + 1-level WaveStroke generator block
   style_dim: 64
-  block_type: style_wave
-  wave_levels: 2
   wave_residual_init: 0.1
 
-  # Content geometry and convolutional generator
   G_ch: 64
   embed_dim: 120
   embed_pad_idx: 0
@@ -96,18 +93,11 @@ GenModel:
   bottom_width: 4
   bottom_height: 4
   resolution: 64
-  G_kernel_size: 3
-  G_attn: '0'
   input_nc: 1
-
-  # Normalization and initialization
-  norm_style: bn
   bn_linear: SN
   G_param: SN
   num_G_SVs: 1
   num_G_SV_itrs: 1
-  cross_replica: false
-  mybn: false
   BN_eps: 1.0e-05
   SN_eps: 1.0e-08
   init: N02
@@ -116,9 +106,6 @@ DiscModel:
   D_ch: 64
   D_wide: true
   resolution: 64
-  D_attn: '0'
-  width_context: true
-  width_heads: 4
   num_D_SVs: 1
   num_D_SV_itrs: 1
   SN_eps: 1.0e-08
