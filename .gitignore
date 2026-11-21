@@ -100,8 +100,9 @@ backups/
 .#*
 #*#
 
-# Generated documentation/diagram outputs used locally
+# Generated documentation/diagram/codegraph outputs used locally
 docs/
+graphify-out/
 
 # IDEs, notebooks, build products, and OS metadata
 **/.ipynb_checkpoints/

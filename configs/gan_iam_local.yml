@@ -59,38 +59,26 @@ training:
   blank_ratio: 0.0
   rare_word_ratio: 0.15
 
-  # Patch adversarial objective
-  use_patch_discriminator: true
+  # Patch discriminator & OCR supervision
   lambda_patch_adv: 0.45
-
-  # OCR objectives and schedules
   lambda_ctc_rand: 1.0
-  lambda_ctc_rand_final: 1.0
-  ctc_rand_decay_start_epoch: 10
-  ctc_rand_decay_end_epoch: 20
   lambda_ctc_style: 1.0
-  lambda_ctc_style_final: 1.0
-  ctc_style_decay_start_epoch: 8
-  ctc_style_decay_end_epoch: 28
 
-  # Generation/style objectives; light pixel L1 warmup + active SWD-32
+  # Generation/style objectives: light L1 warmup + active SWD-32 + HiGAN+-style info L1
   vae_mode: true
   lambda_recn: 3.0
   lambda_recn_final: 0.5
   recn_decay_start_epoch: 10
   recn_decay_end_epoch: 24
   lambda_wid: 0.25
-  lambda_info: 1.0
-  lambda_content_adv: 0.02
+  lambda_info: 0.125
   lambda_kl: 0.1
   lambda_distribution: 2.0
   distribution_projections: 32
   distribution_samples: 64
   selection_metric: kid
-  style_loss_normalization_tokens: 8
 
-  # Augmentation and regularization
-  d_diffaug: true
+  # Discriminator DiffAug & R1 regularization
   d_aug_translate: 4
   d_aug_width_scale: 0.05
   r1_interval: 32
@@ -158,26 +146,20 @@ StyBackbone:
   norm: bn
 
 EncModel:
-  # Single global appearance latent
   style_dim: 64
   in_dim: 256
-  num_style_tokens: 1
-  n_class: 81
-  content_grl: 1.0
-
-  # Distribution-loss feature maps and initialization
   backbone_channels: [64, 128, 256]
   init: none
 
 GenModel:
-  # Single global conditioning path
+  # Global style + 1-level WaveStroke generator block
   style_dim: 64
+  wave_residual_init: 0.1
   fusion_nhead: 4
   fusion_attn_dim: 128
   fusion_ffn_dim: 360
   fusion_residual_init: 0.25
 
-  # Content geometry and convolutional generator
   G_ch: 64
   embed_dim: 120
   embed_pad_idx: 0
@@ -186,18 +168,11 @@ GenModel:
   bottom_width: 4
   bottom_height: 4
   resolution: 64
-  G_kernel_size: 3
-  G_attn: '0'
   input_nc: 1
-
-  # Normalization and initialization
-  norm_style: bn
   bn_linear: SN
   G_param: SN
   num_G_SVs: 1
   num_G_SV_itrs: 1
-  cross_replica: false
-  mybn: false
   BN_eps: 1.0e-05
   SN_eps: 1.0e-08
   init: N02
@@ -207,9 +182,6 @@ DiscModel:
   D_ch: 64
   D_wide: true
   resolution: 64
-  D_attn: '0'
-  width_context: true
-  width_heads: 4
   num_D_SVs: 1
   num_D_SV_itrs: 1
   SN_eps: 1.0e-08

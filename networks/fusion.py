@@ -91,13 +91,7 @@ class LocalGatedFeedForward(nn.Module):
 
 
 class ContentContext(nn.Module):
-    """Target self-attention and local mixing before constructing the G seed.
-
-    Each pre-normalized sublayer has one direct learnable residual scale.
-    Nonzero initialization enables immediate learning, without sigmoid
-    ceilings, nested output gates, forced-uniform attention or RMS caps.
-    The same topology serves every supported image height.
-    """
+    """Target self-attention and local depthwise mixing before constructing G's spatial seed."""
 
     def __init__(self, d_model, nhead=4, attn_dim=128,
                  ffn_dim=None, max_seq_len=32, residual_init=0.25):
@@ -105,21 +99,14 @@ class ContentContext(nn.Module):
         if residual_init <= 0:
             raise ValueError('residual_init must be positive')
         hidden_dim = ffn_dim if ffn_dim is not None else d_model * 3
-        if hidden_dim < 1:
-            raise ValueError('ffn_dim must be positive')
         self.residual_init = float(residual_init)
         self.content_attention = ContentSelfAttention(
-            d_model, nhead=nhead, attn_dim=attn_dim,
-            max_seq_len=max_seq_len,
+            d_model, nhead=nhead, attn_dim=attn_dim, max_seq_len=max_seq_len,
         )
         self.local_mixer = LocalGatedFeedForward(d_model, hidden_dim)
         self.context_scale = nn.Parameter(torch.full((d_model,), self.residual_init))
         self.local_scale = nn.Parameter(torch.full((d_model,), self.residual_init))
         self.reset_stability_parameters()
-
-    @property
-    def residual_scales(self):
-        return torch.stack((self.context_scale, self.local_scale))
 
     def reset_stability_parameters(self):
         self.content_attention.reset_stability_parameters()

@@ -3,7 +3,6 @@ import torch
 from torch import nn
 from networks.block import Conv2dBlock, ActFirstResBlock, DeepBLSTM, DeepLSTM
 from networks.utils import _len2mask, init_weights
-from lib.alphabet import get_alphabet_size
 import torch.nn.functional as F
 
 
@@ -248,95 +247,60 @@ class StyleBackbone(nn.Module):
 
 
 
-class _GradientReverse(torch.autograd.Function):
-    @staticmethod
-    def forward(ctx, x, scale):
-        ctx.scale = scale
-        return x.view_as(x)
-
-    @staticmethod
-    def backward(ctx, grad_output):
-        return -ctx.scale * grad_output, None
-
-
-def _gradient_reverse(x, scale):
-    return _GradientReverse.apply(x, scale)
-
-
 class StyleEncoder(nn.Module):
-    """Encode one global writer/appearance latent; no reference-token path."""
+    """Encode a word image into a single global writer-style distribution (B, 1, style_dim)."""
 
-    def __init__(self, style_dim=128, in_dim=256, init='N02',
-                 num_style_tokens=1, backbone_channels=(64, 128, 256),
-                 n_class=None, content_grl=1.0, feature_scales=None, **kwargs):
+    def __init__(self, style_dim=64, in_dim=256, init='N02',
+                 backbone_channels=(64, 128, 256), feature_scales=None, **_unused):
         super().__init__()
-        if kwargs:
-            raise TypeError(f"Unknown StyleEncoder option(s): {', '.join(sorted(kwargs))}")
-        if num_style_tokens != 1 or min(style_dim, in_dim) < 1:
-            raise ValueError('Use one positive-dimensional global style code')
+        if min(style_dim, in_dim) < 1:
+            raise ValueError('style_dim and in_dim must be positive')
         available_scales = tuple(2 ** i for i in range(len(backbone_channels)))
         feature_scales = tuple(feature_scales) if feature_scales is not None else available_scales
-        if (not feature_scales or len(set(feature_scales)) != len(feature_scales)
-                or any(scale not in available_scales for scale in feature_scales)):
-            raise ValueError(f'feature_scales must be distinct members of {available_scales}')
         self.style_dim = int(style_dim)
-        self._in_dim = int(in_dim)
-        self.num_style_tokens = 1
-        self.content_grl = content_grl
-        # These maps remain available to the multiscale distribution objective.
+        # Keep multiscale backbone indices available for the SlicedWasserstein style loss.
         self.feature_indices = tuple(available_scales.index(scale) for scale in feature_scales)
 
         self.linear_style = nn.Sequential(
-            nn.Linear(in_dim, in_dim), nn.LeakyReLU(),
-            nn.Linear(in_dim, in_dim), nn.LeakyReLU(),
+            nn.Linear(in_dim, in_dim),
+            nn.LeakyReLU(),
+            nn.Linear(in_dim, in_dim),
+            nn.LeakyReLU(),
         )
         self.global_context_norm = nn.LayerNorm(in_dim, elementwise_affine=False)
         self.mu = nn.Linear(in_dim, style_dim)
         self.logvar = nn.Linear(in_dim, style_dim)
         self.sequence_model = GatedStyleContext(in_dim)
-        self.content_probe = nn.Linear(style_dim, n_class or get_alphabet_size('all'))
         if init != 'none':
             init_weights(self, init)
         nn.init.zeros_(self.logvar.weight)
-        nn.init.constant_(self.logvar.bias, -10.)
-
-    @staticmethod
-    def global_token(style_tokens):
-        return style_tokens[:, 0]
-
-    def predict_content(self, style_tokens, reverse=True):
-        style_for_probe = style_tokens[:, :1]
-        if reverse:
-            style_for_probe = _gradient_reverse(style_for_probe, self.content_grl)
-        return self.content_probe(style_for_probe)
+        nn.init.constant_(self.logvar.bias, -10.0)
 
     def _encode_global_style(self, feat, feat_len):
         feat_mask = (
             torch.arange(feat.size(-1), device=feat.device)[None, :] < feat_len[:, None]
         ) if feat_len is not None else None
         contextual = self.sequence_model(feat, valid_mask=feat_mask)
-        global_context = (
+        pooled = (
             contextual.mean(dim=-1) if feat_len is None
             else contextual.sum(dim=-1) / feat_len.unsqueeze(1).to(feat.dtype)
         )
-        global_style = self.linear_style(self.global_context_norm(global_context)).unsqueeze(1)
-        return self.mu(global_style), self.logvar(global_style).clamp(-14.0, 4.0)
+        hidden = self.linear_style(self.global_context_norm(pooled)).unsqueeze(1)
+        return self.mu(hidden), self.logvar(hidden).clamp(-14.0, 4.0)
 
     def forward(self, img, img_len, cnn_backbone=None, ret_feats=False,
-                vae_mode=False, ret_backbone_feat=False, backbone_features=None,
-                global_only=False):
+                vae_mode=False, ret_backbone_feat=False, backbone_features=None):
         feat, all_feats = (
             cnn_backbone(img, ret_feats=True, x_lens=img_len)
             if backbone_features is None else backbone_features
         )
-        if max(self.feature_indices) >= len(all_feats):
-            raise RuntimeError('The backbone did not return the configured feature maps')
         backbone = getattr(cnn_backbone, 'module', cnn_backbone)
         if img_len is not None:
             feat_len, map_lengths = backbone.feature_lengths(img_len)
             feat_len = feat_len.clamp(1, feat.size(-1))
         else:
             feat_len, map_lengths = None, None
+
         global_mu, global_logvar = self._encode_global_style(feat, feat_len)
         if vae_mode:
             sample = global_mu + torch.randn_like(global_mu) * torch.exp(0.5 * global_logvar)
@@ -344,18 +308,17 @@ class StyleEncoder(nn.Module):
         else:
             style = global_mu
 
-        if ret_feats or ret_backbone_feat:
-            features = []
-            for index in self.feature_indices:
-                feature = all_feats[index]
-                if map_lengths is not None:
-                    valid = torch.arange(feature.size(-1), device=feature.device)[None, :] < map_lengths[index][:, None]
-                    feature = feature.masked_fill(~valid[:, None, None, :], 0.0)
-                features.append(feature)
-            result = (style, features, feat) if ret_backbone_feat else (style, features)
-        else:
-            result = style
-        return result
+        if not (ret_feats or ret_backbone_feat):
+            return style
+
+        features = []
+        for index in self.feature_indices:
+            feature = all_feats[index]
+            if map_lengths is not None:
+                valid = torch.arange(feature.size(-1), device=feature.device)[None, :] < map_lengths[index][:, None]
+                feature = feature.masked_fill(~valid[:, None, None, :], 0.0)
+            features.append(feature)
+        return (style, features, feat) if ret_backbone_feat else (style, features)
 
 
 class MaskedAttentiveStatsPool(nn.Module):

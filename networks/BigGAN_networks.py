@@ -1,5 +1,3 @@
-# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
-# SPDX-License-Identifier: MIT
 import functools
 
 import torch
@@ -10,45 +8,51 @@ from . import BigGAN_layers as layers
 from .fusion import ContentContext
 from networks.utils import init_weights, _len2mask
 
-# Architectures for G
-# Attention is passed in in the format '32_64' to mean applying an attention
-# block at both resolution 32x32 and 64x64. Just '64' will apply at 64x64.
-def G_arch(ch=64, attention='64', ksize='333333', dilation='111111'):
-    arch = {}
 
-    # Keep one architecture at every supported resolution: four conditioned
-    # stages and the same channel schedule. Resolution controls geometry only.
-    # At 32px the image reaches its target after stage three, so stage four is
-    # a learned same-resolution refinement. At 64px that stage performs the
-    # final 2x upsample. There is no dataset- or metric-specific capacity path.
-    arch[32] = {'in_channels': [ch * item for item in [8, 4, 2, 1]],
-                'out_channels': [ch * item for item in [4, 2, 1, 1]],
-                'upsample': [(2, 1), (2, 2), (2, 2), None],
-                'resolution': [8, 16, 32, 32],
-                'attention': {2 ** i: (2 ** i in [int(item) for item in attention.split('_')])
-                              for i in range(2, 6)}}
+def G_arch(ch=64):
+    """Generator channel and upsample schedule for 32px and 64px outputs."""
+    return {
+        32: {
+            'in_channels': [ch * m for m in (8, 4, 2, 1)],
+            'out_channels': [ch * m for m in (4, 2, 1, 1)],
+            'upsample': [(2, 1), (2, 2), (2, 2), None],
+            'resolution': [8, 16, 32, 32],
+        },
+        64: {
+            'in_channels': [ch * m for m in (8, 4, 2, 1)],
+            'out_channels': [ch * m for m in (4, 2, 1, 1)],
+            'upsample': [(2, 1), (2, 2), (2, 2), (2, 2)],
+            'resolution': [8, 16, 32, 64],
+        },
+    }
 
-    arch[64] = {'in_channels': [ch * item for item in [8, 4, 2, 1]],
-                'out_channels': [ch * item for item in [4, 2, 1, 1]],
-                'upsample': [(2, 1), (2, 2), (2, 2), (2, 2)],
-                'resolution': [8, 16, 32, 64],
-                'attention': {2 ** i: (2 ** i in [int(item) for item in attention.split('_')])
-                              for i in range(2, 7)}}
-    return arch
+
+def D_arch(ch=64, input_nc=1):
+    """Discriminator channel and downsample schedule for 32px and 64px inputs."""
+    return {
+        32: {
+            'in_channels': [input_nc] + [ch * m for m in (1, 2, 4)],
+            'out_channels': [ch * m for m in (1, 2, 4, 4)],
+            'downsample': [True, True, True, False],
+        },
+        64: {
+            'in_channels': [input_nc] + [ch * m for m in (1, 2, 4)],
+            'out_channels': [ch * m for m in (1, 2, 4, 4)],
+            'downsample': [True, True, True, False],
+        },
+    }
 
 
 class BlockSpecificStyleProjection(nn.Module):
-    """Project the explicit global style token for each GBlock."""
+    """Project the global style vector into block-specific conditioning vectors."""
 
-    def __init__(self, style_dim, num_blocks=4, style_chunk_size=32,
-                 which_linear=nn.Linear):
+    def __init__(self, style_dim, num_blocks=4, which_linear=nn.Linear):
         super().__init__()
-        self.num_blocks = num_blocks
         self.projections = nn.ModuleList([
             nn.Sequential(
-                which_linear(style_dim, style_chunk_size),
+                which_linear(style_dim, style_dim),
                 nn.SiLU(),
-                which_linear(style_chunk_size, style_chunk_size),
+                which_linear(style_dim, style_dim),
             )
             for _ in range(num_blocks)
         ])
@@ -56,451 +60,219 @@ class BlockSpecificStyleProjection(nn.Module):
     def forward(self, global_style):
         if global_style.ndim == 3:
             if global_style.size(1) != 1:
-                raise ValueError('GBlock conditioning accepts only the global style token')
+                raise ValueError('GBlock conditioning expects a single global style token')
             global_style = global_style[:, 0]
         elif global_style.ndim != 2:
             raise ValueError('global style must have shape (B, D) or (B, 1, D)')
-        return [projection(global_style) for projection in self.projections]
+        return [proj(global_style) for proj in self.projections]
 
 
 class Generator(nn.Module):
-    def __init__(self, G_ch=64, style_dim=128, embed_dim=120,
-                 bottom_width=4, bottom_height=4, resolution=128,
-                 G_kernel_size=3, G_attn='64', n_class=1000,
-                 num_G_SVs=1, num_G_SV_itrs=1,
-                 cross_replica=False, mybn=False,
-                 G_activation=nn.ReLU(inplace=False),
-                 BN_eps=1e-5, SN_eps=1e-12, G_fp16=False,
-                 init='ortho', G_param='SN', norm_style='bn', bn_linear='embed', input_nc=3,
+    def __init__(self, G_ch=64, style_dim=64, embed_dim=120,
+                 bottom_width=4, bottom_height=4, resolution=64,
+                 n_class=81, num_G_SVs=1, num_G_SV_itrs=1,
+                 BN_eps=1e-5, SN_eps=1e-8, init='N02',
+                 G_param='SN', bn_linear='SN', input_nc=1,
                  embed_pad_idx=0, embed_max_norm=1.0,
-                 fusion_nhead=4, fusion_attn_dim=128, fusion_ffn_dim=None,
-                 fusion_residual_init=0.25):
-        super(Generator, self).__init__()
-        dim_z = style_dim
-        self.style_dim = style_dim
+                 fusion_nhead=4, fusion_attn_dim=128, fusion_ffn_dim=360,
+                 fusion_residual_init=0.25, wave_residual_init=0.1, **_unused):
+        super().__init__()
         self.name = 'G'
-        # Channel width mulitplier
-        self.ch = G_ch
-        # Dimensionality of the latent space
-        self.dim_z = dim_z
-        self.embed_dim = embed_dim
-        # The initial width dimensions
+        self.style_dim = style_dim
         self.bottom_width = bottom_width
-        # The initial height dimension
         self.bottom_height = bottom_height
-        # Resolution of the output
         self.resolution = resolution
-        # Kernel size?
-        self.kernel_size = G_kernel_size
-        # Attention?
-        self.attention = G_attn
-        # number of classes, for use in categorical conditional generation
-        self.n_classes = n_class
-        # Cross replica batchnorm?
-        self.cross_replica = cross_replica
-        # Use my batchnorm?
-        self.mybn = mybn
-        # nonlinearity for residual blocks
-        self.activation = G_activation
-        # Initialization style
         self.init = init
-        # Parameterization style
-        self.G_param = G_param
-        # Normalization style
-        self.norm_style = norm_style
-        # Epsilon for BatchNorm?
-        self.BN_eps = BN_eps
-        # Epsilon for Spectral Norm?
-        self.SN_eps = SN_eps
-        # fp16?
-        self.fp16 = G_fp16
-        # Architecture dict
-        self.arch = G_arch(self.ch, self.attention)[resolution]
-        self.bn_linear = bn_linear
+        self.arch = G_arch(G_ch)[resolution]
+        self.activation = nn.ReLU(inplace=False)
 
-        self.z_chunk_size = self.dim_z
-
-        self.text_embedding = nn.Embedding(self.n_classes, self.embed_dim,
-                                           padding_idx=embed_pad_idx,
-                                           max_norm=embed_max_norm)
-
-        # Which convs, batchnorms, and linear layers to use
-        if self.G_param == 'SN':
-            self.which_conv = functools.partial(layers.SNConv2d,
-                                                kernel_size=3, padding=1,
-                                                num_svs=num_G_SVs, num_itrs=num_G_SV_itrs,
-                                                eps=self.SN_eps)
-            self.which_linear = functools.partial(layers.SNLinear,
-                                                  num_svs=num_G_SVs, num_itrs=num_G_SV_itrs,
-                                                  eps=self.SN_eps)
-        else:
-            self.which_conv = functools.partial(nn.Conv2d, kernel_size=3, padding=1)
-            self.which_linear = nn.Linear
-
-        if self.bn_linear=='SN':
-            bn_linear = functools.partial(self.which_linear, bias=False)
-        else:
-            bn_linear = nn.Linear
-
-        self.which_bn = functools.partial(layers.ccbn,
-                                          which_linear=bn_linear,
-                                          cross_replica=self.cross_replica,
-                                          mybn=self.mybn,
-                                          input_size=self.z_chunk_size,
-                                          norm_style=self.norm_style,
-                                          eps=self.BN_eps)
-
-        self.filter_linear = self.which_linear(self.embed_dim,
-                                        self.arch['in_channels'][0] * (self.bottom_width * self.bottom_height))
-        self.content_context = ContentContext(
-            self.embed_dim, nhead=fusion_nhead,
-            attn_dim=fusion_attn_dim, ffn_dim=fusion_ffn_dim,
-            residual_init=fusion_residual_init,
+        self.text_embedding = nn.Embedding(
+            n_class, embed_dim, padding_idx=embed_pad_idx, max_norm=embed_max_norm
         )
-        self.bssp = BlockSpecificStyleProjection(style_dim=self.style_dim, num_blocks=len(self.arch['in_channels']), style_chunk_size=self.z_chunk_size, which_linear=self.which_linear)
 
-        # self.blocks is a doubly-nested list of modules, the outer loop intended
-        # to be over blocks at a given resolution (resblocks and/or self-attention)
-        # while the inner loop is over a given block
-        self.blocks = []
-        for index in range(len(self.arch['out_channels'])):
-            upsample_scale = self.arch['upsample'][index]
-            self.blocks += [[layers.GBlock(in_channels=self.arch['in_channels'][index],
-                                           out_channels=self.arch['out_channels'][index],
-                                           which_conv1=self.which_conv,
-                                           which_conv2=self.which_conv,
-                                           which_bn=self.which_bn,
-                                           activation=self.activation,
-                                           upsample=(functools.partial(
-                                               F.interpolate,
-                                               scale_factor=upsample_scale,
-                                           ) if upsample_scale is not None else None))]]
+        if G_param == 'SN':
+            which_conv = functools.partial(
+                layers.SNConv2d, kernel_size=3, padding=1,
+                num_svs=num_G_SVs, num_itrs=num_G_SV_itrs, eps=SN_eps,
+            )
+            which_depthwise = functools.partial(layers.SNDepthwiseConv2d, eps=SN_eps)
+            which_linear = functools.partial(
+                layers.SNLinear, num_svs=num_G_SVs, num_itrs=num_G_SV_itrs, eps=SN_eps,
+            )
+        else:
+            which_conv = functools.partial(nn.Conv2d, kernel_size=3, padding=1)
+            which_depthwise = lambda channels, **kw: nn.Conv2d(channels, channels, groups=channels, **kw)
+            which_linear = nn.Linear
 
-            if self.arch['attention'][self.arch['resolution'][index]]:
-                self.blocks[-1] += [layers.Attention(self.arch['out_channels'][index], self.which_conv)]
+        bn_proj = functools.partial(which_linear, bias=False) if bn_linear == 'SN' else nn.Linear
+        which_bn = functools.partial(layers.ccbn, which_linear=bn_proj, input_size=style_dim, eps=BN_eps)
 
-        # Turn self.blocks into a ModuleList so that it's all properly registered.
-        self.blocks = nn.ModuleList([nn.ModuleList(block) for block in self.blocks])
+        self.filter_linear = which_linear(
+            embed_dim, self.arch['in_channels'][0] * bottom_width * bottom_height
+        )
+        self.content_context = ContentContext(
+            embed_dim, nhead=fusion_nhead, attn_dim=fusion_attn_dim,
+            ffn_dim=fusion_ffn_dim, residual_init=fusion_residual_init,
+        )
+        self.bssp = BlockSpecificStyleProjection(
+            style_dim=style_dim, num_blocks=len(self.arch['in_channels']),
+            which_linear=which_linear,
+        )
 
-        # output layer: batchnorm-relu-conv.
-        # Consider using a non-spectral conv here
-        self.output_layer = nn.Sequential(layers.bn(self.arch['out_channels'][-1],
-                                                    cross_replica=self.cross_replica,
-                                                    mybn=self.mybn),
-                                          self.activation,
-                                          self.which_conv(self.arch['out_channels'][-1], input_nc))
+        self.blocks = nn.ModuleList([
+            layers.StyleWaveGBlock(
+                in_channels=self.arch['in_channels'][i],
+                out_channels=self.arch['out_channels'][i],
+                style_dim=style_dim,
+                which_conv=which_conv,
+                which_bn=which_bn,
+                which_depthwise=which_depthwise,
+                which_linear=which_linear,
+                activation=self.activation,
+                upsample=(functools.partial(F.interpolate, scale_factor=scale) if scale is not None else None),
+                wave_residual_init=wave_residual_init,
+            )
+            for i, scale in enumerate(self.arch['upsample'])
+        ])
 
-        # Initialize weights. Optionally skip init for testing.
+        self.output_layer = nn.Sequential(
+            layers.bn(self.arch['out_channels'][-1], eps=BN_eps),
+            self.activation,
+            which_conv(self.arch['out_channels'][-1], input_nc),
+        )
+
         if self.init != 'none':
             init_weights(self, self.init)
-        # General initialization touches fusion Linear weights; restore its
-        # identity-like nonzero residual handoffs afterwards.
+        # Re-apply stability inits after general weight initialization.
         self.content_context.reset_stability_parameters()
+        for block in self.blocks:
+            block.reset_stability_parameters()
 
     def forward(self, z, y, y_lens):
-        # Distribution is a reusable sampler container, not an activation
-        # type. Strip its Tensor subclass at the model boundary so its custom
-        # .to() method cannot propagate through G and downstream networks.
         if type(z) is not torch.Tensor:
             z = z.as_subclass(torch.Tensor)
         if z.ndim != 3 or z.size(1) != 1 or z.size(2) != self.style_dim:
             raise ValueError('G expects one global style code per image')
-        # One global code conditions every synthesis stage.
-        ys = self.bssp(z[:, 0])
 
+        ys = self.bssp(z[:, 0])
         content = self.text_embedding(y).float().to(y.device)
         y_mixed = self.content_context(content, y_lens=y_lens)
+
         token_positions = torch.arange(y.size(1), device=y.device).unsqueeze(0)
         valid_tokens = (token_positions < y_lens.unsqueeze(1)).unsqueeze(-1)
-        y_mixed = y_mixed * valid_tokens.to(y_mixed.dtype)
-        h = self.filter_linear(y_mixed) * valid_tokens.to(y_mixed.dtype)
+        valid_mask = valid_tokens.to(y_mixed.dtype)
+        h = self.filter_linear(y_mixed * valid_mask) * valid_mask
 
-        # Reshape - when y is not a single class value but rather an array of classes, the reshape is needed to create
-        # a separate vertical patch for each input.
-        h = h.view(h.size(0), h.shape[1] * self.bottom_width, self.bottom_height, -1)
-        h = h.permute(0, 3, 2, 1)
+        h = h.view(h.size(0), h.shape[1] * self.bottom_width, self.bottom_height, -1).permute(0, 3, 2, 1)
 
-        # Loop over blocks
         len_scale = 1
         x_lens = y_lens * self.bottom_width
-        for index, blocklist in enumerate(self.blocks):
-            stage_input_lens = (x_lens * len_scale).clamp(
-                min=1, max=h.size(-1)
-            )
+        for index, block in enumerate(self.blocks):
+            in_lens = (x_lens * len_scale).clamp(min=1, max=h.size(-1))
             upsample_scale = self.arch['upsample'][index]
             width_scale = upsample_scale[1] if upsample_scale is not None else 1
-            stage_output_lens = (stage_input_lens * width_scale).clamp(
-                min=1
-            )
-            # Second inner loop in case block has multiple layers
-            for block in blocklist:
-                if isinstance(block, layers.Attention):
-                    h = block(h, x_len=stage_output_lens)
-                else:
-                    h = block(
-                        h, y=ys[index], x_lens=stage_input_lens,
-                        out_x_lens=stage_output_lens,
-                    )
-            # Conditional normalization and convolutions can populate padded
-            # columns. Clear them after each stage so those activations cannot
-            # feed back across the valid word boundary in a later convolution.
-            valid_width = stage_output_lens.clamp(max=h.size(-1))
-            stage_mask = (
-                torch.arange(h.size(-1), device=h.device)[None, :]
-                < valid_width[:, None]
-            )
+            out_lens = (in_lens * width_scale).clamp(min=1)
+            h = block(h, y=ys[index], x_lens=in_lens, out_x_lens=out_lens)
+
+            valid_width = out_lens.clamp(max=h.size(-1))
+            stage_mask = torch.arange(h.size(-1), device=h.device)[None, :] < valid_width[:, None]
             h = h * stage_mask[:, None, None, :].to(h.dtype)
             if upsample_scale is not None:
-                len_scale *= upsample_scale[1]
+                len_scale *= width_scale
 
-        # The final conditional normalization can also inject values into the
-        # right padded area. Mask before the last convolution so it cannot
-        # perturb valid edge pixels; mask its final tail as before below.
-        output_lens = torch.div(
-            y_lens * h.size(-2), 2, rounding_mode='trunc'
-        ).clamp(min=1)
-        output = self.output_layer[0](h, valid_lens=output_lens)
-        output = self.output_layer[1](output)
-        output_lens = output_lens.clamp(max=output.size(-1))
-        output_mask = _len2mask(
-            output_lens.int(), output.size(-1), torch.float32
-        ).to(output.device).unsqueeze(1).unsqueeze(1)
-        output = torch.tanh(
-            self.output_layer[2](output * output_mask.to(output.dtype))
-        )
+        output_lens = torch.div(y_lens * h.size(-2), 2, rounding_mode='trunc').clamp(min=1)
+        out = self.output_layer[1](self.output_layer[0](h, valid_lens=output_lens))
+        output_lens = output_lens.clamp(max=out.size(-1))
+        output_mask = _len2mask(output_lens.int(), out.size(-1), torch.float32).to(out.device)[:, None, None, :]
+        out = torch.tanh(self.output_layer[2](out * output_mask.to(out.dtype)))
 
-        # Mask blanks
         if not self.training:
             mask = output_mask.detach()
-            output = output * mask + (mask - 1)
-
-        return output
-
-    @property
-    def fusion_scales(self):
-        scales = self.content_context.residual_scales.flatten()
-        return scales
-
-    def fusion_strength(self):
-        return self.fusion_scales.mean()
-
-
-# Discriminator architecture, same paradigm as G's above
-def D_arch(ch=64, attention='64', input_nc=3):
-    arch = {}
-
-    arch[32] = {'in_channels': [input_nc] + [ch * item for item in [1, 2, 4]],
-                'out_channels': [item * ch for item in [1, 2, 4, 4]],
-                'downsample': [True] * 3 + [False],
-                'resolution': [8, 4, 4, 16],
-                'attention': {2 ** i: 2 ** i in [int(item) for item in attention.split('_')]
-                              for i in range(2, 5)}}
-    arch[64] = {'in_channels': [input_nc] + [ch * item for item in [1, 2, 4]],
-                'out_channels': [item * ch for item in [1, 2, 4, 4]],
-                'downsample': [True] * 3 + [False],
-                'resolution': [32, 16, 8, 8],
-                'attention': {2 ** i: 2 ** i in [int(item) for item in attention.split('_')]
-                              for i in range(2, 7)}}
-
-    return arch
-
-
-class WidthContextMixer(nn.Module):
-    """Low-resolution width attention for whole-word visual coherence."""
-
-    def __init__(self, channels, num_heads, which_linear):
-        super().__init__()
-        if channels % num_heads != 0:
-            raise ValueError('discriminator channels must be divisible by width_heads')
-        self.num_heads = num_heads
-        self.head_dim = channels // num_heads
-        self.scale = self.head_dim ** -0.5
-        self.norm = nn.LayerNorm(channels)
-        self.qkv = which_linear(channels, channels * 3, bias=False)
-        self.proj = which_linear(channels, channels, bias=False)
-        self.residual_scale = nn.Parameter(torch.tensor(0.1))
-
-    def forward(self, tokens, valid_mask=None):
-        batch, width, channels = tokens.shape
-        qkv = self.qkv(self.norm(tokens))
-        qkv = qkv.view(
-            batch, width, 3, self.num_heads, self.head_dim
-        ).permute(2, 0, 3, 1, 4)
-        query, key, value = qkv.unbind(0)
-        # Keep this explicit instead of relying on fused SDPA: some supported
-        # PyTorch/CUDA combinations select the efficient forward kernel but do
-        # not implement its backward pass. Float32 softmax also keeps AMP
-        # attention probabilities numerically stable.
-        scores = torch.matmul(query, key.transpose(-2, -1)) * self.scale
-        if valid_mask is not None:
-            mask_value = -1e4 if scores.dtype == torch.float16 else -1e9
-            scores = scores.masked_fill(
-                ~valid_mask[:, None, None, :],
-                mask_value,
-            )
-        attention = torch.softmax(scores.float(), dim=-1).to(scores.dtype)
-        context = torch.matmul(attention, value)
-        context = context.transpose(1, 2).reshape(batch, width, channels)
-        context = self.proj(context)
-        if valid_mask is not None:
-            context = context * valid_mask.unsqueeze(-1).to(context.dtype)
-        return tokens + torch.tanh(self.residual_scale) * context
+            out = out * mask + (mask - 1)
+        return out
 
 
 class Discriminator(nn.Module):
-    def __init__(self, D_ch=64, D_wide=True, resolution=128,
-                 D_attn='64', num_D_SVs=1, num_D_SV_itrs=1,
-                 D_activation=nn.ReLU(inplace=False), SN_eps=1e-12,
-                 output_dim=1, D_fp16=False, init='ortho', D_param='SN',
-                 input_nc=3, width_context=False, width_heads=4,
-                 pooling_gain=32.0, **kwargs):
-        super(Discriminator, self).__init__()
+    def __init__(self, D_ch=64, D_wide=True, resolution=64,
+                 num_D_SVs=1, num_D_SV_itrs=1, SN_eps=1e-8,
+                 output_dim=1, init='N02', D_param='SN',
+                 input_nc=1, pooling_gain=32.0, **_unused):
+        super().__init__()
         self.name = 'D'
-        # Shared at every resolution. A valid-area mean times this fixed gain
-        # retains the former 64px score scale (32 feature cells per character)
-        # without making score magnitude depend on input height or word length.
         self.pooling_gain = float(pooling_gain)
         if not 0.0 < self.pooling_gain < float('inf'):
             raise ValueError('pooling_gain must be finite and positive')
-        # Width multiplier
-        self.ch = D_ch
-        # Use Wide D as in BigGAN and SA-GAN or skinny D as in SN-GAN?
-        self.D_wide = D_wide
-        # Resolution
-        self.resolution = resolution
-        # Attention?
-        self.attention = D_attn
-        # Activation
-        self.activation = D_activation
-        # Initialization style
-        self.init = init
-        # Parameterization style
-        self.D_param = D_param
-        # Epsilon for Spectral Norm?
-        self.SN_eps = SN_eps
-        # Fp16?
-        self.fp16 = D_fp16
-        # Architecture
-        self.arch = D_arch(self.ch, self.attention, input_nc)[resolution]
+        self.activation = nn.ReLU(inplace=False)
+        self.arch = D_arch(D_ch, input_nc)[resolution]
 
-        # Which convs, batchnorms, and linear layers to use
-        # No option to turn off SN in D right now
-        if self.D_param == 'SN':
-            self.which_conv = functools.partial(layers.SNConv2d,
-                                                kernel_size=3, padding=1,
-                                                num_svs=num_D_SVs, num_itrs=num_D_SV_itrs,
-                                                eps=self.SN_eps)
-            self.which_linear = functools.partial(layers.SNLinear,
-                                                  num_svs=num_D_SVs, num_itrs=num_D_SV_itrs,
-                                                  eps=self.SN_eps)
-        else:
-            self.which_conv = functools.partial(nn.Conv2d, kernel_size=3, padding=1)
-            self.which_linear = nn.Linear
-        # Prepare model
-        # self.blocks is a doubly-nested list of modules, the outer loop intended
-        # to be over blocks at a given resolution (resblocks and/or self-attention)
-        self.blocks = []
-        for index in range(len(self.arch['out_channels'])):
-            self.blocks += [[layers.DBlock(in_channels=self.arch['in_channels'][index],
-                                           out_channels=self.arch['out_channels'][index],
-                                           which_conv=self.which_conv,
-                                           wide=self.D_wide,
-                                           activation=self.activation,
-                                           preactivation=(index > 0),
-                                           downsample=(nn.AvgPool2d(2) if self.arch['downsample'][index] else None))]]
-
-            if self.arch['attention'][self.arch['resolution'][index]]:
-                self.blocks[-1] += [layers.Attention(self.arch['out_channels'][index], self.which_conv)]
-        # Turn self.blocks into a ModuleList so that it's all properly registered.
-        self.blocks = nn.ModuleList([nn.ModuleList(block) for block in self.blocks])
-        # Linear output layer. The output dimension is typically 1, but may be
-        # larger if we're e.g. turning this into a VAE with an inference output
-        self.linear = self.which_linear(self.arch['out_channels'][-1], output_dim)
-        self.width_context = (
-            WidthContextMixer(
-                self.arch['out_channels'][-1], width_heads, self.which_linear
+        if D_param == 'SN':
+            which_conv = functools.partial(
+                layers.SNConv2d, kernel_size=3, padding=1,
+                num_svs=num_D_SVs, num_itrs=num_D_SV_itrs, eps=SN_eps,
             )
-            if width_context else None
-        )
-        # Embedding for projection discrimination
-        # self.embed = self.which_embedding(self.n_classes, self.arch['out_channels'][-1])
+            which_linear = functools.partial(
+                layers.SNLinear, num_svs=num_D_SVs, num_itrs=num_D_SV_itrs, eps=SN_eps,
+            )
+        else:
+            which_conv = functools.partial(nn.Conv2d, kernel_size=3, padding=1)
+            which_linear = nn.Linear
 
-        # Initialize weights
-        if self.init != 'none':
-            self = init_weights(self, self.init)
+        self.blocks = nn.ModuleList([
+            layers.DBlock(
+                in_channels=self.arch['in_channels'][i],
+                out_channels=self.arch['out_channels'][i],
+                which_conv=which_conv,
+                wide=D_wide,
+                activation=self.activation,
+                preactivation=(i > 0),
+                downsample=(nn.AvgPool2d(2) if self.arch['downsample'][i] else None),
+            )
+            for i in range(len(self.arch['out_channels']))
+        ])
+        self.linear = which_linear(self.arch['out_channels'][-1], output_dim)
+
+        if init != 'none':
+            init_weights(self, init)
 
     def _pool_features(self, h, h_lens=None):
-        """Average valid spatial evidence independent of image resolution.
-
-        A per-character sum had four times as many contributions at twice
-        the input height. Pool both spatial dimensions before the readout.
-        """
         width_tokens = h.mean(dim=2).transpose(1, 2)
-        valid_mask = None
-        if h_lens is not None:
-            h_lens = h_lens.long().clamp(min=1, max=h.size(-1))
-            valid_mask = _len2mask(h_lens, h.size(-1), torch.bool).to(h.device)
-        if self.width_context is not None:
-            width_tokens = self.width_context(width_tokens, valid_mask)
-        if valid_mask is None:
+        if h_lens is None:
             return width_tokens.mean(dim=1)
+        h_lens = h_lens.long().clamp(min=1, max=h.size(-1))
+        valid_mask = _len2mask(h_lens, h.size(-1), torch.bool).to(h.device)
         return (width_tokens * valid_mask.unsqueeze(-1)).sum(dim=1) / h_lens[:, None]
 
-    def forward(self, x, x_lens=None, y_lens=None,  **kwargs):
-        # Stick x into h for cleaner for loops without flow control
+    def forward(self, x, x_lens=None, y_lens=None, **kwargs):
         h = x
-        # Loop over blocks
         len_scale = 1
-        for index, blocklist in enumerate(self.blocks):
-            for block in blocklist:
-                # Spatial attention follows this stage's downsampling block,
-                # so it receives output lengths rather than input lengths.
-                block_scale = len_scale
-                if isinstance(block, layers.Attention) and self.arch['downsample'][index]:
-                    block_scale *= 2
-                h = block(h, x_len=torch.div(x_lens, block_scale, rounding_mode='trunc') if x_lens is not None else None)
-            len_scale *= 2 if self.arch['downsample'][index] else 1
+        for index, block in enumerate(self.blocks):
+            step_lens = torch.div(x_lens, len_scale, rounding_mode='trunc') if x_lens is not None else None
+            h = block(h, x_len=step_lens)
+            if self.arch['downsample'][index]:
+                len_scale *= 2
         h = self.activation(h)
         h_lens = torch.div(x_lens, len_scale, rounding_mode='floor') if x_lens is not None else None
-        h = self._pool_features(h, h_lens)
-
-        # Get initial class-unconditional output
-        out = self.linear(h * self.pooling_gain)
-
-        return out
+        return self.linear(self._pool_features(h, h_lens) * self.pooling_gain)
 
 
 class StrokePatchBlock(nn.Module):
     """Anisotropic residual block specialized for handwriting strokes."""
 
-    def __init__(self, in_channels, out_channels, which_conv, activation,
-                 which_depthwise):
+    def __init__(self, in_channels, out_channels, which_conv, activation, which_depthwise):
         super().__init__()
         self.activation = activation
         self.conv_in = which_conv(in_channels, out_channels)
-        self.horizontal = which_depthwise(
-            out_channels, kernel_size=(1, 5), padding=(0, 2),
-        )
-        self.vertical = which_depthwise(
-            out_channels, kernel_size=(5, 1), padding=(2, 0),
-        )
-        self.fuse = which_conv(
-            out_channels, out_channels, kernel_size=1, padding=0
-        )
-        self.shortcut = which_conv(
-            in_channels, out_channels, kernel_size=1, padding=0
-        )
+        self.horizontal = which_depthwise(out_channels, kernel_size=(1, 5), padding=(0, 2))
+        self.vertical = which_depthwise(out_channels, kernel_size=(5, 1), padding=(2, 0))
+        self.fuse = which_conv(out_channels, out_channels, kernel_size=1, padding=0)
+        self.shortcut = which_conv(in_channels, out_channels, kernel_size=1, padding=0)
         self.downsample = nn.AvgPool2d(2)
 
     def forward(self, x):
         residual = self.shortcut(x)
         h = self.conv_in(self.activation(x))
-        oriented = self.horizontal(self.activation(h))
-        oriented = oriented + self.vertical(self.activation(h))
+        oriented = self.horizontal(self.activation(h)) + self.vertical(self.activation(h))
         h = h + self.fuse(self.activation(oriented))
-        # Keep a shared minimum feature grid for every crop geometry. Once
-        # either axis would fall below four cells, retain resolution on both
-        # residual and main paths.
         if h.size(-2) // 2 >= 4 and h.size(-1) // 2 >= 4:
             h = self.downsample(h)
             residual = self.downsample(residual)
@@ -508,60 +280,33 @@ class StrokePatchBlock(nn.Module):
 
 
 class PatchDiscriminator(nn.Module):
-    """Lightweight spatial critic for stroke shape, joins, and local texture."""
+    """Lightweight local critic for stroke sharpness, joins, and texture."""
 
-    def __init__(
-        self,
-        D_ch=32,
-        D_max_ch=192,
-        D_layers=3,
-        num_D_SVs=1,
-        num_D_SV_itrs=1,
-        SN_eps=1e-12,
-        output_dim=1,
-        init='ortho',
-        D_param='SN',
-        input_nc=1,
-        **kwargs
-    ):
+    def __init__(self, D_ch=32, D_max_ch=192, D_layers=3,
+                 num_D_SVs=1, num_D_SV_itrs=1, SN_eps=1e-8,
+                 output_dim=1, init='N02', D_param='SN', input_nc=1, **_unused):
         super().__init__()
         self.name = 'P'
         self.activation = nn.LeakyReLU(0.2, inplace=False)
         if D_param == 'SN':
             which_conv = functools.partial(
-                layers.SNConv2d,
-                kernel_size=3,
-                padding=1,
-                num_svs=num_D_SVs,
-                num_itrs=num_D_SV_itrs,
-                eps=SN_eps,
+                layers.SNConv2d, kernel_size=3, padding=1,
+                num_svs=num_D_SVs, num_itrs=num_D_SV_itrs, eps=SN_eps,
             )
-            which_depthwise = functools.partial(
-                layers.SNDepthwiseConv2d, eps=SN_eps
-            )
+            which_depthwise = functools.partial(layers.SNDepthwiseConv2d, eps=SN_eps)
         else:
-            which_conv = functools.partial(
-                nn.Conv2d, kernel_size=3, padding=1
-            )
-            def which_depthwise(channels, **conv_kwargs):
-                return nn.Conv2d(channels, channels, groups=channels, **conv_kwargs)
+            which_conv = functools.partial(nn.Conv2d, kernel_size=3, padding=1)
+            which_depthwise = lambda channels, **kw: nn.Conv2d(channels, channels, groups=channels, **kw)
 
         self.stem = which_conv(input_nc, D_ch)
         blocks = []
         in_channels = D_ch
         for index in range(D_layers):
             out_channels = min(D_ch * (2 ** (index + 1)), D_max_ch)
-            blocks.append(
-                StrokePatchBlock(
-                    in_channels, out_channels, which_conv, self.activation,
-                    which_depthwise,
-                )
-            )
+            blocks.append(StrokePatchBlock(in_channels, out_channels, which_conv, self.activation, which_depthwise))
             in_channels = out_channels
         self.blocks = nn.ModuleList(blocks)
-        self.logits = which_conv(
-            in_channels, output_dim, kernel_size=1, padding=0
-        )
+        self.logits = which_conv(in_channels, output_dim, kernel_size=1, padding=0)
         if init != 'none':
             init_weights(self, init)
 
@@ -569,5 +314,4 @@ class PatchDiscriminator(nn.Module):
         h = self.stem(x)
         for block in self.blocks:
             h = block(h)
-        h = self.activation(h)
-        return self.logits(h)
+        return self.logits(self.activation(h))
