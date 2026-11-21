@@ -12,14 +12,14 @@ img_height: 64
 char_width: 32
 
 training:
-  lambda_distribution: 0.1
+  lambda_distribution: 2.0
   distribution_projections: 32
   distribution_samples: 64
   selection_metric: kid
-  lambda_recn: 10.0
-  lambda_recn_final: 2.5
-  recn_decay_start_epoch: 24
-  recn_decay_end_epoch: 42
+  lambda_recn: 3.0
+  lambda_recn_final: 0.5
+  recn_decay_start_epoch: 10
+  recn_decay_end_epoch: 24
   use_patch_discriminator: true
   # Data and initialization
   dset_split: ./data/image_samples/
